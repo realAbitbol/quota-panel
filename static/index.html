@@ -10,6 +10,7 @@
 <meta name="theme-color" content="#0b0d12">
 <meta name="description" content="Read-only quota dashboard for CommandCode and OpenCode Go subscriptions.">
 <title>Quota Panel</title>
+<link rel="stylesheet" href="/static/vendor/uplot/uPlot.min.css">
 <style>
   :root{
     --bg:#0b0d12; --card:20,24,33; --card-2:#1b2130; --line:#252c3b;
@@ -29,16 +30,16 @@
   body::before{content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;
        background:linear-gradient(180deg,rgba(11,13,18,.55) 0%,rgba(11,13,18,.38) 45%,rgba(11,13,18,.62) 100%)}
   @media (prefers-reduced-motion:no-preference){ body{background-attachment:fixed} }
-  header{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;margin-bottom:22px;
+  header{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;margin-bottom:18px;
        background:rgba(var(--card),var(--card-alpha));
        border:1px solid var(--line);border-radius:14px;padding:14px 16px;
        backdrop-filter:blur(var(--card-blur));-webkit-backdrop-filter:blur(var(--card-blur))}
   h1{font-size:19px;margin:0;letter-spacing:.2px}
   .muted{color:var(--muted);font-size:12.5px}
-  .grid{display:grid;gap:16px;grid-template-columns:repeat(auto-fill,minmax(310px,1fr))}
   .card{background:rgba(var(--card),var(--card-alpha));border:1px solid var(--line);border-radius:14px;
        padding:16px 16px 14px;
        backdrop-filter:blur(var(--card-blur));-webkit-backdrop-filter:blur(var(--card-blur))}
+  .grid{display:grid;gap:16px;grid-template-columns:repeat(auto-fill,minmax(310px,1fr))}
   .card-head{display:flex;justify-content:space-between;align-items:flex-start;gap:10px}
   .label{font-weight:600;font-size:15px}
   .plan{font-size:11.5px;color:var(--muted);margin-top:2px}
@@ -61,6 +62,24 @@
   #feed.stale{color:var(--warn)}
   #feed.down{color:var(--hot)}
   footer{margin-top:18px}
+  /* ---- usage chart ------------------------------------------------------- */
+  .chart-card{margin-bottom:18px}
+  .chart-head{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap}
+  .ranges{display:flex;gap:6px;flex-wrap:wrap}
+  .ranges button{background:transparent;color:var(--muted);border:1px solid var(--line);border-radius:999px;
+       padding:3px 10px;font:inherit;font-size:11.5px;cursor:pointer;font-variant-numeric:tabular-nums}
+  .ranges button:hover{color:var(--fg);border-color:#3a4459}
+  .ranges button[aria-pressed="true"]{color:var(--fg);border-color:var(--accent);background:rgba(91,141,255,.14)}
+  #chart{min-height:300px;margin-top:10px}
+  .chart-note{margin-top:8px;font-size:11.5px;line-height:1.5}
+  /* uPlot ships a bare stylesheet with no colours of its own; these keep it on the
+     dark theme and stop the bundled legend from centring itself. */
+  .uplot{font-family:inherit}
+  .u-legend{margin:0;text-align:left;font-size:11.5px;color:var(--muted)}
+  .u-legend th{font-weight:500;padding:2px 6px}
+  .u-legend .u-value{color:var(--fg);font-variant-numeric:tabular-nums}
+  .u-legend .u-off{text-decoration:line-through}
+  .u-select{background:rgba(91,141,255,.18)}
 </style>
 </head>
 <body>
@@ -69,9 +88,23 @@
   <span class="muted" id="generated">loading…</span>
   <span class="muted" id="feed"></span>
 </header>
+
+<section class="card chart-card">
+  <div class="chart-head">
+    <div>
+      <div class="label">Usage</div>
+      <div class="plan" id="chart-meta">loading…</div>
+    </div>
+    <div class="ranges" id="ranges"></div>
+  </div>
+  <div id="chart"></div>
+  <div class="muted chart-note" id="chart-note"></div>
+</section>
+
 <div class="grid" id="grid"><div class="card waiting">Loading…</div></div>
 <footer class="muted">Read-only. Credentials stay on the host; nothing is sent anywhere else.</footer>
 
+<script src="/static/vendor/uplot/uPlot.iife.min.js"></script>
 <script>
 'use strict';
 const TICK_MS = 1000;          // countdown repaint
@@ -199,6 +232,135 @@ function schedule(){
   timer = setInterval(load, pollMs);
 }
 
+// ------------------------------------------------------------------- usage chart
+//
+// History moves at one sample per minute, so the chart is refetched on its own slow
+// clock (and on range change / focus / reconnect) rather than on every poll: pulling
+// twelve series every 30 s would be pure waste, and would re-render under the cursor.
+
+const RANGES = [
+  {label:'1h', hours:1}, {label:'6h', hours:6}, {label:'24h', hours:24},
+  {label:'7d', hours:24*7}, {label:'30d', hours:24*30}, {label:'90d', hours:24*90},
+  {label:'1y', hours:24*365}
+];
+const PALETTE = ['#5b8dff','#33d69f','#f5c451','#ff6b6b','#b07cff','#39c0d8',
+                 '#ff9f45','#8de05a','#f07cd0','#6f7bff','#00d4c8','#ffd166'];
+const CHART_EVERY_MS = 180000;   // at most one history fetch every 3 minutes
+const CHART_HEIGHT = 320;
+const AXIS_FONT = '11px -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif';
+const AXIS_COLOR = '#b7c2d6';
+const AXIS_GRID = 'rgba(37,44,59,.85)';
+
+let chart = null, chartRange = 2, chartSig = '', chartAt = 0, chartBusy = false;
+
+const chartHost = () => document.getElementById('chart');
+const chartWidth = () => Math.max(320, chartHost().clientWidth || 720);
+// Roughly one sample per 1.4 px: dense enough to keep the shape, sparse enough that a
+// year of history does not arrive as 100k numbers.
+const chartPoints = () => Math.min(1500, Math.max(200, Math.round(chartWidth() / 1.4)));
+
+function spanLabel(seconds){
+  if(seconds % 86400 === 0) return (seconds / 86400) + 'd';
+  if(seconds % 3600 === 0) return (seconds / 3600) + 'h';
+  if(seconds % 60 === 0) return (seconds / 60) + 'min';
+  return seconds + 's';
+}
+
+function buildRanges(){
+  const box = document.getElementById('ranges');
+  box.innerHTML = '';
+  RANGES.forEach((range, i) => {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.textContent = range.label;
+    btn.setAttribute('aria-pressed', String(i === chartRange));
+    btn.addEventListener('click', () => { chartRange = i; buildRanges(); loadChart(true); });
+    box.appendChild(btn);
+  });
+}
+
+function buildChart(payload){
+  chartHost().innerHTML = '';
+  const series = [{ label:'time', value:(u, v) => v === null ? '—' : new Date(v * 1000).toLocaleString() }];
+  payload.series.forEach((s, i) => {
+    series.push({
+      label: s.label,
+      stroke: PALETTE[i % PALETTE.length],
+      width: 1.8,
+      points: { show: false },
+      spanGaps: false,              // nulls must break the line, not be bridged
+      value: (u, v) => v === null ? '—' : v.toFixed(1) + '%'
+    });
+  });
+  chart = new uPlot({
+    width: chartWidth(), height: CHART_HEIGHT,
+    padding: [10, 12, 0, 0],
+    cursor: { drag: { x: true, y: true }, points: { size: 7 } },
+    scales: { x: { time: true }, y: { range: [0, 100] } },
+    axes: [
+      { stroke: AXIS_COLOR, grid: { stroke: AXIS_GRID }, ticks: { stroke: AXIS_GRID },
+        font: AXIS_FONT, size: 46 },
+      { stroke: AXIS_COLOR, grid: { stroke: AXIS_GRID }, ticks: { stroke: AXIS_GRID },
+        font: AXIS_FONT, size: 46,
+        // uPlot calls this as (u, vals, space): the tick values are the SECOND
+        // argument. Mapping over the third yields "ticks.map is not a function".
+        values: (u, vals) => vals.map(v => v + '%') }
+    ],
+    legend: { show: true, live: { show: true, size: 44 } },
+    series
+  }, [payload.t, ...payload.series.map(() => [])], chartHost());
+  chartSig = payload.series.map(s => s.key).join('|');
+}
+
+function drawChart(payload, fetchAt){
+  chart.setData([payload.t, ...payload.series.map(s => s.avg)]);
+  chartAt = fetchAt;
+  const ret = payload.retention || {}, src = payload.sources || {};
+  document.getElementById('chart-meta').textContent =
+    `${spanLabel(payload.bucket_seconds)} buckets · ${src.resolution} · ${payload.series.length} series`;
+  document.getElementById('chart-note').textContent =
+    `Raw kept ${ret.raw_days}d, then rolled up every ${spanLabel(ret.rollup_seconds)} and kept ${ret.rollup_days}d. ` +
+    `Click a legend entry to toggle a series, drag to zoom, double-click to reset.`;
+}
+
+async function loadChart(force){
+  if(chartBusy) return;
+  if(!force && Date.now() - chartAt < CHART_EVERY_MS) return;
+  chartBusy = true;
+  const requestedAt = Date.now();
+  try{
+    const range = RANGES[chartRange];
+    const res = await fetch(`/api/history?hours=${range.hours}&max_points=${chartPoints()}&t=${requestedAt}`,
+                            { cache:'no-store' });
+    if(!res.ok) throw new Error('HTTP ' + res.status);
+    const payload = await res.json();
+    if(payload.error) throw new Error(payload.error);
+    if(!payload.series || !payload.series.length){
+      chart = null; chartSig = ''; chartAt = requestedAt;
+      chartHost().innerHTML = '<div class="waiting">No history in this range yet — the poller is still filling the database.</div>';
+      document.getElementById('chart-meta').textContent = '';
+      const ret = payload.retention || {};
+      document.getElementById('chart-note').textContent =
+        `History starts with the first stored poll. Retention: ${ret.raw_days}d of raw samples, then ` +
+        `${spanLabel(ret.rollup_seconds || 900)} rollups kept ${ret.rollup_days}d.`;
+      return;
+    }
+    const signature = payload.series.map(s => s.key).join('|');
+    if(!chart || signature !== chartSig) buildChart(payload);
+    drawChart(payload, requestedAt);
+  }catch(e){
+    document.getElementById('chart-meta').textContent = '';
+    document.getElementById('chart-note').textContent =
+      'History unavailable right now — the live cards below are unaffected and the chart retries on its own.';
+  }finally{
+    chartBusy = false;
+  }
+}
+
+window.addEventListener('resize', () => {
+  if(chart) chart.setSize({ width: chartWidth(), height: CHART_HEIGHT });
+});
+
 async function load(){
   // Collapse overlapping triggers (startup + visibilitychange + focus can all fire
   // within milliseconds of each other and used to produce three identical requests).
@@ -233,14 +395,18 @@ async function load(){
 // Background tabs get their timers throttled by the browser, so a visible page can
 // show numbers minutes old. Refresh immediately whenever we come back to the front.
 document.addEventListener('visibilitychange', () => {
-  if(document.visibilityState === 'visible') load();
+  if(document.visibilityState === 'visible'){ load(); loadChart(false); }
 });
-window.addEventListener('focus', () => load());
-window.addEventListener('online', () => load());
+window.addEventListener('focus', () => { load(); loadChart(false); });
+window.addEventListener('online', () => { load(); loadChart(true); });
 
+buildRanges();
 load();
 schedule();
 setInterval(tick, TICK_MS);
+loadChart(true);
+// Throttled internally: this only fires a fetch once the 3-minute window has passed.
+setInterval(loadChart, 30000);
 </script>
 </body>
 </html>

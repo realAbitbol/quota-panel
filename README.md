@@ -155,12 +155,44 @@ enough. Overridable per container with `QUOTA_POLL_SECONDS`.
 > `token_env` holds the *name* of a variable. If you want the key in the file, the
 > field is `token`. The app detects this mistake and warns (masked) at startup.
 
+### `retention`
+
+History is appended on every poll and never read back by the poller, so it grows
+without bound — at a 60 s cadence, twelve series is roughly 6.3 M rows and
+350–400 MB a year. Raw samples are therefore kept for a bounded window, and older
+history survives as **rollups**: pre-aggregated buckets that *are* the long-term
+record, not a cache of it.
+
+```json
+{
+  "poll_seconds": 60,
+  "retention": { "raw_days": 90, "rollup_days": 365, "rollup_seconds": 900 },
+  "accounts": []
+}
+```
+
+| Key | Default | Meaning |
+|---|---|---|
+| `raw_days` | `90` | One sample per poll, kept this long. |
+| `rollup_days` | `365` | Aggregates kept this long (raised to `raw_days` if set lower). |
+| `rollup_seconds` | `900` | Rollup bucket size. |
+
+Each bucket stores `n`, `pct_sum`, `pct_min` and `pct_max`, so rolling a rollup up
+again stays exact instead of averaging averages. Two guarantees hold whatever the
+configuration:
+
+* **Aggregate before pruning.** Rollups are committed before any raw row is deleted.
+* **Prune only what is saved.** A raw row is dropped only once its bucket exists in
+  `rollups`. A rollup that breaks therefore costs disk, never history — and the
+  number of rows held back is logged rather than swallowed.
+
 ## Endpoints
 
 | Path | Purpose |
 |---|---|
 | `/` | the card UI, live countdowns, self-refreshing |
 | `/api/quota` | normalized JSON: every account, every window, with `resets_at` |
+| `/api/history` | usage time series for the chart: raw + rollup on one aligned grid, `null` at gaps |
 | `/api/homepage` | flat `items` map keyed `<account_id>_<window>`, for a gethomepage tile |
 | `/api/health` | `200` while the last poll is fresh, `503` when stale |
 | `/static/…` | the UI's own assets (image, favicon); path-traversal safe, allow-listed types |
@@ -168,6 +200,26 @@ enough. Overridable per container with `QUOTA_POLL_SECONDS`.
 ```bash
 curl -s localhost:8080/api/quota \
   | jq '.accounts[] | {id, plan, windows: [.windows[] | {key, percent, resets_at}]}'
+```
+
+#### `/api/history`
+
+| Parameter | Default | Meaning |
+|---|---|---|
+| `hours` | `24` | Window length, up to 366 days. |
+| `since` / `until` | — | Explicit ISO-8601 range; overrides `hours`. |
+| `max_points` | `720` | Point budget; the bucket size is picked to fit it (`20`–`2000`). |
+| `account_id` | all | Comma-separated filter. |
+| `window_key` | all | Comma-separated filter (`five_hour`, `weekly`, `monthly`). |
+| `resolution` | `auto` | `auto`, `raw` or `rollup`. |
+
+The response is columnar and chart-ready: one shared `t` array of epoch seconds
+plus, per series, `avg`, `min`, `max` and `n` — all the same length, with `null`
+where a bucket has no data. That is deliberate: a gap must break the line.
+
+```bash
+curl -s 'localhost:8080/api/history?hours=168&max_points=400' \
+  | jq '{bucket: .bucket_seconds, resolution: .sources.resolution, series: [.series[].key]}'
 ```
 
 ### Environment variables
@@ -179,6 +231,28 @@ curl -s localhost:8080/api/quota \
 | `QUOTA_DB` | `/data/quota.db` | SQLite history path. |
 | `QUOTA_POLL_SECONDS` | `60` | Poll interval; the config file's `poll_seconds` wins. |
 | `QUOTA_HTTP_TIMEOUT` | `20` | Per-request timeout, in seconds. |
+| `QUOTA_RETENTION_RAW_DAYS` | `90` | Raw sample retention; the config file wins. |
+| `QUOTA_RETENTION_ROLLUP_DAYS` | `365` | Rollup retention; the config file wins. |
+| `QUOTA_ROLLUP_SECONDS` | `900` | Rollup bucket size, in seconds. |
+
+## Usage chart
+
+Every account × window is drawn as a line over a selectable range (1 h → 1 y), with
+the bucket size adapting to both the range and the width of the card. [uPlot](https://github.com/leeoniya/uPlot)
+is vendored under `static/vendor/uplot/`, so the panel has no CDN dependency and
+renders offline.
+
+* **Gaps stay gaps.** An account that stops being polled, or a window that stops
+  reporting, renders as a break in the line — never bridged, because a straight line
+  drawn across an outage is a lie the chart would tell silently.
+* **One grid for everything.** All series share a single `t` array, so the axis,
+  the legend and any zoom agree on where a point is.
+* **Drag to zoom, double-click to reset**, click a legend entry to toggle a series.
+* **Labels are stable.** Series read `<account> · <window>` and colours are assigned
+  in a fixed order, so nothing moves between refreshes.
+* **Refreshed on its own clock**: at most once every three minutes, plus on range
+  change, focus and reconnect — not on every poll. Twelve series every 30 s would be
+  pure waste and would redraw under the cursor.
 
 ## Homepage (gethomepage) integration
 
@@ -214,11 +288,12 @@ single `items["<id>_error"]` entry rather than pretending to have numbers.
         └───────────────┬───────────────────────────┬──────────────┘
                         │                           │
             in-memory state (guarded by a lock)   SQLite /data/quota.db
-                        │                        (30-day retention)
+                        │                    90 d raw, 365 d rollups
         ┌───────────────┴───────────────┐
         │  HTTP handlers (read-only)    │
-        │  /  /api/quota  /api/homepage │
-        │  /api/health  /static/…       │
+        │  /  /api/quota  /api/history  │
+        │  /api/homepage  /api/health   │
+        │  /static/…                    │
         └───────────────────────────────┘
 ```
 
@@ -229,7 +304,10 @@ single `items["<id>_error"]` entry rather than pretending to have numbers.
 * **Percentages are never invented.** The monthly CommandCode figure is derived
   from spend and remaining credit; when the API's numbers cannot be reconciled,
   the window is rendered without a percentage instead of with a wrong one.
-* **History is append-only**, pruned to 30 days. No chart is drawn yet.
+* **History outlives the raw samples.** Rollups are aggregated *before* the raw rows
+  they replace are deleted, and a raw row is only deleted once its bucket is covered.
+  Measured on a 400-day, 12-series fixture: 230 256 raw rows rolled up and pruned in
+  0.8 s, with the steady-state pass costing 2 ms per poll.
 * **The UI degrades honestly**: a failed fetch keeps the last good render on
   screen and labels itself `reconnecting (n)` / `feed down · data Ns old` instead
   of showing stale numbers as if they were current. Background tabs get their
@@ -303,6 +381,7 @@ cp accounts.example.json accounts.json
 python3 app.py --check                  # one poll, prints JSON, non-zero if any account is not ok
 PORT=8080 python3 app.py                # run it
 python3 tests/smoke.py                  # boots the app and exercises the HTTP surface
+python3 tests/history.py                # retention, rollups and the /api/history merge
 ```
 
 `--check` is side-effect free: it reads the config, hits both providers once,
@@ -333,7 +412,8 @@ Tags produce `v1.0.0`, `1.0`, `1`, `sha-<short>` and, on the default branch,
 * No token refresh: the providers' OAuth flows are out of scope by design, so an
   expired key is reported as `auth_error` for that account until you re-mint it and
   update the config.
-* History is stored and pruned to 30 days, but no chart is drawn yet.
+* History keeps 90 days of raw samples plus up to 365 days of 15-minute rollups;
+  both are configurable, and the chart reads whichever covers the requested range.
 * Polling is sequential, so a cycle takes roughly
   `sum(requests per account)` × latency. Comfortable to a few dozen accounts; a
   hanging account can stretch a cycle, bounded by `QUOTA_HTTP_TIMEOUT`.
@@ -341,3 +421,6 @@ Tags produce `v1.0.0`, `1.0`, `1`, `sha-<short>` and, on the default branch,
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+Bundled third-party code: [uPlot](https://github.com/leeoniya/uPlot) 1.6.32 (MIT),
+vendored unmodified under `static/vendor/uplot/` — its own `LICENSE` ships alongside.

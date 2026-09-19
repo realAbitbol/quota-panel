@@ -13,6 +13,14 @@
     "environment variable holding it) or 'token_file' (path to a file holding it)."
   ],
   "poll_seconds": 60,
+  "retention": { "raw_days": 90, "rollup_days": 365, "rollup_seconds": 900 },
+  "_retention_note": [
+    "History is written on every poll, so raw samples are kept for raw_days and then",
+    "pruned; before a raw row is dropped, its rollup_seconds-wide bucket is aggregated",
+    "into 'rollups' (count / sum / min / max, so rolling a rollup up again stays exact)",
+    "and kept for rollup_days. Raw is only ever deleted once its bucket is covered.",
+    "The block above is the default: remove it and the same values apply."
+  ],
   "accounts": [
     {
       "id": "cc-work",

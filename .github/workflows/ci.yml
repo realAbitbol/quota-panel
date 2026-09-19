@@ -25,7 +25,7 @@ jobs:
           python-version: "3.12"
 
       - name: Compile
-        run: python -m py_compile app.py tests/smoke.py
+        run: python -m py_compile app.py tests/smoke.py tests/history.py
 
       - name: Validate the example config
         run: |
@@ -37,11 +37,18 @@ jobs:
           assert len(set(ids)) == len(ids), "duplicate ids in accounts.example.json: %s" % ids
           for a in cfg["accounts"]:
               assert a["provider"] in ("commandcode", "opencode_go"), a
-          print("example config OK: %d accounts, ids %s" % (len(ids), ids))
+          r = cfg["retention"]
+          for k in ("raw_days", "rollup_days", "rollup_seconds"):
+              assert isinstance(r[k], int) and r[k] > 0, (k, r[k])
+          assert r["rollup_days"] >= r["raw_days"], r
+          print("example config OK: %d accounts, ids %s, retention %s" % (len(ids), ids, r))
           PY
 
       - name: Smoke test the HTTP surface
         run: python tests/smoke.py
+
+      - name: History, rollups and retention
+        run: python tests/history.py
 
   docker:
     name: build and push image

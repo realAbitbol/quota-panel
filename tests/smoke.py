@@ -101,6 +101,28 @@ def main():
         check("GET /api/homepage shape",
               status == 200 and "items" in payload and "widgets" in payload)
 
+        status, ctype, body = get(base + "/api/history")
+        payload = json.loads(body)
+        check("GET /api/history shape",
+              status == 200 and all(k in payload for k in ("t", "series", "bucket_seconds",
+                                                           "retention", "sources")),
+              "%s %s" % (status, ctype))
+        check("GET /api/history is safe on a fresh database",
+              payload["series"] == [] and isinstance(payload["t"], list)
+              and payload["retention"]["raw_days"] == 90,
+              "%d series, retention %s" % (len(payload["series"]), payload["retention"]))
+
+        status, _, _ = get(base + "/api/history?since=2026-01-02T00:00:00Z&until=2026-01-01T00:00:00Z")
+        check("GET /api/history refuses an inverted range", status == 400, "HTTP %s" % status)
+
+        status, ctype, body = get(base + "/static/vendor/uplot/uPlot.iife.min.js")
+        check("GET the vendored chart library",
+              status == 200 and len(body) > 20000, "HTTP %s, %d bytes" % (status, len(body)))
+
+        status, ctype, body = get(base + "/")
+        check("GET / loads the chart assets",
+              b"/static/vendor/uplot/uPlot.iife.min.js" in body and b"/api/history" in body)
+
         # Path traversal and unexpected types must never be served.
         for path in ("/static/../app.py", "/static/../../etc/passwd", "/static/accounts.json"):
             status, _, _ = get(base + path)
