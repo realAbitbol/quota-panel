@@ -1,0 +1,42 @@
+{
+  "_note": [
+    "'id' is required in practice: it is the account's stable identity key. It keys the",
+    "SQLite history (snapshots.account_id), the /api/quota payload, the Homepage widget",
+    "map (items['<id>_<window>']) and the error list — so it MUST be unique per account",
+    "and MUST NOT change once the panel is running (changing it starts a new history",
+    "series and renames the Homepage widgets). Lowercase letters, digits and dashes only.",
+    "If 'id' is omitted it falls back to a positional '<provider>-<index>', so inserting",
+    "or reordering accounts silently reassigns ids and can swap history between them.",
+    "Duplicate ids are fatal: the app refuses to start with",
+    "'account ids must be unique: [...]'. 'label' is free text and purely cosmetic.",
+    "Credentials: exactly one of 'token' (the key itself), 'token_env' (the NAME of an",
+    "environment variable holding it) or 'token_file' (path to a file holding it)."
+  ],
+  "poll_seconds": 60,
+  "accounts": [
+    {
+      "id": "cc-work",
+      "provider": "commandcode",
+      "label": "CommandCode — work",
+      "token": "user_xxx_replace_me"
+    },
+    {
+      "id": "cc-personal",
+      "provider": "commandcode",
+      "label": "CommandCode — personal",
+      "token": "user_xxx_replace_me"
+    },
+    {
+      "id": "oc-work",
+      "provider": "opencode_go",
+      "label": "OpenCode Go — work",
+      "token": "sk-xxx_replace_me"
+    },
+    {
+      "id": "oc-personal",
+      "provider": "opencode_go",
+      "label": "OpenCode Go — personal",
+      "token": "sk-xxx_replace_me"
+    }
+  ]
+}

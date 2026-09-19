@@ -1,0 +1,48 @@
+# quota-panel — example compose file.
+#
+# This is the generic, self-contained version: it publishes the port on loopback
+# and hardens the container. Put a reverse proxy with authentication in front of
+# it (see "Security" in the README) rather than exposing it directly.
+#
+#   docker compose up -d
+#   open http://localhost:8080
+#
+# Copy ../accounts.example.json to ./accounts.json first.
+
+services:
+  quota-panel:
+    image: ghcr.io/realabitbol/quota-panel:latest
+    container_name: quota-panel
+    restart: unless-stopped
+
+    # Loopback only — a reverse proxy (or an SSH tunnel) is the intended entry point.
+    ports:
+      - "127.0.0.1:8080:8080"
+
+    volumes:
+      - ./accounts.json:/config/accounts.json:ro
+      - quota-panel-data:/data
+
+    environment:
+      QUOTA_POLL_SECONDS: "60"
+      # TZ: Europe/Paris            # only affects nothing today: all timestamps are UTC
+
+    # Runtime hardening: nothing here is needed by a read-only dashboard.
+    read_only: true
+    tmpfs:
+      - "/tmp:rw,size=16m,noexec,nosuid,nodev"
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 128m
+
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/api/health', timeout=4).status==200 else 1)"]
+      interval: 60s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+volumes:
+  quota-panel-data:

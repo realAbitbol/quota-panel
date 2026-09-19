@@ -1,0 +1,5 @@
+accounts.json
+.env
+.env.test
+data/
+__pycache__/

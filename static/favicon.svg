@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="Quota Panel">
+  <!-- Usage bars: the whole product in one glyph, still legible at 16px. -->
+  <rect width="32" height="32" rx="7" fill="#0b0d12"/>
+  <rect x="6" y="7"  width="20" height="4.5" rx="2.25" fill="#252c3b"/>
+  <rect x="6" y="7"  width="13" height="4.5" rx="2.25" fill="#33d69f"/>
+  <rect x="6" y="13.75" width="20" height="4.5" rx="2.25" fill="#252c3b"/>
+  <rect x="6" y="13.75" width="18" height="4.5" rx="2.25" fill="#f5c451"/>
+  <rect x="6" y="20.5" width="20" height="4.5" rx="2.25" fill="#252c3b"/>
+  <rect x="6" y="20.5" width="10" height="4.5" rx="2.25" fill="#5b8dff"/>
+</svg>

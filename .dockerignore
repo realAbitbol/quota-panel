@@ -1,0 +1,10 @@
+.git
+.github
+docs
+tests
+accounts.json
+accounts.local.json
+*.md
+*.db
+__pycache__
+.gitignore
