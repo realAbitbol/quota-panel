@@ -70,7 +70,7 @@
        padding:3px 10px;font:inherit;font-size:11.5px;cursor:pointer;font-variant-numeric:tabular-nums}
   .ranges button:hover{color:var(--fg);border-color:#3a4459}
   .ranges button[aria-pressed="true"]{color:var(--fg);border-color:var(--accent);background:rgba(91,141,255,.14)}
-  #chart{min-height:300px;margin-top:10px}
+  #bars{min-height:320px;margin-top:10px}
   .chart-note{margin-top:8px;font-size:11.5px;line-height:1.5}
   /* uPlot ships a bare stylesheet with no colours of its own; these keep it on the
      dark theme and stop the bundled legend from centring itself. */
@@ -89,19 +89,20 @@
   <span class="muted" id="feed"></span>
 </header>
 
+<div class="grid" id="grid"><div class="card waiting">Loading…</div></div>
+
 <section class="card chart-card">
   <div class="chart-head">
     <div>
-      <div class="label">Usage</div>
+      <div class="label">Monthly envelope consumed</div>
       <div class="plan" id="chart-meta">loading…</div>
     </div>
     <div class="ranges" id="ranges"></div>
   </div>
-  <div id="chart"></div>
+  <div id="bars"></div>
   <div class="muted chart-note" id="chart-note"></div>
 </section>
 
-<div class="grid" id="grid"><div class="card waiting">Loading…</div></div>
 <footer class="muted">Read-only. Credentials stay on the host; nothing is sent anywhere else.</footer>
 
 <script src="/static/vendor/uplot/uPlot.iife.min.js"></script>
@@ -234,9 +235,15 @@ function schedule(){
 
 // ------------------------------------------------------------------- usage chart
 //
-// History moves at one sample per minute, so the chart is refetched on its own slow
-// clock (and on range change / focus / reconnect) rather than on every poll: pulling
-// twelve series every 30 s would be pure waste, and would re-render under the cursor.
+// One chart: how much of every provider is consumed, as a stacked histogram. History
+// moves at one sample per minute, so it is refetched on its own slow clock (and on
+// range change / focus / reconnect) rather than on every poll: pulling twelve series
+// every 30 s would be pure waste, and would re-render under the cursor.
+//
+// uPlot has no stacked-series support — its own README says so — so the stacking is
+// drawn through its `paths` hook: each provider is a series whose builder paints its
+// own segment on top of the segment below it, while uPlot still does the axes, grid,
+// cursor, legend and resize. Canvas, not SVG, all the way down.
 
 const RANGES = [
   {label:'1h', hours:1}, {label:'6h', hours:6}, {label:'24h', hours:24},
@@ -253,7 +260,7 @@ const AXIS_GRID = 'rgba(37,44,59,.85)';
 
 let chart = null, chartRange = 2, chartSig = '', chartAt = 0, chartBusy = false;
 
-const chartHost = () => document.getElementById('chart');
+const chartHost = () => document.getElementById('bars');
 const chartWidth = () => Math.max(320, chartHost().clientWidth || 720);
 // Roughly one sample per 1.4 px: dense enough to keep the shape, sparse enough that a
 // year of history does not arrive as 100k numbers.
@@ -279,24 +286,87 @@ function buildRanges(){
   });
 }
 
-function buildChart(payload){
+// This axis carries consumption per bucket, not a level: it has no 0-100 ceiling and
+// its values are small, so it rescales to whatever the busiest bucket spent.
+const Y_RANGE = (u, min, max) => [0, (max || 0) * 1.15 || 1];
+
+// Only the monthly envelope is charted: it is the window that actually runs out over
+// weeks, and the one the cards above show last.
+const CONSUMED_WINDOW = 'monthly';
+
+function consumedPerBucket(payload){
+  // series key -> { label, values }: points of that account's monthly envelope consumed
+  // during each bucket, i.e. the rise between two samples.
+  const rows = new Map();
+  payload.series.forEach((s) => {
+    if(s.window_key !== CONSUMED_WINDOW) return;
+    const values = new Array(payload.t.length).fill(null);
+    let prev = -1;                         // last bucket that actually held a sample
+    for(let i = 0; i < payload.t.length; i++){
+      if(s.avg[i] == null) continue;       // null and undefined are both "no sample"
+      if(prev >= 0){
+        const spent = s.avg[i] - s.avg[prev];
+        const span = i - prev;             // buckets the rise really covers
+        // A rise is spread over the buckets it spans, so a skipped poll lands as the
+        // quota it actually cost instead of being piled onto one tall bar.
+        if(spent >= 0){
+          for(let b = prev + 1; b <= i; b++) values[b] = spent / span;
+        }
+        // spent < 0 means the envelope refilled in between (monthly reset). How much was
+        // spent before the reset is unknowable, so those buckets stay empty: never a
+        // negative bar invented, never a fake zero.
+      }
+      prev = i;
+    }
+    rows.set(s.key, { label: s.label, values });
+  });
+  return rows;
+}
+
+function stackedPaths(u, seriesIdx, colour){
+  const path = new Path2D();
+  const n = u.data[0].length;
+  const step = Math.abs(u.valToPos(u.data[0][1] || u.data[0][0], 'x', true) -
+                        u.valToPos(u.data[0][0], 'x', true));
+  const width = Math.min(48, Math.max(1, step * 0.82));
+  for(let i = 0; i < n; i++){
+    const own = u.data[seriesIdx][i] || 0;
+    if(!own) continue;
+    // The base is the sum of every series below this one, not just the one directly
+    // underneath: an account with no sample in this bucket contributes 0 to the stack,
+    // and using the lower series' missing value would drop this segment on top of the
+    // segments below it.
+    let base = 0;
+    for(let k = 1; k < seriesIdx; k++) base += u.data[k][i] || 0;
+    const x = u.valToPos(u.data[0][i], 'x', true);
+    const top = u.valToPos(base + own, 'y', true);
+    const bottom = u.valToPos(base, 'y', true);
+    path.rect(x - width / 2, top, width, Math.max(1, bottom - top));
+  }
+  // The object shape is uPlot's path contract (drawPath in its source): `fill` and
+  // `stroke` are the Path2Ds it fills and strokes, the underscored keys are the styles.
+  return { fill: path, _fill: colour, _stroke: null, _width: 0, flags: 0 };
+}
+
+function buildChart(payload, keys, rows){
   chartHost().innerHTML = '';
-  const series = [{ label:'time', value:(u, v) => v === null ? '—' : new Date(v * 1000).toLocaleString() }];
-  payload.series.forEach((s, i) => {
+  const series = [{ label: 'time', value: (u, v) => v === null ? '—' : new Date(v * 1000).toLocaleString() }];
+  keys.forEach((key, i) => {
+    // One colour per account, in a fixed order, so a segment keeps its colour between
+    // refreshes; the palette cycles if a config ever has more accounts than colours.
+    const colour = PALETTE[i % PALETTE.length];
     series.push({
-      label: s.label,
-      stroke: PALETTE[i % PALETTE.length],
-      width: 1.8,
+      label: rows.get(key).label,
+      paths: (u, seriesIdx) => stackedPaths(u, seriesIdx, colour),
       points: { show: false },
-      spanGaps: false,              // nulls must break the line, not be bridged
-      value: (u, v) => v === null ? '—' : v.toFixed(1) + '%'
+      value: (u, v) => v === null ? '—' : v.toFixed(2) + '%'
     });
   });
   chart = new uPlot({
     width: chartWidth(), height: CHART_HEIGHT,
     padding: [10, 12, 0, 0],
-    cursor: { drag: { x: true, y: true }, points: { size: 7 } },
-    scales: { x: { time: true }, y: { range: [0, 100] } },
+    cursor: { drag: { x: true, y: false }, points: { show: false } },
+    scales: { x: { time: true }, y: { range: Y_RANGE } },
     axes: [
       { stroke: AXIS_COLOR, grid: { stroke: AXIS_GRID }, ticks: { stroke: AXIS_GRID },
         font: AXIS_FONT, size: 46 },
@@ -308,19 +378,26 @@ function buildChart(payload){
     ],
     legend: { show: true, live: { show: true, size: 44 } },
     series
-  }, [payload.t, ...payload.series.map(() => [])], chartHost());
-  chartSig = payload.series.map(s => s.key).join('|');
+  }, [payload.t, ...keys.map(() => [])], chartHost());
+  chartSig = keys.join('|');
 }
 
 function drawChart(payload, fetchAt){
-  chart.setData([payload.t, ...payload.series.map(s => s.avg)]);
+  const rows = consumedPerBucket(payload);
+  const keys = Array.from(rows.keys()).sort();
+  if(!keys.length) return;                 // loadChart owns the empty state
+  if(!chart || keys.join('|') !== chartSig) buildChart(payload, keys, rows);
+  chart.setData([payload.t, ...keys.map(k => rows.get(k).values)]);
   chartAt = fetchAt;
   const ret = payload.retention || {}, src = payload.sources || {};
   document.getElementById('chart-meta').textContent =
-    `${spanLabel(payload.bucket_seconds)} buckets · ${src.resolution} · ${payload.series.length} series`;
+    `${spanLabel(payload.bucket_seconds)} buckets · ${src.resolution} · ` +
+    `${keys.length} account${keys.length === 1 ? '' : 's'}`;
   document.getElementById('chart-note').textContent =
-    `Raw kept ${ret.raw_days}d, then rolled up every ${spanLabel(ret.rollup_seconds)} and kept ${ret.rollup_days}d. ` +
-    `Click a legend entry to toggle a series, drag to zoom, double-click to reset.`;
+    `Each bar is one ${spanLabel(payload.bucket_seconds)} bucket: what each account consumed of its own ` +
+    `monthly envelope during that bucket, in points of that envelope. A bucket containing a monthly reset ` +
+    `is left empty — the drop is a refill, not negative usage. Raw kept ${ret.raw_days}d, then rolled up ` +
+    `every ${spanLabel(ret.rollup_seconds)} and kept ${ret.rollup_days}d.`;
 }
 
 async function loadChart(force){
@@ -345,13 +422,11 @@ async function loadChart(force){
         `${spanLabel(ret.rollup_seconds || 900)} rollups kept ${ret.rollup_days}d.`;
       return;
     }
-    const signature = payload.series.map(s => s.key).join('|');
-    if(!chart || signature !== chartSig) buildChart(payload);
     drawChart(payload, requestedAt);
   }catch(e){
     document.getElementById('chart-meta').textContent = '';
     document.getElementById('chart-note').textContent =
-      'History unavailable right now — the live cards below are unaffected and the chart retries on its own.';
+      'History unavailable right now — the live cards above are unaffected and the chart retries on its own.';
   }finally{
     chartBusy = false;
   }

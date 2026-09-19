@@ -215,7 +215,9 @@ curl -s localhost:8080/api/quota \
 
 The response is columnar and chart-ready: one shared `t` array of epoch seconds
 plus, per series, `avg`, `min`, `max` and `n` — all the same length, with `null`
-where a bucket has no data. That is deliberate: a gap must break the line.
+where a bucket has no data. That is deliberate: a gap must break the line. Each
+series also carries `provider` and `window_key`, so a client can group or filter
+without re-reading the config.
 
 ```bash
 curl -s 'localhost:8080/api/history?hours=168&max_points=400' \
@@ -237,19 +239,26 @@ curl -s 'localhost:8080/api/history?hours=168&max_points=400' \
 
 ## Usage chart
 
-Every account × window is drawn as a line over a selectable range (1 h → 1 y), with
-the bucket size adapting to both the range and the width of the card. [uPlot](https://github.com/leeoniya/uPlot)
-is vendored under `static/vendor/uplot/`, so the panel has no CDN dependency and
-renders offline.
+The chart card sits **below** the quota cards, so the current numbers stay the first
+thing on the page. It is a single **stacked histogram** of the monthly envelope: one
+bar per bucket over a selectable range (1 h → 1 y), one segment per account, whose
+height is how many points of *that account's own* monthly quota were consumed *during*
+that bucket. [uPlot](https://github.com/leeoniya/uPlot) is vendored under
+`static/vendor/uplot/`, so the panel has no CDN dependency and renders offline.
 
-* **Gaps stay gaps.** An account that stops being polled, or a window that stops
-  reporting, renders as a break in the line — never bridged, because a straight line
-  drawn across an outage is a lie the chart would tell silently.
-* **One grid for everything.** All series share a single `t` array, so the axis,
-  the legend and any zoom agree on where a point is.
-* **Drag to zoom, double-click to reset**, click a legend entry to toggle a series.
-* **Labels are stable.** Series read `<account> · <window>` and colours are assigned
-  in a fixed order, so nothing moves between refreshes.
+uPlot has no stacked-series support (it says so in its own README), so the stacking is
+drawn through its `paths` hook — canvas, not SVG. Each segment starts at the top of the
+segment below it, and the bar width follows the bucket size, so it survives a zoom.
+
+* **Consumption, not level.** A segment is the rise between two samples, so a busy hour
+  is tall and an idle one is flat. The running percentage is what the cards above are
+  for; this answers "how fast is this burning".
+* **A reset is a gap, never a negative bar.** When a monthly window refills inside a
+  bucket, the drop would be a negative segment, and how much was spent before the reset
+  is unknowable. That bucket is left empty — the chart does not invent a number.
+* **One colour per account**, assigned in a fixed order, so a segment keeps its colour
+  between refreshes and nothing moves under the cursor.
+* **Drag to zoom, double-click to reset**, click a legend entry to hide an account.
 * **Refreshed on its own clock**: at most once every three minutes, plus on range
   change, focus and reconnect — not on every poll. Twelve series every 30 s would be
   pure waste and would redraw under the cursor.

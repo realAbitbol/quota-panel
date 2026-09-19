@@ -164,6 +164,9 @@ def main():
     series = {s["key"]: s for s in payload["series"]}
     check("series are keyed per account/window", set(series) == {"cmd-perso/monthly", "og-perso/weekly"},
           "%s" % sorted(series))
+    check("series carry their provider",
+          {s["provider"] for s in payload["series"]} == {"unknown"},
+          "%s" % sorted({s["provider"] for s in payload["series"]}))
     cm = series["cmd-perso/monthly"]
     pos_recent = grid.index(bucket_of(NOW - 3600, payload["bucket_seconds"]))
     pos_old = grid.index(bucket_of(NOW - 100 * DAY, payload["bucket_seconds"]))

@@ -994,6 +994,7 @@ def history_payload(params, now_ts=None):
     with STATE_LOCK:
         accounts = list(STATE["accounts"])
     labels = {a["id"]: a.get("label") or a["id"] for a in accounts}
+    providers = {a["id"]: a.get("provider") for a in accounts}
     series = []
     for account_id, window_key in sorted(slots):
         slot = slots[(account_id, window_key)]
@@ -1002,6 +1003,9 @@ def history_payload(params, now_ts=None):
                 "key": "%s/%s" % (account_id, window_key),
                 "account_id": account_id,
                 "window_key": window_key,
+                # Needed by the per-provider histogram: a series carries the provider it
+                # belongs to so the client does not have to re-derive it from the config.
+                "provider": providers.get(account_id) or "unknown",
                 "label": "%s · %s"
                 % (labels.get(account_id, account_id), WINDOW_LABELS.get(window_key, window_key)),
                 "unit": "percent",
