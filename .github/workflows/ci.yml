@@ -37,11 +37,14 @@ jobs:
           assert len(set(ids)) == len(ids), "duplicate ids in accounts.example.json: %s" % ids
           for a in cfg["accounts"]:
               assert a["provider"] in ("commandcode", "opencode_go"), a
+          b = cfg.get("background_url")
+          assert b is None or (isinstance(b, str) and (b == "" or b.startswith(("http://", "https://")))), b
           r = cfg["retention"]
           for k in ("raw_days", "rollup_days", "rollup_seconds"):
               assert isinstance(r[k], int) and r[k] > 0, (k, r[k])
           assert r["rollup_days"] >= r["raw_days"], r
-          print("example config OK: %d accounts, ids %s, retention %s" % (len(ids), ids, r))
+          print("example config OK: %d accounts, ids %s, retention %s, background_url %r"
+                % (len(ids), ids, r, b))
           PY
 
       - name: Smoke test the HTTP surface

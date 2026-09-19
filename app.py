@@ -3,6 +3,7 @@
 
 Polls each provider's own usage API for every configured account and serves:
   GET /                dark card UI (progress bars + live reset countdowns)
+  GET /background      artwork: the configured background_url image, else the bundled one
   GET /api/quota       normalized JSON (accounts -> windows)
   GET /api/history     usage time series for the chart (raw + rollup, nulls for gaps)
   GET /api/homepage    flat widget list for a gethomepage customapi tile
@@ -37,6 +38,27 @@ STATIC_DIR = os.path.join(ROOT, "static")
 POLL_SECONDS = int(os.environ.get("QUOTA_POLL_SECONDS", "60"))
 HTTP_TIMEOUT = int(os.environ.get("QUOTA_HTTP_TIMEOUT", "20"))
 PORT = int(os.environ.get("PORT", "8080"))
+
+# The panel's own artwork can be replaced by a URL (`background_url`, or the env var).
+# It is fetched once at startup into the container's non-persistent /tmp — a tmpfs in both
+# compose files — and served from there; the bundled image stays the fallback, so a dead
+# or slow image host costs the image and never the panel. The URL may be signed, so it is
+# never logged and never echoed by /api/health.
+BACKGROUND_URL_ENV = "QUOTA_BACKGROUND_URL"
+BACKGROUND_BUNDLED = "background.webp"
+BACKGROUND_DIR = os.environ.get("QUOTA_BACKGROUND_DIR", "/tmp/quota-panel")
+BACKGROUND_TIMEOUT = int(os.environ.get("QUOTA_BACKGROUND_TIMEOUT", "20"))
+BACKGROUND_MAX_BYTES = 8 * 1024 * 1024
+BACKGROUND_RETRY_SECONDS = 300
+# Content type -> the extension the download is stored under. What is *served* comes from
+# this same table, so the browser is never told a type the bytes do not claim to be.
+BACKGROUND_TYPES = {
+    "image/webp": ".webp",
+    "image/png": ".png",
+    "image/jpeg": ".jpg",
+    "image/avif": ".avif",
+    "image/gif": ".gif",
+}
 
 # History is append-only and never read back by the poller, so it grows without bound
 # (measured: 60 s cadence, 12 series -> ~6.3M rows / year, ~350-400 MB). Raw snapshots
@@ -90,6 +112,13 @@ STATE = {"accounts": [], "generated_at": None, "errors": []}
 # Set once the first poll has landed. A page opened during a restart would otherwise
 # stare at an empty grid for a full poll interval — the classic reason someone reloads.
 FIRST_POLL = threading.Event()
+# Background state. `served` is what /background hands out right now, which is how
+# /api/health proves which image is live without ever echoing the URL.
+BACKGROUND = {
+    "url": None, "path": None, "ctype": None, "bytes": 0,
+    "error": None, "attempted_at": 0.0, "served": "bundled",
+}
+BACKGROUND_LOCK = threading.Lock()
 
 
 def log(msg):
@@ -208,6 +237,96 @@ def declared_poll_seconds(path=CONFIG_PATH):
         log("config: poll_seconds %d out of range 10..3600 — ignored" % value)
         return None
     return value
+
+
+def load_background_url(path=CONFIG_PATH):
+    """Optional `background_url`: none by default, env var, then the config file wins.
+
+    Same precedence as `poll_seconds` and `retention`, so the three settings cannot
+    behave in opposite ways.
+    """
+    url = os.environ.get(BACKGROUND_URL_ENV) or None
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            doc = json.load(fh)
+    except (OSError, ValueError):
+        doc = None
+    if isinstance(doc, dict) and doc.get("background_url") not in (None, ""):
+        url = doc["background_url"]
+    if url in (None, ""):
+        return None
+    if not isinstance(url, str) or not url.strip().lower().startswith(("http://", "https://")):
+        log("config: background_url must be an http(s) URL — ignored")
+        return None
+    return url.strip()
+
+
+def fetch_background(force=False):
+    """Download the configured artwork into the container's non-persistent /tmp.
+
+    Never raises and never fatal: an unreachable image host must cost the image, not the
+    service. Called at startup, then retried lazily (cooldown-bounded) while it has not
+    succeeded — a container that started before the network was up heals itself.
+    """
+    with BACKGROUND_LOCK:
+        url = BACKGROUND["url"]
+        if not url:
+            return
+        if BACKGROUND["path"] and not force:
+            return
+        if not force and time.time() - BACKGROUND["attempted_at"] < BACKGROUND_RETRY_SECONDS:
+            return
+        BACKGROUND["attempted_at"] = time.time()
+
+    def _give_up(reason):
+        with BACKGROUND_LOCK:
+            BACKGROUND["path"] = None
+            BACKGROUND["served"] = "bundled"
+            BACKGROUND["error"] = reason
+        log("background: %s — serving the bundled image" % reason)
+
+    try:
+        request = urllib.request.Request(
+            url, headers={"User-Agent": "quota-panel/1.0", "Accept": "image/*"}, method="GET"
+        )
+        with urllib.request.urlopen(request, timeout=BACKGROUND_TIMEOUT) as resp:
+            header = (resp.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+            body = resp.read(BACKGROUND_MAX_BYTES + 1)
+    except Exception as exc:  # noqa: BLE001 - any network failure is survivable
+        _give_up("could not fetch the configured image (%s: %s)" % (type(exc).__name__, exc))
+        return
+
+    if len(body) > BACKGROUND_MAX_BYTES:
+        _give_up("the configured image is larger than %d MB" % (BACKGROUND_MAX_BYTES // (1024 * 1024)))
+        return
+    if len(body) < 128:
+        _give_up("the configured image is too small to be an image (%d bytes)" % len(body))
+        return
+    suffix = os.path.splitext(urlparse(url).path)[1].lower()
+    ctype = header if header in BACKGROUND_TYPES else {
+        ".webp": "image/webp", ".png": "image/png", ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg", ".avif": "image/avif", ".gif": "image/gif",
+    }.get(suffix)
+    if not ctype:
+        _give_up("unsupported image type %r" % (header or suffix or "unknown"))
+        return
+
+    target = os.path.join(BACKGROUND_DIR, "background" + BACKGROUND_TYPES[ctype])
+    try:
+        os.makedirs(BACKGROUND_DIR, exist_ok=True)
+        partial = target + ".part"
+        with open(partial, "wb") as fh:
+            fh.write(body)
+        os.replace(partial, target)
+    except OSError as exc:
+        _give_up("could not store the image in %s (%s)" % (BACKGROUND_DIR, exc))
+        return
+
+    with BACKGROUND_LOCK:
+        BACKGROUND.update(
+            {"path": target, "ctype": ctype, "bytes": len(body), "error": None, "served": "remote"}
+        )
+    log("background: fetched %d bytes (%s) from the configured URL" % (len(body), ctype))
 
 
 # ----------------------------------------------------------------------------- retention
@@ -1136,6 +1255,28 @@ class Handler(BaseHTTPRequestHandler):
             return
         self._send(200, body, ctype)
 
+    def _serve_background(self):
+        """Serve the configured artwork when it is there, the bundled one otherwise.
+
+        A request never waits for a download: if the startup fetch has not landed (or the
+        container started before the network was ready) the retry is kicked off in the
+        background — cooldown-bounded by fetch_background — and the bundled image keeps
+        the page intact.
+        """
+        with BACKGROUND_LOCK:
+            path, ctype, url = BACKGROUND["path"], BACKGROUND["ctype"], BACKGROUND["url"]
+        if not path:
+            if url:
+                threading.Thread(target=fetch_background, daemon=True).start()
+            path, ctype = os.path.join(STATIC_DIR, BACKGROUND_BUNDLED), "image/webp"
+        try:
+            with open(path, "rb") as fh:
+                body = fh.read()
+        except OSError:
+            self._send(404, "not found", "text/plain; charset=utf-8")
+            return
+        self._send(200, body, ctype)
+
     def do_GET(self):
         path = self.path.split("?")[0]
         if path in ("/", "/index.html"):
@@ -1147,6 +1288,9 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path.startswith("/static/"):
             self._serve_static(path)
+            return
+        if path == "/background":
+            self._serve_background()
             return
         if path == "/api/quota":
             # A page opened while the first poll is still in flight should get real data,
@@ -1183,6 +1327,14 @@ class Handler(BaseHTTPRequestHandler):
             if born is not None:
                 age = round(time.time() - born, 1)
             ok = age is not None and age < POLL_SECONDS * 3
+            with BACKGROUND_LOCK:
+                # The URL itself is deliberately absent: it may carry a signature.
+                background = {
+                    "configured": bool(BACKGROUND["url"]),
+                    "served": BACKGROUND["served"],
+                    "bytes": BACKGROUND["bytes"] or None,
+                    "error": BACKGROUND["error"],
+                }
             self._json(
                 200 if ok else 503,
                 {
@@ -1195,6 +1347,7 @@ class Handler(BaseHTTPRequestHandler):
                         "rollup_days": RETENTION["rollup_days"],
                         "rollup_seconds": RETENTION["rollup_seconds"],
                     },
+                    "background": background,
                 },
             )
             return
@@ -1232,6 +1385,14 @@ def main(argv):
         results = refresh_all(accounts, store=False)
         print(json.dumps({"accounts": results}, indent=2, ensure_ascii=False))
         return 0 if all(r["state"] == "ok" for r in results) else 1
+
+    # Deliberately after the --check early return: a probe must not fetch anything.
+    BACKGROUND["url"] = load_background_url()
+    if BACKGROUND["url"]:
+        log("background: a custom image URL is configured — fetching it off the startup path")
+        threading.Thread(target=fetch_background, args=(True,), daemon=True).start()
+    else:
+        log("background: serving the bundled image")
 
     stop_event = threading.Event()
     thread = threading.Thread(target=poller_loop, args=(accounts, stop_event), daemon=True)

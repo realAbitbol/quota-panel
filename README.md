@@ -155,6 +155,34 @@ enough. Overridable per container with `QUOTA_POLL_SECONDS`.
 > `token_env` holds the *name* of a variable. If you want the key in the file, the
 > field is `token`. The app detects this mistake and warns (masked) at startup.
 
+### `background_url`
+
+The page artwork is bundled, and can be replaced with your own image:
+
+```json
+{
+  "poll_seconds": 60,
+  "background_url": "https://example.com/wallpaper.webp",
+  "accounts": []
+}
+```
+
+When set, the panel downloads that image **once at container startup** and serves it
+from `/background` out of the container's non-persistent `/tmp` (a tmpfs in the
+compose files), so nothing about it survives a restart and the bundled image is what
+you get back the moment the URL stops working. Served types: `webp`, `png`, `jpeg`,
+`avif`, `gif`, up to 8 MB.
+
+* The host's `Content-Type` decides the type; the URL extension is the fallback, so a
+  host that answers `application/octet-stream` still works.
+* A fetch that fails — DNS, TLS, `404`, wrong type, too large — is logged and the
+  bundled image is served instead. If the container started before the network was
+  ready, the next request retries in the background, at most once every 5 minutes.
+* The URL may be signed, so it is **never** logged and never returned by `/api/health`,
+  which reports only whether one is configured, which image is being served, and the
+  last error.
+* Overridable per container with `QUOTA_BACKGROUND_URL`; the config file wins.
+
 ### `retention`
 
 History is appended on every poll and never read back by the poller, so it grows
@@ -196,6 +224,7 @@ configuration:
 | `/api/homepage` | flat `items` map keyed `<account_id>_<window>`, for a gethomepage tile |
 | `/api/health` | `200` while the last poll is fresh, `503` when stale |
 | `/static/…` | the UI's own assets (image, favicon); path-traversal safe, allow-listed types |
+| `/background` | the page artwork: the configured image when there is one, the bundled one otherwise |
 
 ```bash
 curl -s localhost:8080/api/quota \
@@ -236,6 +265,8 @@ curl -s 'localhost:8080/api/history?hours=168&max_points=400' \
 | `QUOTA_RETENTION_RAW_DAYS` | `90` | Raw sample retention; the config file wins. |
 | `QUOTA_RETENTION_ROLLUP_DAYS` | `365` | Rollup retention; the config file wins. |
 | `QUOTA_ROLLUP_SECONDS` | `900` | Rollup bucket size, in seconds. |
+| `QUOTA_BACKGROUND_URL` | — | Artwork URL; the config file's `background_url` wins. |
+| `QUOTA_BACKGROUND_TIMEOUT` | `20` | Fetch timeout for the artwork, in seconds. |
 
 ## Usage chart
 
@@ -258,6 +289,15 @@ segment below it, and the bar width follows the bucket size, so it survives a zo
   is unknowable. That bucket is left empty — the chart does not invent a number.
 * **One colour per account**, assigned in a fixed order, so a segment keeps its colour
   between refreshes and nothing moves under the cursor.
+* **Bar width follows the range.** Each range asks the server for roughly one bucket per
+  14 px of chart, and the bucket ladder rounds that to a human duration (1 min → 1 week):
+  a 24 h view comes back as 15-minute bars, a year as weekly ones — never hairlines.
+* **Timestamps follow the reader's regional format.** The axis is formatted with `Intl`
+  from the browser's own locale, so a 12-hour locale shows `11:35 PM`; 24 h is the
+  fallback when the engine does not report the format.
+* **An account that did not move says so.** Its legend row is marked `— no change`, and
+  the line under the chart totals what every account consumed in the range. An empty
+  series that nobody explains reads as a bug — and the data behind it is often right.
 * **Drag to zoom, double-click to reset**, click a legend entry to hide an account.
 * **Refreshed on its own clock**: at most once every three minutes, plus on range
   change, focus and reconnect — not on every poll. Twelve series every 30 s would be
@@ -302,7 +342,7 @@ single `items["<id>_error"]` entry rather than pretending to have numbers.
         │  HTTP handlers (read-only)    │
         │  /  /api/quota  /api/history  │
         │  /api/homepage  /api/health   │
-        │  /static/…                    │
+        │  /static/…   /background      │
         └───────────────────────────────┘
 ```
 
@@ -364,8 +404,9 @@ Accept: application/json
 
 ## Security
 
-* **Read-only, outbound only.** The app issues `GET`s to the two provider hosts and
-  serves local pages. There is no write path and no upstream state change.
+* **Read-only, outbound only.** The app issues `GET`s to the two provider hosts — plus,
+  when `background_url` is set, one `GET` to that URL at startup — and serves local pages.
+  There is no write path and no upstream state change.
 * **Credentials stay in the config.** They are read at startup, held in memory, and
   never logged, never returned by any endpoint, never sent anywhere but the
   provider that owns them. Redaction is enforced by a test
