@@ -10,7 +10,6 @@
 <meta name="theme-color" content="#0b0d12">
 <meta name="description" content="Read-only quota dashboard for CommandCode and OpenCode Go subscriptions.">
 <title>Quota Panel</title>
-<link rel="stylesheet" href="/static/vendor/uplot/uPlot.min.css">
 <style>
   :root{
     --bg:#0b0d12; --card:20,24,33; --card-2:#1b2130; --line:#252c3b;
@@ -67,33 +66,7 @@
   #feed.stale{color:var(--warn)}
   #feed.down{color:var(--hot)}
   footer{margin-top:18px}
-  /* ---- usage chart ------------------------------------------------------- */
-  .chart-card{margin:16px 0 18px}          /* a little air below the quota cards */
-  .chart-head{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap}
-  .ranges{display:flex;gap:6px;flex-wrap:wrap}
-  .ranges button{background:transparent;color:var(--muted);border:1px solid var(--line);border-radius:999px;
-       padding:3px 10px;font:inherit;font-size:11.5px;cursor:pointer;font-variant-numeric:tabular-nums}
-  .ranges button:hover{color:var(--fg);border-color:#3a4459}
-  .ranges button[aria-pressed="true"]{color:var(--fg);border-color:var(--accent);background:rgba(91,141,255,.14)}
-  #bars{display:flex;flex-direction:column;gap:10px;margin-top:10px}
-  /* One card per account: its own y scale, a shared x scale, so the timelines line up. */
-  .mini{border:1px solid var(--line);border-radius:10px;padding:7px 9px 3px;background:rgba(11,13,18,.30)}
-  .mini-head{display:flex;align-items:center;gap:8px;font-size:12px;line-height:1.3}
-  .mini-label{font-weight:500;color:var(--fg)}
-  .mini-meta{margin-left:auto;color:var(--muted);font-variant-numeric:tabular-nums;text-align:right}
-  .chip{width:11px;height:11px;border-radius:3px;flex:0 0 auto;box-shadow:inset 0 0 0 1px rgba(255,255,255,.22)}
-  .chart-readout{margin-top:8px;font-size:11.5px;min-height:1.25em;font-variant-numeric:tabular-nums}
-  .chart-readout .rd-label{color:var(--muted)}
-  .chart-summary{margin-top:8px;font-size:12px;line-height:1.5;color:var(--fg);font-variant-numeric:tabular-nums}
-  /* uPlot ships a bare stylesheet with no colours of its own; these keep it on the
-     dark theme and stop the bundled legend from centring itself. */
-  .uplot{font-family:inherit}
-  .u-legend{margin:0;text-align:left;font-size:11.5px;color:var(--muted)}
-  .u-legend th{font-weight:500;padding:2px 6px}
-  .u-legend .u-value{color:var(--fg);font-variant-numeric:tabular-nums}
-  .u-legend .u-off{text-decoration:line-through}
-  .u-select{background:rgba(91,141,255,.18)}
-</style>
+  </style></style>
 </head>
 <body>
 <header>
@@ -105,22 +78,8 @@
 
 <div class="grid" id="grid"><div class="card waiting">Loading…</div></div>
 
-<section class="card chart-card">
-  <div class="chart-head">
-    <div>
-      <div class="label">Monthly envelope consumed</div>
-      <div class="plan" id="chart-meta">loading…</div>
-    </div>
-    <div class="ranges" id="ranges"></div>
-  </div>
-  <div id="bars"></div>
-  <div class="muted chart-readout" id="chart-readout"></div>
-  <div class="chart-summary" id="chart-summary"></div>
-</section>
-
 <footer class="muted">Read-only. Credentials stay on the host; nothing is sent anywhere else.</footer>
 
-<script src="/static/vendor/uplot/uPlot.iife.min.js"></script>
 <script>
 'use strict';
 const TICK_MS = 1000;          // countdown repaint
@@ -250,334 +209,6 @@ function schedule(){
   timer = setInterval(load, pollMs);
 }
 
-// ------------------------------------------------------------------- usage chart
-//
-// One small chart per account. Each keeps its own vertical scale, because providers do not
-// publish the same granularity: OpenCode Go reports whole percents, so a single 1-point step
-// used to become the tallest bar on a shared axis and flatten every account that moves in
-// fractions. Same x scale everywhere, so the timelines line up, and the cursor is synced.
-//
-// Bars are drawn through uPlot's `paths` hook (its own bar builder is not part of the API
-// used here): with one series per chart the base is always 0, and stacking support — which
-// uPlot genuinely lacks, as its README says — is no longer needed. History moves at one
-// sample per minute, so it is refetched on its own slow clock (and on range change / focus /
-// reconnect) rather than on every poll. Canvas, not SVG, all the way down.
-
-const RANGES = [
-  {label:'1h', hours:1}, {label:'6h', hours:6}, {label:'24h', hours:24},
-  {label:'7d', hours:24*7}, {label:'30d', hours:24*30}, {label:'90d', hours:24*90},
-  {label:'1y', hours:24*365}
-];
-const PALETTE = ['#5b8dff','#33d69f','#f5c451','#ff6b6b','#b07cff','#39c0d8',
-                 '#ff9f45','#8de05a','#f07cd0','#6f7bff','#00d4c8','#ffd166'];
-const CHART_EVERY_MS = 180000;   // at most one history fetch every 3 minutes
-const CHART_HEIGHT = 320;
-const AXIS_FONT = '11px -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif';
-const AXIS_COLOR = '#b7c2d6';
-const AXIS_GRID = 'rgba(37,44,59,.85)';
-
-let charts = new Map(), byKey = new Map(), chartRange = 2, chartSig = '', chartAt = 0, chartBusy = false;
-
-const chartHost = () => document.getElementById('bars');
-const chartWidth = () => Math.max(320, chartHost().clientWidth || 720);
-// One bar needs room to read. The range asks the server for roughly one bucket per
-// BAR_MIN_PX pixels and the bucket ladder rounds that to a human duration, so a 24 h view
-// comes back as 15-minute bars and a year as weekly ones instead of 5-minute hairlines.
-const BAR_MIN_PX = 14;
-const chartPoints = () => Math.min(600, Math.max(20, Math.floor(chartWidth() / BAR_MIN_PX)));
-
-// The browser is the only component that knows the reader's regional time format. `hour12`
-// is a boolean when the engine resolves it; when it reports only an hour cycle (or nothing
-// at all) the documented fallback is 24 h.
-const HOUR12 = (() => {
-  try{
-    const opts = new Intl.DateTimeFormat(undefined, { hour: 'numeric' }).resolvedOptions();
-    if(typeof opts.hour12 === 'boolean') return opts.hour12;
-    if(opts.hourCycle) return opts.hourCycle === 'h11' || opts.hourCycle === 'h12';
-  }catch(e){ /* no usable Intl: fall through to the 24 h default */ }
-  return false;
-})();
-
-// Kept short so uPlot's own tick spacing stays honest: a clock time while the grid is
-// intraday, a date once it is a day or coarser, a month once the range spans a year.
-// Past a week one bar is a day or more, so the axis is read in dates, not hours.
-const DAY_AXIS_BUCKET = 21600;
-function tickLabel(seconds, bucket, spanSeconds, previousSeconds){
-  const d = new Date(seconds * 1000);
-  if(bucket >= DAY_AXIS_BUCKET){
-    if(spanSeconds > 200 * 86400) return d.toLocaleDateString(undefined, { year: 'numeric', month: 'short' });
-    return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
-  }
-  // On an hourly axis the tick where the local day turns over carries the date instead of the
-  // hour, so a 24h window says which day its small hours belong to.
-  if(previousSeconds !== undefined &&
-     new Date(previousSeconds * 1000).toDateString() !== d.toDateString()){
-    return d.toLocaleDateString(undefined, { weekday: 'short', day: 'numeric' });
-  }
-  return HOUR12
-    ? d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })
-    : d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', hour12: false });
-}
-
-function spanLabel(seconds){
-  if(seconds % 86400 === 0) return (seconds / 86400) + 'd';
-  if(seconds % 3600 === 0) return (seconds / 3600) + 'h';
-  if(seconds % 60 === 0) return (seconds / 60) + 'min';
-  return seconds + 's';
-}
-
-function buildRanges(){
-  const box = document.getElementById('ranges');
-  box.innerHTML = '';
-  RANGES.forEach((range, i) => {
-    const btn = document.createElement('button');
-    btn.type = 'button';
-    btn.textContent = range.label;
-    btn.setAttribute('aria-pressed', String(i === chartRange));
-    btn.addEventListener('click', () => { chartRange = i; buildRanges(); loadChart(true); });
-    box.appendChild(btn);
-  });
-}
-
-// This axis carries consumption per bucket, not a level: it has no 0-100 ceiling and
-// its values are small, so it rescales to whatever the busiest bucket spent.
-const Y_RANGE = (u, min, max) => [0, (max || 0) * 1.15 || 1];
-
-// Only the monthly envelope is charted: it is the window that actually runs out over
-// weeks, and the one the cards above show last.
-const CONSUMED_WINDOW = 'monthly';
-
-function consumedPerBucket(payload){
-  // series key -> { label, values, total, moved }: points of that account's monthly
-  // envelope consumed during each bucket, i.e. the rise between two samples.
-  const rows = new Map();
-  payload.series.forEach((s) => {
-    if(s.window_key !== CONSUMED_WINDOW) return;
-    const values = new Array(payload.t.length).fill(null);
-    let prev = -1, total = 0;              // last bucket that actually held a sample
-    for(let i = 0; i < payload.t.length; i++){
-      if(s.avg[i] == null) continue;       // null and undefined are both "no sample"
-      if(prev >= 0){
-        const spent = s.avg[i] - s.avg[prev];
-        const span = i - prev;             // buckets the rise really covers
-        // A rise is spread over the buckets it spans, so a skipped poll lands as the
-        // quota it actually cost instead of being piled onto one tall bar.
-        if(spent >= 0){
-          for(let b = prev + 1; b <= i; b++) values[b] = spent / span;
-          total += spent;
-        }
-        // spent < 0 means the envelope refilled in between (monthly reset). How much was
-        // spent before the reset is unknowable, so those buckets stay empty: never a
-        // negative bar invented, never a fake zero.
-      }
-      prev = i;
-    }
-    // `moved` drives what the chart SAYS about an account that spent nothing in the range
-    // (its legend row is marked and the line under the chart names it). An unmarked empty
-    // series is indistinguishable from a broken one — and that is how a correct chart gets
-    // reported as a bug. A hundredth of a point is the smallest bar worth a pixel.
-    rows.set(s.key, { label: s.label, values, total, moved: total >= 0.01 });
-  });
-  return rows;
-}
-
-function fmtPts(v){
-  if(!(v > 0)) return '0';
-  return v >= 10 ? v.toFixed(1) : v.toFixed(2);
-}
-
-// The histogram in one line of text: every series of the current range, moved or not.
-function summaryLine(keys, rows){
-  const moved = [], flat = [];
-  for(const key of keys){
-    const row = rows.get(key);
-    const cut = row.label.lastIndexOf(' · ');
-    const name = cut > 0 ? row.label.slice(0, cut) : row.label;
-    if(row.moved) moved.push(`${name} +${fmtPts(row.total)}`);
-    else flat.push(name);
-  }
-  let text = moved.length
-    ? `Consumed in this range: ${moved.join(' · ')}.`
-    : 'No account spent any of its monthly envelope in this range.';
-  if(flat.length) text += ` No monthly change: ${flat.join(' · ')}.`;
-  return text;
-}
-
-function stackedPaths(u, seriesIdx, colour){
-  const path = new Path2D();
-  const n = u.data[0].length;
-  const step = Math.abs(u.valToPos(u.data[0][1] || u.data[0][0], 'x', true) -
-                        u.valToPos(u.data[0][0], 'x', true));
-  const width = Math.min(48, Math.max(1, step * 0.82));
-  for(let i = 0; i < n; i++){
-    const own = u.data[seriesIdx][i] || 0;
-    if(!own) continue;
-    // The base is the sum of every series below this one, not just the one directly
-    // underneath: an account with no sample in this bucket contributes 0 to the stack,
-    // and using the lower series' missing value would drop this segment on top of the
-    // segments below it.
-    let base = 0;
-    for(let k = 1; k < seriesIdx; k++) base += u.data[k][i] || 0;
-    const x = u.valToPos(u.data[0][i], 'x', true);
-    const top = u.valToPos(base + own, 'y', true);
-    const bottom = u.valToPos(base, 'y', true);
-    path.rect(x - width / 2, top, width, Math.max(1, bottom - top));
-  }
-  // The object shape is uPlot's path contract (drawPath in its source): `fill` and
-  // `stroke` are the Path2Ds it fills and strokes, the underscored keys are the styles.
-  return { fill: path, _fill: colour, _stroke: null, _width: 0, flags: 0 };
-}
-
-// One small chart per account, each with its own y range. A whole-percent step on one account
-// can no longer set the scale for the others: a single 1-point bar used to flatten a staircase
-// five times its size into the baseline. The x scale stays shared so the timelines line up.
-const MINI_HEIGHT = 118;
-
-function miniTop(values){
-  const peak = values.reduce((m, v) => (v !== null && v !== undefined && v > m ? v : m), 0);
-  return peak > 0 ? peak * 1.15 : 1;
-}
-
-function buildCharts(payload, keys, rows, sig){
-  chartHost().innerHTML = '';
-  charts = new Map();
-  byKey = new Map();
-  const bucket = payload.bucket_seconds;
-  const span = payload.t.length > 1 ? payload.t[payload.t.length - 1] - payload.t[0] : 0;
-  const sync = uPlot.sync('quota-panel');
-  keys.forEach((key, i) => {
-    const row = rows.get(key);
-    const colour = PALETTE[i % PALETTE.length];
-    const top = miniTop(row.values);
-    const total = row.values.reduce((a, v) => a + (v || 0), 0);
-    byKey.set(key, { label: row.label, colour: colour });
-    const wrap = document.createElement('div');
-    wrap.className = 'mini';
-    const head = document.createElement('div');
-    head.className = 'mini-head';
-    const chip = document.createElement('span');
-    chip.className = 'chip';
-    chip.style.background = colour;
-    const name = document.createElement('span');
-    name.className = 'mini-label';
-    name.textContent = row.label;
-    const meta = document.createElement('span');
-    meta.className = 'mini-meta';
-    meta.textContent = total > 0
-      ? '+' + total.toFixed(2) + ' in range · peak ' + top.toFixed(2)
-      : 'no movement in this range';
-    head.append(chip, name, meta);
-    const host = document.createElement('div');
-    host.className = 'mini-plot';
-    wrap.append(head, host);
-    chartHost().appendChild(wrap);
-    charts.set(key, new uPlot({
-      width: chartWidth(), height: MINI_HEIGHT,
-      padding: [6, 10, 0, 0],
-      cursor: { drag: { x: false, y: false }, points: { show: false }, sync: sync },
-      scales: { x: { time: true }, y: { range: [0, top] } },
-      axes: [
-        { stroke: AXIS_COLOR, grid: { stroke: AXIS_GRID }, ticks: { stroke: AXIS_GRID },
-          font: AXIS_FONT, size: 46,
-          // uPlot places ticks from this number without measuring the label text, so a
-          // 12-hour locale ("11:35 PM") gets the wider spacing it needs.
-          space: HOUR12 ? 74 : 56,
-          // Only the last account carries the x labels: the scale is shared, and repeating
-          // the timestamps under every account would double the height of the section.
-          show: i === keys.length - 1,
-          values: (u, vals) => vals.map((v, k) => tickLabel(v, bucket, span, k ? vals[k - 1] : undefined)) },
-        { stroke: AXIS_COLOR, grid: { stroke: AXIS_GRID }, ticks: { stroke: AXIS_GRID },
-          font: AXIS_FONT, size: 46,
-          values: (u, vals) => vals.map(v => (top <= 1.5 ? v.toFixed(1) : v.toFixed(0)) + '%') }
-      ],
-      legend: { show: false },
-      hooks: { setCursor: [u => hoverReadout(u)] },
-      series: [
-        { label: 'time' },
-        // One series per chart, so the bar base is always 0 and the shared builder draws a
-        // plain histogram. Colour lives on the series for the cursor and the chip above.
-        { label: row.label, stroke: colour, fill: colour, points: { show: false },
-          paths: (u, seriesIdx) => stackedPaths(u, seriesIdx, colour) }
-      ]
-    }, [payload.t, row.values], host));
-  });
-  chartSig = sig;
-}
-
-// Hovering any account fills one line with every account's value at that instant. The charts
-// share a cursor, so the readout is the same whichever one the pointer is over.
-function hoverReadout(u){
-  const el = document.getElementById('chart-readout');
-  const idx = u.cursor.idx;
-  const t = (idx === null || idx === undefined) ? null : (u.data[0] || [])[idx];
-  if(t === null || t === undefined){ el.textContent = ''; return; }
-  const parts = [];
-  charts.forEach((plot, key) => {
-    const info = byKey.get(key) || { label: key };
-    const v = (plot.data[1] || [])[idx];
-    parts.push(info.label + ' ' + (v === null || v === undefined ? '—' : v.toFixed(2) + '%'));
-  });
-  el.textContent = new Date(t * 1000).toLocaleString() + '  ·  ' + parts.join('   ·   ');
-}
-
-function drawChart(payload, fetchAt){
-  const rows = consumedPerBucket(payload);
-  const keys = Array.from(rows.keys()).sort();
-  if(!keys.length) return;                 // loadChart owns the empty state
-  // Each account's y scale depends on its own peak, its header carries whether it moved, and
-  // the axis labels depend on the bucket: all of it belongs in the rebuild key.
-  const sig = [payload.bucket_seconds, keys.map(k => {
-    const r = rows.get(k);
-    return k + (r.moved ? '+' : '-') + miniTop(r.values).toFixed(3);
-  }).join('|')].join('#');
-  if(!charts.size || sig !== chartSig){
-    buildCharts(payload, keys, rows, sig);
-  } else {
-    keys.forEach(k => charts.get(k) && charts.get(k).setData([payload.t, rows.get(k).values]));
-  }
-  chartAt = fetchAt;
-  const src = payload.sources || {};
-  document.getElementById('chart-readout').textContent = '';
-  document.getElementById('chart-summary').textContent = summaryLine(keys, rows);
-  document.getElementById('chart-meta').textContent =
-    `${spanLabel(payload.bucket_seconds)} buckets · ${src.resolution} · ` +
-    `${keys.length} account${keys.length === 1 ? '' : 's'} · ` +
-    `own scale per account`;
-}
-
-async function loadChart(force){
-  if(chartBusy) return;
-  if(!force && Date.now() - chartAt < CHART_EVERY_MS) return;
-  chartBusy = true;
-  const requestedAt = Date.now();
-  try{
-    const range = RANGES[chartRange];
-    const res = await fetch(`/api/history?hours=${range.hours}&max_points=${chartPoints()}&t=${requestedAt}`,
-                            { cache:'no-store' });
-    if(!res.ok) throw new Error('HTTP ' + res.status);
-    const payload = await res.json();
-    if(payload.error) throw new Error(payload.error);
-    if(!payload.series || !payload.series.length){
-      charts = new Map(); byKey = new Map(); chartSig = ''; chartAt = requestedAt;
-      chartHost().innerHTML = '<div class="waiting">No history in this range yet — the poller is still filling the database.</div>';
-      document.getElementById('chart-meta').textContent = '';
-      document.getElementById('chart-summary').textContent = '';
-      return;
-    }
-    drawChart(payload, requestedAt);
-  }catch(e){
-    document.getElementById('chart-meta').textContent = '';
-    document.getElementById('chart-summary').textContent =
-      'History unavailable right now — the live cards above are unaffected and the chart retries on its own.';
-  }finally{
-    chartBusy = false;
-  }
-}
-
-window.addEventListener('resize', () => {
-  charts.forEach(p => p.setSize({ width: chartWidth(), height: MINI_HEIGHT }));
-});
-
 async function load(){
   // Collapse overlapping triggers (startup + visibilitychange + focus can all fire
   // within milliseconds of each other and used to produce three identical requests).
@@ -612,18 +243,14 @@ async function load(){
 // Background tabs get their timers throttled by the browser, so a visible page can
 // show numbers minutes old. Refresh immediately whenever we come back to the front.
 document.addEventListener('visibilitychange', () => {
-  if(document.visibilityState === 'visible'){ load(); loadChart(false); }
+  if(document.visibilityState === 'visible') load();
 });
-window.addEventListener('focus', () => { load(); loadChart(false); });
-window.addEventListener('online', () => { load(); loadChart(true); });
+window.addEventListener('focus', () => load());
+window.addEventListener('online', () => load());
 
-buildRanges();
 load();
 schedule();
 setInterval(tick, TICK_MS);
-loadChart(true);
-// Throttled internally: this only fires a fetch once the 3-minute window has passed.
-setInterval(loadChart, 30000);
 </script>
 </body>
 </html>

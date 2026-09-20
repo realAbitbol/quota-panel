@@ -1,20 +1,21 @@
 FROM python:3.12-alpine
 
-# stdlib only: nothing to pip-install, so the image has no dependency drift and
-# nothing to patch beyond the base image itself.
+# One dependency, for one optional feature: Pillow shrinks a configured background
+# image to 4K and re-encodes it as WebP. Without Pillow the panel still runs — the image
+# is served exactly as downloaded. Nothing else is pip-installed.
 WORKDIR /app
 
 COPY app.py /app/app.py
 COPY static /app/static
 
-RUN adduser -D -u 10001 quota \
- && mkdir -p /data /config \
- && chown -R quota:quota /data /config /app
+RUN pip install --no-cache-dir pillow \
+ && adduser -D -u 10001 quota \
+ && mkdir -p /config \
+ && chown -R quota:quota /config /app
 USER quota
 
 ENV PORT=8080 \
     QUOTA_CONFIG=/config/accounts.json \
-    QUOTA_DB=/data/quota.db \
     PYTHONUNBUFFERED=1
 
 EXPOSE 8080

@@ -5,7 +5,6 @@ Polls each provider's own usage API for every configured account and serves:
   GET /                dark card UI (progress bars + live reset countdowns)
   GET /background      artwork: the configured background_url image, else the bundled one
   GET /api/quota       normalized JSON (accounts -> windows)
-  GET /api/history     usage time series for the chart (raw + rollup, nulls for gaps)
   GET /api/homepage    flat widget list for a gethomepage customapi tile
   GET /api/health      liveness + poll age
 
@@ -17,9 +16,9 @@ Design constraints (deliberate):
 CLI: `app.py --check` polls once, prints JSON, exits (no server, no DB write).
 """
 
+import io
 import json
 import os
-import sqlite3
 import sys
 import threading
 import time
@@ -27,13 +26,12 @@ import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import urlparse
 
 # ----------------------------------------------------------------------------- config
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.environ.get("QUOTA_CONFIG", os.path.join(ROOT, "accounts.json"))
-DB_PATH = os.environ.get("QUOTA_DB", os.path.join(ROOT, "data", "quota.db"))
 STATIC_DIR = os.path.join(ROOT, "static")
 POLL_SECONDS = int(os.environ.get("QUOTA_POLL_SECONDS", "60"))
 HTTP_TIMEOUT = int(os.environ.get("QUOTA_HTTP_TIMEOUT", "20"))
@@ -59,23 +57,6 @@ BACKGROUND_TYPES = {
     "image/avif": ".avif",
     "image/gif": ".gif",
 }
-
-# History is append-only and never read back by the poller, so it grows without bound
-# (measured: 60 s cadence, 12 series -> ~6.3M rows / year, ~350-400 MB). Raw snapshots
-# are therefore kept for a bounded window and older history survives as pre-aggregated
-# rollups — the rollup IS the long-term record, not a cache of it.
-RETENTION_DEFAULTS = {"raw_days": 90, "rollup_days": 365, "rollup_seconds": 900}
-RETENTION_BOUNDS = {
-    "raw_days": (1, 3650),
-    "rollup_days": (1, 3650),
-    "rollup_seconds": (60, 86400),
-}
-RETENTION_ENV = {
-    "raw_days": "QUOTA_RETENTION_RAW_DAYS",
-    "rollup_days": "QUOTA_RETENTION_ROLLUP_DAYS",
-    "rollup_seconds": "QUOTA_ROLLUP_SECONDS",
-}
-RETENTION = dict(RETENTION_DEFAULTS)
 
 # opencode.ai sits behind Cloudflare and answers 403 (error 1010) to
 # non-browser signatures — a plain python-urllib UA is refused.
@@ -242,7 +223,7 @@ def declared_poll_seconds(path=CONFIG_PATH):
 def load_background_url(path=CONFIG_PATH):
     """Optional `background_url`: none by default, env var, then the config file wins.
 
-    Same precedence as `poll_seconds` and `retention`, so the three settings cannot
+    Same precedence as `poll_seconds`, so the two settings cannot
     behave in opposite ways.
     """
     url = os.environ.get(BACKGROUND_URL_ENV) or None
@@ -259,6 +240,52 @@ def load_background_url(path=CONFIG_PATH):
         log("config: background_url must be an http(s) URL — ignored")
         return None
     return url.strip()
+
+
+# ------------------------------------------------------------------ custom background
+# A configured background is usually a phone photo or a wallpaper straight out of a camera:
+# 12 to 48 megapixels, several megabytes, and no better looking than the bundled 4K artwork.
+# Bring it down to 4K and re-encode as WebP. This is the only place the panel spends a
+# dependency (Pillow); without it the bytes are served untouched, exactly as before.
+BACKGROUND_MAX_EDGE = (3840, 2160)
+BACKGROUND_WEBP_QUALITY = 82
+
+
+def shrink_background(body, ctype):
+    """Cap an image at 4K and re-encode it as WebP.
+
+    Returns (bytes, ctype, note), or None when there is nothing to gain — no Pillow, an
+    image already 4K-or-smaller WebP, or a re-encode that came out larger than the original.
+    """
+    try:
+        from PIL import Image, ImageOps
+    except ImportError:
+        log("background: Pillow not installed — serving the image as downloaded")
+        return None
+    try:
+        with Image.open(io.BytesIO(body)) as im:
+            width, height = im.size
+            resized = width > BACKGROUND_MAX_EDGE[0] or height > BACKGROUND_MAX_EDGE[1]
+            if not resized and ctype == "image/webp":
+                return None
+            # EXIF rotation first, or a portrait photo lands on its side once the tag is lost.
+            work = ImageOps.exif_transpose(im)
+            if resized:
+                # thumbnail() keeps the aspect ratio and never enlarges.
+                work.thumbnail(BACKGROUND_MAX_EDGE, Image.LANCZOS)
+            out = io.BytesIO()
+            # Only the first frame survives: this is a background, not a playback surface.
+            work.convert("RGB").save(out, "WEBP", quality=BACKGROUND_WEBP_QUALITY, method=4)
+    except Exception as exc:  # noqa: BLE001 - any decode failure must not cost the image
+        log("background: could not re-encode (%s: %s) — serving it as downloaded" % (type(exc).__name__, exc))
+        return None
+    data = out.getvalue()
+    if len(data) >= len(body):
+        return None
+    note = "%s %dx%d -> %dx%d WebP, %d -> %d bytes" % (
+        "resized" if resized else "converted", width, height, work.size[0], work.size[1], len(body), len(data)
+    )
+    return data, "image/webp", note
 
 
 def fetch_background(force=False):
@@ -311,6 +338,10 @@ def fetch_background(force=False):
         _give_up("unsupported image type %r" % (header or suffix or "unknown"))
         return
 
+    shrunk = shrink_background(body, ctype)
+    if shrunk:
+        body, ctype, note = shrunk
+        log("background: %s" % note)
     target = os.path.join(BACKGROUND_DIR, "background" + BACKGROUND_TYPES[ctype])
     try:
         os.makedirs(BACKGROUND_DIR, exist_ok=True)
@@ -329,7 +360,7 @@ def fetch_background(force=False):
     log("background: fetched %d bytes (%s) from the configured URL" % (len(body), ctype))
 
 
-# ----------------------------------------------------------------------------- retention
+# ------------------------------------------------------------------------------ helpers
 
 
 TS_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
@@ -343,65 +374,6 @@ def iso_to_epoch(text):
         return int(datetime.strptime(text, TS_FORMAT).replace(tzinfo=timezone.utc).timestamp())
     except ValueError:
         return None
-
-
-def epoch_to_iso(ts):
-    return (
-        datetime.fromtimestamp(int(ts), timezone.utc)
-        .replace(microsecond=0)
-        .isoformat()
-        .replace("+00:00", "Z")
-    )
-
-
-def load_retention(path=CONFIG_PATH):
-    """Resolve the history retention policy: defaults < env vars < config file.
-
-    Resolved the same way as `poll_seconds` (an explicit config file wins over the
-    environment) so the two settings cannot behave in opposite ways.
-    """
-    out = dict(RETENTION_DEFAULTS)
-    for key, env_name in RETENTION_ENV.items():
-        text = os.environ.get(env_name)
-        if text in (None, ""):
-            continue
-        try:
-            out[key] = int(text)
-        except (TypeError, ValueError):
-            log("config: %s is not an integer — ignored (%r)" % (env_name, text))
-    try:
-        with open(path, "r", encoding="utf-8") as fh:
-            doc = json.load(fh)
-    except (OSError, ValueError):
-        doc = None
-    block = doc.get("retention") if isinstance(doc, dict) else None
-    if isinstance(block, dict):
-        for key in RETENTION_DEFAULTS:
-            if block.get(key) in (None, ""):
-                continue
-            try:
-                out[key] = int(block[key])
-            except (TypeError, ValueError):
-                log("config: retention.%s is not an integer — ignored (%r)" % (key, block[key]))
-    for key, (low, high) in RETENTION_BOUNDS.items():
-        if not low <= out[key] <= high:
-            log(
-                "config: retention.%s=%d out of range %d..%d — using default %d"
-                % (key, out[key], low, high, RETENTION_DEFAULTS[key])
-            )
-            out[key] = RETENTION_DEFAULTS[key]
-    if out["rollup_days"] < out["raw_days"]:
-        # Otherwise the rollup would be pruned while it is still the only copy of
-        # history that raw has already dropped.
-        log(
-            "config: retention.rollup_days=%d < raw_days=%d — raising rollup_days to match"
-            % (out["rollup_days"], out["raw_days"])
-        )
-        out["rollup_days"] = out["raw_days"]
-    return out
-
-
-# ----------------------------------------------------------------------------- http
 
 
 def http_get_json(url, headers, timeout=HTTP_TIMEOUT):
@@ -712,183 +684,8 @@ def poll_account(account):
 # ----------------------------------------------------------------------------- storage
 
 
-def db_connect():
-    directory = os.path.dirname(DB_PATH)
-    if directory:
-        os.makedirs(directory, exist_ok=True)
-    conn = sqlite3.connect(DB_PATH, timeout=15)
-    conn.execute(
-        """CREATE TABLE IF NOT EXISTS snapshots (
-               ts TEXT NOT NULL,
-               account_id TEXT NOT NULL,
-               window_key TEXT NOT NULL,
-               percent REAL,
-               used REAL,
-               cap REAL,
-               resets_at TEXT
-           )"""
-    )
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_snap_account ON snapshots(account_id, window_key, ts)")
-    # The retention sweep deletes by timestamp alone, which idx_snap_account cannot
-    # serve — without this the prune is a full scan of the entire history, every poll.
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_snap_ts ON snapshots(ts)")
-    conn.executescript(
-        """
-        CREATE TABLE IF NOT EXISTS rollups (
-            bucket_ts INTEGER NOT NULL,
-            account_id TEXT NOT NULL,
-            window_key TEXT NOT NULL,
-            n INTEGER NOT NULL,
-            pct_sum REAL NOT NULL,
-            pct_min REAL NOT NULL,
-            pct_max REAL NOT NULL,
-            PRIMARY KEY (bucket_ts, account_id, window_key)
-        );
-        CREATE INDEX IF NOT EXISTS idx_rollup_series ON rollups(account_id, window_key, bucket_ts);
-        CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-        """
-    )
-    conn.commit()
-    return conn
-
-
-def store_results(results):
-    conn = db_connect()
-    try:
-        rows = []
-        for res in results:
-            for win in res["windows"]:
-                rows.append(
-                    (res["fetched_at"], res["id"], win["key"], win["percent"], win["used"],
-                     win["cap"], win["resets_at"])
-                )
-        if rows:
-            conn.executemany(
-                "INSERT INTO snapshots (ts, account_id, window_key, percent, used, cap, resets_at) "
-                "VALUES (?,?,?,?,?,?,?)",
-                rows,
-            )
-            conn.commit()
-        report = maintain_history(conn)
-        if report["rollup_rows"] or report["raw_deleted"] or report["rollup_deleted"]:
-            log(
-                "history: %d rollup row(s) written, %d raw row(s) pruned, "
-                "%d rollup row(s) pruned (rolled up to %s)"
-                % (report["rollup_rows"], report["raw_deleted"], report["rollup_deleted"],
-                   report["rolled_up_to"])
-            )
-        if report["raw_kept_unrolled"]:
-            # Deliberately retained: rows past the raw cutoff whose bucket has no rollup
-            # yet. Deleting them would leave a hole with nothing behind it.
-            log(
-                "WARNING: %d raw row(s) past retention are not rolled up yet — kept, not deleted"
-                % report["raw_kept_unrolled"]
-            )
-    finally:
-        conn.close()
-
-
-def _meta_get(conn, key):
-    row = conn.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
-    if not row:
-        return None
-    try:
-        return int(row[0])
-    except (TypeError, ValueError):
-        return None
-
-
-def maintain_history(conn, now_ts=None):
-    """Roll closed buckets up, then prune. Returns a report dict.
-
-    Ordering is the whole point: rollups are aggregated and committed BEFORE any raw
-    row is dropped, and a raw row is dropped only once its bucket is covered by a
-    rollup. A rollup that breaks therefore costs disk, never history.
-    """
-    now_ts = int(now_ts if now_ts is not None else time.time())
-    bucket = RETENTION["rollup_seconds"]
-    # Everything strictly before this stamp sits in a bucket that has already closed,
-    # so it can be aggregated for good.
-    frontier = (now_ts // bucket) * bucket
-    report = {
-        "rolled_up_to": None,
-        "rollup_rows": 0,
-        "raw_deleted": 0,
-        "rollup_deleted": 0,
-        "raw_kept_unrolled": 0,
-    }
-
-    done = _meta_get(conn, "rollup_frontier")
-    if done is None:
-        # First run: backfill from the oldest raw row still on disk.
-        oldest = conn.execute(
-            "SELECT MIN(ts) FROM snapshots WHERE percent IS NOT NULL"
-        ).fetchone()[0]
-        start = iso_to_epoch(oldest) if oldest else None
-        start = frontier if start is None else start
-    else:
-        # Rewind two buckets: stamps can land a little behind, and re-aggregating a
-        # bucket is idempotent (INSERT OR REPLACE).
-        start = max(0, done - 2 * bucket)
-
-    if start < frontier:
-        cursor = conn.execute(
-            """
-            INSERT OR REPLACE INTO rollups
-                   (bucket_ts, account_id, window_key, n, pct_sum, pct_min, pct_max)
-            SELECT (CAST(strftime('%s', ts) AS INTEGER) / ?) * ?,
-                   account_id, window_key,
-                   COUNT(percent), SUM(percent), MIN(percent), MAX(percent)
-              FROM snapshots
-             WHERE percent IS NOT NULL
-               AND ts >= ? AND ts < ?
-               AND strftime('%s', ts) IS NOT NULL
-             GROUP BY 1, account_id, window_key
-            """,
-            (bucket, bucket, epoch_to_iso(start), epoch_to_iso(frontier)),
-        )
-        report["rollup_rows"] = cursor.rowcount
-    conn.execute(
-        "INSERT OR REPLACE INTO meta (key, value) VALUES ('rollup_frontier', ?)",
-        (str(frontier),),
-    )
-    conn.commit()
-
-    frontier_iso = epoch_to_iso(frontier)
-    raw_cutoff_iso = epoch_to_iso(now_ts - RETENTION["raw_days"] * 86400)
-    # A raw row is dropped only when its bucket is actually present in `rollups`, so a
-    # rollup that failed (or skipped a malformed stamp) costs disk instead of history.
-    covered = (
-        "(CAST(strftime('%s', ts) AS INTEGER) / :bucket) * :bucket "
-        "IN (SELECT bucket_ts FROM rollups)"
-    )
-    cursor = conn.execute(
-        "DELETE FROM snapshots WHERE ts < :cutoff AND ts < :frontier AND " + covered,
-        {"bucket": bucket, "cutoff": raw_cutoff_iso, "frontier": frontier_iso},
-    )
-    report["raw_deleted"] = cursor.rowcount
-    report["raw_kept_unrolled"] = conn.execute(
-        "SELECT COUNT(*) FROM snapshots WHERE ts < :cutoff AND NOT (" + covered + ")",
-        {"bucket": bucket, "cutoff": raw_cutoff_iso},
-    ).fetchone()[0]
-    cursor = conn.execute(
-        "DELETE FROM rollups WHERE bucket_ts < ?", (now_ts - RETENTION["rollup_days"] * 86400,)
-    )
-    report["rollup_deleted"] = cursor.rowcount
-    conn.commit()
-    report["rolled_up_to"] = frontier_iso
-    return report
-
-
-# ----------------------------------------------------------------------------- poller
-
-
-def refresh_all(accounts, store=True):
-    """Poll every account, publish the state, then persist history.
-
-    `store=False` is used by `--check`: a probe must not mutate the history
-    (it also makes the probe usable without the /data volume mounted).
-    """
+def refresh_all(accounts):
+    """Poll every account and publish the state the page and widgets read."""
     results = [poll_account(account) for account in accounts]
     bad = [r for r in results if r["state"] != "ok"]
     with STATE_LOCK:
@@ -896,11 +693,6 @@ def refresh_all(accounts, store=True):
         STATE["generated_at"] = now_iso()
         STATE["errors"] = [{"id": r["id"], "state": r["state"], "error": r["error"]} for r in bad]
     FIRST_POLL.set()
-    if store:
-        try:
-            store_results(results)
-        except Exception as exc:  # noqa: BLE001 - history is best-effort
-            log("history write failed: %s" % exc)
     log(
         "polled %d account(s), %d ok"
         % (len(results), len(results) - len(bad))
@@ -920,248 +712,6 @@ def poller_loop(accounts, stop_event):
             log("poll cycle failed: %s" % exc)
         elapsed = time.monotonic() - started
         stop_event.wait(max(1.0, POLL_SECONDS - elapsed))
-
-
-# ----------------------------------------------------------------------------- history API
-
-
-BUCKET_LADDER = (60, 300, 900, 3600, 21600, 86400, 604800)
-WINDOW_LABELS = {"five_hour": "5 h", "weekly": "Week", "monthly": "Month"}
-MAX_POINTS_DEFAULT = 720
-
-
-def _first_param(params, name):
-    values = params.get(name)
-    if not values:
-        return None
-    text = values[0]
-    if not isinstance(text, str) or not text.strip():
-        return None
-    return text.strip()
-
-
-def _int_param(params, name, default, low, high):
-    text = _first_param(params, name)
-    if text is None:
-        return default
-    try:
-        value = int(float(text))
-    except (TypeError, ValueError):
-        return default
-    return max(low, min(high, value))
-
-
-def _list_param(params, name):
-    text = _first_param(params, name)
-    if text is None:
-        return []
-    return [part.strip() for part in text.split(",") if part.strip()]
-
-
-def pick_bucket(span_seconds, max_points):
-    """Smallest bucket that fits `span_seconds` into `max_points`.
-
-    The ladder keeps the grid on human boundaries (1 min -> 1 week); past the last
-    rung the bucket simply follows max_points.
-    """
-    for candidate in BUCKET_LADDER:
-        if span_seconds // candidate + 2 <= max_points:
-            return candidate
-    return max(BUCKET_LADDER[-1], -(-span_seconds // max(1, max_points)))
-
-
-def history_payload(params, now_ts=None):
-    """Usage time series for the chart, from raw snapshots and/or rollups.
-
-    The x axis is one regular grid shared by every series: a bucket with no data
-    yields null, which turns an outage — or an account that stopped being polled —
-    into a visible gap instead of a straight line drawn across it.
-    """
-    now_ts = int(now_ts if now_ts is not None else time.time())
-    max_points = _int_param(params, "max_points", MAX_POINTS_DEFAULT, 20, 2000)
-    resolution = (_first_param(params, "resolution") or "auto").lower()
-    if resolution not in ("auto", "raw", "rollup"):
-        resolution = "auto"
-
-    until = now_ts
-    since = until - _int_param(params, "hours", 24, 1, 24 * 400) * 3600
-    explicit_since = iso_to_epoch(_first_param(params, "since"))
-    if explicit_since is not None:
-        since = explicit_since
-    explicit_until = iso_to_epoch(_first_param(params, "until"))
-    if explicit_until is not None:
-        until = explicit_until
-    if until <= since:
-        return {"error": "until must be later than since"}
-
-    bucket = pick_bucket(until - since, max_points)
-    t0 = (since // bucket) * bucket
-    grid = [t0 + i * bucket for i in range((until - t0) // bucket + 1)]
-
-    account_filter = _list_param(params, "account_id")
-    window_filter = _list_param(params, "window_key")
-
-    conn = db_connect()
-    try:
-        frontier = _meta_get(conn, "rollup_frontier")
-        # A grid bucket finer than a rollup bucket cannot be fed from rollups: the
-        # 15-minute aggregate would land in one short slot and leave its neighbours
-        # empty, drawing a spike that never happened. Those ranges are raw-only.
-        rollup_fits_grid = frontier is not None and bucket >= RETENTION["rollup_seconds"]
-        if resolution == "rollup":
-            if not rollup_fits_grid:
-                return {
-                    "error": "resolution=rollup needs a grid of at least %d s (rollups are "
-                             "%d s aggregates); raise max_points instead"
-                             % (RETENTION["rollup_seconds"], RETENTION["rollup_seconds"])
-                }
-            use_raw, use_rollup = False, True
-        elif resolution == "raw":
-            use_raw, use_rollup = True, False
-        else:
-            use_raw, use_rollup = True, rollup_fits_grid
-        # Split on the rollup frontier so a bucket is never counted twice: rollups own
-        # everything before it, raw owns everything after (and everything, when the
-        # rollups are not in play).
-        if use_raw and use_rollup:
-            raw_from = max(since, frontier)
-            rollup_until = min(until, frontier)
-        else:
-            raw_from = since
-            rollup_until = until if use_rollup else since
-
-        args = {"bucket": bucket, "t0": t0, "t_end": grid[-1]}
-        branches = []
-        if use_raw:
-            branches.append(
-                """
-                SELECT (CAST(strftime('%s', ts) AS INTEGER) / :bucket) * :bucket AS b,
-                       account_id, window_key, 1 AS n,
-                       percent AS s, percent AS mn, percent AS mx
-                  FROM snapshots
-                 WHERE percent IS NOT NULL
-                   AND ts >= :raw_from AND ts < :until_iso
-                   AND strftime('%s', ts) IS NOT NULL
-                """
-            )
-            args["raw_from"] = epoch_to_iso(raw_from)
-            args["until_iso"] = epoch_to_iso(until)
-        if use_rollup:
-            branches.append(
-                """
-                SELECT (bucket_ts / :bucket) * :bucket AS b,
-                       account_id, window_key, n, pct_sum, pct_min, pct_max
-                  FROM rollups
-                 WHERE bucket_ts >= :rollup_from AND bucket_ts < :rollup_until
-                """
-            )
-            args["rollup_from"] = max(since, 0)
-            args["rollup_until"] = rollup_until
-
-        rows = []
-        if branches:
-            filters = ""
-            for prefix, values in (("acc", account_filter), ("win", window_filter)):
-                if not values:
-                    continue
-                names = []
-                for i, value in enumerate(values):
-                    key = "%s%d" % (prefix, i)
-                    names.append(":" + key)
-                    args[key] = value
-                filters += " AND %s IN (%s)" % (
-                    "account_id" if prefix == "acc" else "window_key",
-                    ",".join(names),
-                )
-            rows = conn.execute(
-                """
-                WITH pts AS (%s)
-                SELECT b, account_id, window_key, SUM(n), SUM(s), MIN(mn), MAX(mx)
-                  FROM pts
-                 WHERE b >= :t0 AND b <= :t_end%s
-                 GROUP BY b, account_id, window_key
-                 ORDER BY account_id, window_key, b
-                """
-                % (" UNION ALL ".join(branches), filters),
-                args,
-            ).fetchall()
-    finally:
-        conn.close()
-
-    index = {stamp: i for i, stamp in enumerate(grid)}
-    slots = {}
-    for stamp, account_id, window_key, count, total, low, high in rows:
-        pos = index.get(stamp)
-        if pos is None:
-            continue
-        slot = slots.get((account_id, window_key))
-        if slot is None:
-            slot = {
-                "avg": [None] * len(grid),
-                "min": [None] * len(grid),
-                "max": [None] * len(grid),
-                "n": [0] * len(grid),
-                "points": 0,
-            }
-            slots[(account_id, window_key)] = slot
-        slot["avg"][pos] = round(total / count, 2) if count else None
-        slot["min"][pos] = round(low, 2) if low is not None else None
-        slot["max"][pos] = round(high, 2) if high is not None else None
-        slot["n"][pos] = int(count or 0)
-        slot["points"] += 1
-
-    with STATE_LOCK:
-        accounts = list(STATE["accounts"])
-    labels = {a["id"]: a.get("label") or a["id"] for a in accounts}
-    providers = {a["id"]: a.get("provider") for a in accounts}
-    series = []
-    for account_id, window_key in sorted(slots):
-        slot = slots[(account_id, window_key)]
-        series.append(
-            {
-                "key": "%s/%s" % (account_id, window_key),
-                "account_id": account_id,
-                "window_key": window_key,
-                # Needed by the per-provider histogram: a series carries the provider it
-                # belongs to so the client does not have to re-derive it from the config.
-                "provider": providers.get(account_id) or "unknown",
-                # The chart plots the monthly window only, so naming it on every legend row
-                # was noise; the key still carries the window.
-                "label": labels.get(account_id, account_id),
-                "unit": "percent",
-                "points": slot["points"],
-                "avg": slot["avg"],
-                "min": slot["min"],
-                "max": slot["max"],
-                "n": slot["n"],
-            }
-        )
-    sources = [name for name, enabled in (("raw", use_raw), ("rollup", use_rollup)) if enabled]
-    return {
-        "generated_at": now_iso(),
-        "t_unit": "unix_seconds",
-        "tz": "UTC",
-        "since": epoch_to_iso(since),
-        "until": epoch_to_iso(until),
-        "bucket_seconds": bucket,
-        "max_points": max_points,
-        "t": grid,
-        "series": series,
-        "sources": {
-            "resolution": "+".join(sources) if sources else "none",
-            "raw_since": epoch_to_iso(raw_from) if use_raw else None,
-            "rollup_until": epoch_to_iso(rollup_until) if use_rollup else None,
-        },
-        "retention": {
-            "raw_days": RETENTION["raw_days"],
-            "rollup_days": RETENTION["rollup_days"],
-            "rollup_seconds": RETENTION["rollup_seconds"],
-            "rolled_up_to": epoch_to_iso(frontier) if frontier is not None else None,
-        },
-    }
-
-
-# ----------------------------------------------------------------------------- server
 
 
 def homepage_widgets():
@@ -1307,15 +857,6 @@ class Handler(BaseHTTPRequestHandler):
                     },
                 )
             return
-        if path == "/api/history":
-            try:
-                payload = history_payload(parse_qs(urlparse(self.path).query))
-            except Exception as exc:  # noqa: BLE001 - a bad query must answer, not kill the thread
-                log("history query failed: %s" % exc)
-                self._json(500, {"error": "history query failed"})
-                return
-            self._json(400 if payload.get("error") else 200, payload)
-            return
         if path == "/api/homepage":
             self._json(200, homepage_widgets())
             return
@@ -1343,11 +884,6 @@ class Handler(BaseHTTPRequestHandler):
                     "accounts": len(accounts),
                     "ok_accounts": len([a for a in accounts if a["state"] == "ok"]),
                     "last_poll_age_s": age,
-                    "history": {
-                        "raw_days": RETENTION["raw_days"],
-                        "rollup_days": RETENTION["rollup_days"],
-                        "rollup_seconds": RETENTION["rollup_seconds"],
-                    },
                     "background": background,
                 },
             )
@@ -1360,7 +896,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main(argv):
-    global POLL_SECONDS, RETENTION
+    global POLL_SECONDS
     check_only = "--check" in argv
     try:
         accounts = load_accounts()
@@ -1370,20 +906,13 @@ def main(argv):
         return 2
     if declared:
         POLL_SECONDS = declared
-    # Assigned before the poller thread starts: the thread reads it on every cycle.
-    RETENTION = load_retention()
-    log(
-        "history retention: raw %dd, rollup every %ds kept %dd"
-        % (RETENTION["raw_days"], RETENTION["rollup_seconds"], RETENTION["rollup_days"])
-    )
-
     log("loaded %d account(s): %s" % (len(accounts), ", ".join(
         "%s(%s)" % (a["label"], a["provider"]) for a in accounts)))
     if not any(a["token"] for a in accounts):
         log("WARNING: no account has a credential configured")
 
     if check_only:
-        results = refresh_all(accounts, store=False)
+        results = refresh_all(accounts)
         print(json.dumps({"accounts": results}, indent=2, ensure_ascii=False))
         return 0 if all(r["state"] == "ok" for r in results) else 1
 

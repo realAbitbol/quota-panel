@@ -126,38 +126,19 @@ def serve_image(body):
     return srv, srv.server_address[1]
 
 
-def chart_policy_checks():
-    """The chart asks for readable bars: one bucket per BAR_MIN_PX, on the ladder.
+def ui_checks():
+    """The page carries no chart and no history route any more: that layer was removed.
 
-    Mirrors static/index.html: the constant is read from the page, so the UI and this
-    check cannot drift apart. A range that renders hairlines is the regression this
-    catches (the page used to ask for ~1.4 px per sample).
+    The artwork route check stays here because it is the one CSS detail this script can
+    verify without a browser.
     """
-    sys.path.insert(0, ROOT)
-    from app import pick_bucket
-
     page = open(PAGE, encoding="utf-8").read()
-    match = re.search(r"BAR_MIN_PX\s*=\s*(\d+)", page)
-    if not match:
-        check("the chart declares its bar-width target", False, "BAR_MIN_PX not found in index.html")
-        return
-    bar_min_px = int(match.group(1))
-
-    for width in (1400, 900, 420):
-        max_points = min(600, max(20, width // bar_min_px))
-        worst = None
-        for hours in (1, 6, 24, 168, 720, 2160, 8760):
-            bucket = pick_bucket(hours * 3600, max_points)
-            bars = hours * 3600 // bucket
-            px = width / bars
-            if bars > max_points + 2 or px < 12:
-                worst = "%dh -> %ds bucket, %d bars, %.1f px" % (hours, bucket, bars, px)
-        check("chart bars stay readable at %dpx" % width, worst is None, worst or "")
-
     check("the UI loads the artwork through /background",
           'url("/background")' in page, "CSS does not point at the configurable route")
-    check("the chart formats timestamps with the locale",
-          "hour12" in page and "toLocaleTimeString" in page, "no locale-aware axis formatter")
+    check("the page references no chart library", "uplot" not in page.lower())
+    check("the page never asks for history", "/api/history" not in page)
+    check("the vendored chart library is gone",
+          not os.path.exists(os.path.join(ROOT, "static", "vendor", "uplot")))
 
 
 def main():
@@ -194,27 +175,14 @@ def main():
         check("GET /api/homepage shape",
               status == 200 and "items" in payload and "widgets" in payload)
 
-        status, ctype, body = get(base + "/api/history")
-        payload = json.loads(body)
-        check("GET /api/history shape",
-              status == 200 and all(k in payload for k in ("t", "series", "bucket_seconds",
-                                                           "retention", "sources")),
-              "%s %s" % (status, ctype))
-        check("GET /api/history is safe on a fresh database",
-              payload["series"] == [] and isinstance(payload["t"], list)
-              and payload["retention"]["raw_days"] == 90,
-              "%d series, retention %s" % (len(payload["series"]), payload["retention"]))
+        # The history layer is gone, route included: it must 404, not answer an empty set.
+        status, _, _ = get(base + "/api/history")
+        check("GET /api/history is gone", status == 404, "HTTP %s" % status)
+        status, _, _ = get(base + "/api/history?hours=24&max_points=400")
+        check("GET /api/history is gone with a query too", status == 404, "HTTP %s" % status)
 
-        status, _, _ = get(base + "/api/history?since=2026-01-02T00:00:00Z&until=2026-01-01T00:00:00Z")
-        check("GET /api/history refuses an inverted range", status == 400, "HTTP %s" % status)
-
-        status, ctype, body = get(base + "/static/vendor/uplot/uPlot.iife.min.js")
-        check("GET the vendored chart library",
-              status == 200 and len(body) > 20000, "HTTP %s, %d bytes" % (status, len(body)))
-
-        status, ctype, body = get(base + "/")
-        check("GET / loads the chart assets",
-              b"/static/vendor/uplot/uPlot.iife.min.js" in body and b"/api/history" in body)
+        status, _, _ = get(base + "/static/vendor/uplot/uPlot.iife.min.js")
+        check("the vendored chart library is no longer served", status == 404, "HTTP %s" % status)
 
         # Path traversal and unexpected types must never be served.
         for path in ("/static/../app.py", "/static/../../etc/passwd", "/static/accounts.json"):
@@ -259,17 +227,19 @@ def main():
             status, ctype, body = 0, "", b""
             while time.time() < deadline:
                 status, ctype, body = get(base2 + "/background")
-                if body == artwork:
+                if status == 200 and body != bundled:
                     break
                 time.sleep(0.3)
+            # With Pillow in the image the panel re-encodes the download as WebP, so the
+            # bytes served are the panel's, not the source file's. Both are correct.
             check("a configured background_url is fetched and served",
-                  status == 200 and ctype == "image/png" and body == artwork,
+                  status == 200 and ctype in ("image/png", "image/webp") and body != bundled,
                   "HTTP %s %s, %d bytes" % (status, ctype, len(body)))
             status, _, raw = get(base2 + "/api/health")
             bg = json.loads(raw).get("background", {})
             check("health reports the fetched artwork",
                   bg.get("configured") is True and bg.get("served") == "remote"
-                  and bg.get("bytes") == len(artwork), str(bg))
+                  and bg.get("bytes") == len(body), str(bg))
             check("the artwork URL is never echoed by the API", secret.encode() not in raw,
                   "signature found in /api/health")
             check("the configured artwork is served as its own type, not the bundled one",
@@ -302,7 +272,7 @@ def main():
     finally:
         stop(proc, env)
 
-    chart_policy_checks()
+    ui_checks()
 
     print()
     if failures:

@@ -7,7 +7,8 @@
 #   docker compose up -d
 #   open http://localhost:8080
 #
-# Copy ../accounts.example.json to ./accounts.json first.
+# Copy ../accounts.example.json to ./accounts.json first. The panel keeps no state of
+# its own, so there is nothing to persist: no volume, no database.
 
 services:
   quota-panel:
@@ -21,7 +22,6 @@ services:
 
     volumes:
       - ./accounts.json:/config/accounts.json:ro
-      - quota-panel-data:/data
 
     environment:
       QUOTA_POLL_SECONDS: "60"
@@ -43,6 +43,3 @@ services:
       timeout: 5s
       retries: 3
       start_period: 20s
-
-volumes:
-  quota-panel-data:

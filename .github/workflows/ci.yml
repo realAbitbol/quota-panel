@@ -25,7 +25,7 @@ jobs:
           python-version: "3.12"
 
       - name: Compile
-        run: python -m py_compile app.py tests/smoke.py tests/history.py
+        run: python -m py_compile app.py tests/smoke.py tests/background.py
 
       - name: Validate the example config
         run: |
@@ -39,19 +39,17 @@ jobs:
               assert a["provider"] in ("commandcode", "opencode_go"), a
           b = cfg.get("background_url")
           assert b is None or (isinstance(b, str) and (b == "" or b.startswith(("http://", "https://")))), b
-          r = cfg["retention"]
-          for k in ("raw_days", "rollup_days", "rollup_seconds"):
-              assert isinstance(r[k], int) and r[k] > 0, (k, r[k])
-          assert r["rollup_days"] >= r["raw_days"], r
-          print("example config OK: %d accounts, ids %s, retention %s, background_url %r"
-                % (len(ids), ids, r, b))
+          assert "retention" not in cfg, "the panel stores no history any more"
+          print("example config OK: %d accounts, ids %s, background_url %r" % (len(ids), ids, b))
           PY
 
       - name: Smoke test the HTTP surface
         run: python tests/smoke.py
 
-      - name: History, rollups and retention
-        run: python tests/history.py
+      - name: Background image shrink (Pillow)
+        run: |
+          pip install --quiet pillow
+          python tests/background.py
 
   docker:
     name: build and push image

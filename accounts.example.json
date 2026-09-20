@@ -1,12 +1,12 @@
 {
   "_note": [
     "'id' is required in practice: it is the account's stable identity key. It keys the",
-    "SQLite history (snapshots.account_id), the /api/quota payload, the Homepage widget",
-    "map (items['<id>_<window>']) and the error list — so it MUST be unique per account",
-    "and MUST NOT change once the panel is running (changing it starts a new history",
-    "series and renames the Homepage widgets). Lowercase letters, digits and dashes only.",
+    "the /api/quota payload, the Homepage widget map (items['<id>_<window>']) and the",
+    "error list — so it MUST be unique per account and MUST NOT change once the panel is",
+    "running (changing it renames the Homepage widgets). Lowercase letters, digits and",
+    "dashes only.",
     "If 'id' is omitted it falls back to a positional '<provider>-<index>', so inserting",
-    "or reordering accounts silently reassigns ids and can swap history between them.",
+    "or reordering accounts silently reassigns ids between two accounts.",
     "Duplicate ids are fatal: the app refuses to start with",
     "'account ids must be unique: [...]'. 'label' is free text and purely cosmetic.",
     "Credentials: exactly one of 'token' (the key itself), 'token_env' (the NAME of an",
@@ -21,14 +21,6 @@
     "A fetch that fails, or an image in a type the panel does not serve, leaves the",
     "bundled image in place: the artwork is never a reason for the panel to fail.",
     "Empty or absent means the bundled image."
-  ],
-  "retention": { "raw_days": 90, "rollup_days": 365, "rollup_seconds": 900 },
-  "_retention_note": [
-    "History is written on every poll, so raw samples are kept for raw_days and then",
-    "pruned; before a raw row is dropped, its rollup_seconds-wide bucket is aggregated",
-    "into 'rollups' (count / sum / min / max, so rolling a rollup up again stays exact)",
-    "and kept for rollup_days. Raw is only ever deleted once its bucket is covered.",
-    "The block above is the default: remove it and the same values apply."
   ],
   "accounts": [
     {
