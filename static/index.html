@@ -37,6 +37,7 @@
        border:1px solid var(--line);border-radius:14px;padding:14px 16px;
        backdrop-filter:blur(var(--card-blur));-webkit-backdrop-filter:blur(var(--card-blur))}
   h1{font-size:19px;margin:0;letter-spacing:.2px}
+  .logo{width:28px;height:28px;border-radius:8px;flex:0 0 auto;align-self:center;display:block}
   .muted{color:var(--muted);font-size:12.5px}
   .card{background:rgba(var(--card),var(--card-alpha));border:1px solid var(--line);border-radius:14px;
        padding:16px 16px 14px;
@@ -65,7 +66,7 @@
   #feed.down{color:var(--hot)}
   footer{margin-top:18px}
   /* ---- usage chart ------------------------------------------------------- */
-  .chart-card{margin-bottom:18px}
+  .chart-card{margin:16px 0 18px}          /* a little air below the quota cards */
   .chart-head{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap}
   .ranges{display:flex;gap:6px;flex-wrap:wrap}
   .ranges button{background:transparent;color:var(--muted);border:1px solid var(--line);border-radius:999px;
@@ -87,6 +88,7 @@
 </head>
 <body>
 <header>
+  <img class="logo" src="/static/favicon.svg" width="28" height="28" alt="">
   <h1>Quota Panel</h1>
   <span class="muted" id="generated">loading…</span>
   <span class="muted" id="feed"></span>
@@ -411,14 +413,19 @@ function buildChart(payload, keys, rows, sig){
   const bucket = payload.bucket_seconds;
   const span = payload.t.length > 1 ? payload.t[payload.t.length - 1] - payload.t[0] : 0;
   const series = [{ label: 'time', value: (u, v) => v === null ? '—' : new Date(v * 1000).toLocaleString() }];
+  // One colour per account, in a fixed order, so a segment keeps its colour between
+  // refreshes; the palette cycles if a config ever has more accounts than colours.
+  const seriesColours = keys.map((key, i) => PALETTE[i % PALETTE.length]);
   keys.forEach((key, i) => {
-    // One colour per account, in a fixed order, so a segment keeps its colour between
-    // refreshes; the palette cycles if a config ever has more accounts than colours.
-    const colour = PALETTE[i % PALETTE.length];
+    const colour = seriesColours[i];
     const row = rows.get(key);
     series.push({
       // An account with no monthly movement keeps its row and its colour, but says so.
       label: row.moved ? row.label : row.label + ' — no change',
+      // uPlot paints the legend's colour swatch from the series stroke; without it the
+      // legend lists the accounts with no way to tell which colour belongs to which.
+      // The bars themselves are drawn by the paths builder below, which owns the fill.
+      stroke: colour,
       paths: (u, seriesIdx) => stackedPaths(u, seriesIdx, colour),
       points: { show: false },
       value: (u, v) => v === null ? '—' : v.toFixed(2) + '%'
@@ -443,7 +450,18 @@ function buildChart(payload, keys, rows, sig){
         // argument. Mapping over the third yields "ticks.map is not a function".
         values: (u, vals) => vals.map(v => v + '%') }
     ],
-    legend: { show: true, live: { show: true, size: 44 } },
+    legend: {
+      show: true,
+      live: { show: true, size: 44 },
+      // uPlot draws the legend swatch from the legend's OWN marker styles — border from
+      // `stroke`, background from `fill` — not from the series. Leaving `fill` unset gives
+      // an empty square, so the account names come with no colour to match them to the bars.
+      markers: {
+        show: true, width: 2, dash: 'solid',
+        stroke: (u, i) => seriesColours[i - 1] || 'transparent',
+        fill: (u, i) => seriesColours[i - 1] || 'transparent',
+      },
+    },
     series
   }, [payload.t, ...keys.map(() => [])], chartHost());
   chartSig = sig;
@@ -464,11 +482,18 @@ function drawChart(payload, fetchAt){
   document.getElementById('chart-meta').textContent =
     `${spanLabel(payload.bucket_seconds)} buckets · ${src.resolution} · ` +
     `${keys.length} account${keys.length === 1 ? '' : 's'}`;
+  // OpenCode Go publishes whole percents, so an account on it moves in 1-point steps: on a chart
+  // of points consumed that is one tall bar, not an idle account. CommandCode publishes
+  // fractions, which is why its accounts draw a staircase. Say so rather than let the shape be
+  // misread as "everything went to one account".
+  const coarse = (payload.series || []).some(s => s.provider === 'opencode_go');
   document.getElementById('chart-note').textContent =
     `Each bar is one ${spanLabel(payload.bucket_seconds)} bucket: what each account consumed of its own ` +
     `monthly envelope during that bucket, in points of that envelope. A bucket containing a monthly reset ` +
-    `is left empty — the drop is a refill, not negative usage. Raw kept ${ret.raw_days}d, then rolled up ` +
-    `every ${spanLabel(ret.rollup_seconds)} and kept ${ret.rollup_days}d.`;
+    `is left empty — the drop is a refill, not negative usage.` +
+    (coarse ? ` OpenCode Go reports whole percents, so its accounts move in 1-point steps while ` +
+              `CommandCode's move in fractions — a flat month there is not necessarily an idle account.` : ``) +
+    ` Raw kept ${ret.raw_days}d, then rolled up every ${spanLabel(ret.rollup_seconds)} and kept ${ret.rollup_days}d.`;
 }
 
 async function loadChart(force){
