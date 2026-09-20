@@ -61,6 +61,8 @@
        border:1px solid #4a2020;border-radius:9px;padding:9px 11px}
   .totals{margin-top:10px;font-size:10.5px;color:var(--muted);border-top:1px dashed var(--line);padding-top:8px;line-height:1.35}
   .waiting{color:var(--muted);font-size:13px;padding:18px 2px}
+  /* The two status halves are one group on the right, opposite the logo and the title. */
+  #generated{margin-left:auto}
   #feed{font-variant-numeric:tabular-nums}
   #feed.stale{color:var(--warn)}
   #feed.down{color:var(--hot)}
@@ -90,7 +92,7 @@
 <header>
   <img class="logo" src="/static/favicon.svg" width="28" height="28" alt="">
   <h1>Quota Panel</h1>
-  <span class="muted" id="generated">loading…</span>
+  <span class="muted" id="generated">⏰ updated —</span>
   <span class="muted" id="feed"></span>
 </header>
 
@@ -150,16 +152,19 @@ function fmtNum(v){
 
 function setFeed(){
   const el = document.getElementById('feed');
+  const every = Math.round(pollMs/1000);
   if(lastOkAt === null){ el.textContent = ''; el.className = 'muted'; return; }
   const age = Math.round((Date.now() - lastOkAt)/1000);
+  // The cadence and the age read as one sentence, so the state goes in the parentheses and
+  // the mark changes with it — colour alone is easy to miss in a screenshot or a terminal.
   if(failStreak === 0){
-    el.textContent = `· live · data ${age}s old`;
+    el.textContent = `· 🔄 auto-refresh every ${every}s (data ${age}s old)`;
     el.className = 'muted';
   } else if(failStreak < RELOAD_AFTER){
-    el.textContent = `· reconnecting (${failStreak}) · data ${age}s old`;
+    el.textContent = `· ⚠️ auto-refresh every ${every}s (reconnecting, data ${age}s old)`;
     el.className = 'muted stale';
   } else {
-    el.textContent = `· feed down · data ${age}s old`;
+    el.textContent = `· ⛔ auto-refresh every ${every}s (feed down, data ${age}s old)`;
     el.className = 'muted down';
   }
 }
@@ -214,8 +219,7 @@ function render(){
     grid.appendChild(el);
   }
   const gen = data.generated_at ? new Date(data.generated_at).toLocaleTimeString() : '—';
-  document.getElementById('generated').textContent =
-    `updated ${gen} · auto-refresh every ${Math.round(pollMs/1000)}s`;
+  document.getElementById('generated').textContent = `⏰ updated ${gen}`;
   setFeed();
 }
 
@@ -288,15 +292,23 @@ const HOUR12 = (() => {
 
 // Kept short so uPlot's own tick spacing stays honest: a clock time while the grid is
 // intraday, a date once it is a day or coarser, a month once the range spans a year.
-function tickLabel(seconds, bucket, spanSeconds){
+// Past a week one bar is a day or more, so the axis is read in dates, not hours.
+const DAY_AXIS_BUCKET = 21600;
+function tickLabel(seconds, bucket, spanSeconds, previousSeconds){
   const d = new Date(seconds * 1000);
-  if(bucket < 86400){
-    return HOUR12
-      ? d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })
-      : d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', hour12: false });
+  if(bucket >= DAY_AXIS_BUCKET){
+    if(spanSeconds > 200 * 86400) return d.toLocaleDateString(undefined, { year: 'numeric', month: 'short' });
+    return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
   }
-  if(spanSeconds > 200 * 86400) return d.toLocaleDateString(undefined, { year: 'numeric', month: 'short' });
-  return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+  // On an hourly axis the tick where the local day turns over carries the date instead of the
+  // hour, so a 24h window says which day its small hours belong to.
+  if(previousSeconds !== undefined &&
+     new Date(previousSeconds * 1000).toDateString() !== d.toDateString()){
+    return d.toLocaleDateString(undefined, { weekday: 'short', day: 'numeric' });
+  }
+  return HOUR12
+    ? d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })
+    : d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', hour12: false });
 }
 
 function spanLabel(seconds){
@@ -443,7 +455,7 @@ function buildChart(payload, keys, rows, sig){
         // 12-hour locale ("11:35 PM") gets the wider spacing it needs.
         space: HOUR12 ? 74 : 56,
         // Timestamps in the reader's own regional format (see tickLabel).
-        values: (u, vals) => vals.map(v => tickLabel(v, bucket, span)) },
+        values: (u, vals) => vals.map((v, i) => tickLabel(v, bucket, span, i ? vals[i - 1] : undefined)) },
       { stroke: AXIS_COLOR, grid: { stroke: AXIS_GRID }, ticks: { stroke: AXIS_GRID },
         font: AXIS_FONT, size: 46,
         // uPlot calls this as (u, vals, space): the tick values are the SECOND

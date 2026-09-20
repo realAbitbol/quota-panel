@@ -1125,8 +1125,9 @@ def history_payload(params, now_ts=None):
                 # Needed by the per-provider histogram: a series carries the provider it
                 # belongs to so the client does not have to re-derive it from the config.
                 "provider": providers.get(account_id) or "unknown",
-                "label": "%s · %s"
-                % (labels.get(account_id, account_id), WINDOW_LABELS.get(window_key, window_key)),
+                # The chart plots the monthly window only, so naming it on every legend row
+                # was noise; the key still carries the window.
+                "label": labels.get(account_id, account_id),
                 "unit": "percent",
                 "points": slot["points"],
                 "avg": slot["avg"],
