@@ -3,6 +3,7 @@
   "_kind": "SCHEMA-DERIVED SYNTHETIC - not a captured response; replace with a live capture before trusting numbers",
   "_live_capture": false,
   "_note": "gates: success==true AND code==200 AND data.limits[]. unit codes: 1=days, 3=hours, 5=minutes, 6=days(weekly). type: TOKENS_LIMIT|TIME_LIMIT|CREDIT_LIMIT",
+  "_decoy_note": "On the first TOKENS_LIMIT, currentValue (100000) and percentage (10) DISAGREE with cap - remaining (620000, i.e. 62%) on purpose. Every field agreed before, so this fixture could not tell which one the adapter reads. The asserted 62 comes from the remaining/usage pair.",
   "code": 200,
   "msg": "ok",
   "success": true,
@@ -14,9 +15,9 @@
         "unit": 3,
         "number": 5,
         "usage": 1000000,
-        "currentValue": 620000,
+        "currentValue": 100000,
         "remaining": 380000,
-        "percentage": 62,
+        "percentage": 10,
         "nextResetTime": 1758384000000
       },
       {

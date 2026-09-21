@@ -30,15 +30,30 @@ services:
     # Runtime hardening: nothing here is needed by a read-only dashboard.
     read_only: true
     tmpfs:
-      - "/tmp:rw,size=16m,noexec,nosuid,nodev"
+      # Two copies of the largest artwork fetch (8 MiB read, then the re-encoded WebP) must
+      # fit, or the shrink fails on a container that is otherwise healthy.
+      - "/tmp:rw,size=32m,noexec,nosuid,nodev"
     cap_drop:
       - ALL
     security_opt:
       - no-new-privileges:true
-    mem_limit: 128m
+    # Measured, not guessed: a 6000x4000 JPEG shrunk to 3240x2160 WebP peaks at 323-346 MB
+    # RSS, because Pillow decodes the whole bitmap before it resizes. 128m was ~2.7x below
+    # the peak of the feature the README advertises, so the container was OOM-killed and
+    # restarted on a large wallpaper.
+    mem_limit: 512m
+
+    # The panel is a long-lived reader: an old log line is worth less than the disk it
+    # occupies, and a crash-loop would otherwise fill the volume.
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "3"
 
     healthcheck:
-      test: ["CMD", "python3", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/api/health', timeout=4).status==200 else 1)"]
+      # Mirrors the image's HEALTHCHECK; compose wins when both are present.
+      test: ["CMD", "python3", "-c", "import urllib.request,sys\ntry:\n    sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/api/health', timeout=4).status==200 else 1)\nexcept Exception:\n    sys.exit(1)"]
       interval: 60s
       timeout: 5s
       retries: 3

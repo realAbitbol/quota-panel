@@ -1,4 +1,6 @@
 accounts.json
+accounts*.json
+!accounts.example.json
 .env
 .env.test
 data/

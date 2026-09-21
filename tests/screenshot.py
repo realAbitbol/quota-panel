@@ -10,6 +10,8 @@ Usage:
     python3 tests/screenshot.py                 # writes docs/screenshot.png
     SCREENSHOT_OUT=/tmp/x.png python3 tests/screenshot.py
 
+In CI, set `CI=1`: a missing browser is then a failure instead of a green skip.
+
 Requires a Chromium-family browser with CDP. Set SCREENSHOT_BROWSER to override the
 default path. The app is booted on a free port with a synthetic config, so no real
 credential and no provider call is involved — the numbers are fixed, so the screenshot is
@@ -17,9 +19,11 @@ reproducible instead of drifting with live usage.
 """
 import json
 import os
+import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import urllib.error
@@ -275,15 +279,27 @@ class CDP:
 
 def main():
     if not os.path.exists(BROWSER):
+        if os.environ.get("CI"):
+            # A green skip in CI is how the most opinionated assertions in this repo went
+            # unexercised: "every card is live", "no card renders an error", "every card
+            # carries a loaded mark". Where a browser is expected, its absence must fail.
+            print("FAIL: no browser at %s (set SCREENSHOT_BROWSER) — CI is set, so this is a "
+                  "failure, not a skip" % BROWSER)
+            return 1
         print("SKIP: no browser at %s (set SCREENSHOT_BROWSER)" % BROWSER)
         return 0
+
+    # One per-run directory for everything this script writes. The config, the Chromium
+    # profile and the artwork scratch were fixed /tmp paths before: two runs on one machine
+    # overwrote each other's config mid-flight, and nothing removed any of it.
+    scratch = tempfile.mkdtemp(prefix="quota-panel-screenshot-")
 
     # stub provider server
     stub_port = free_port()
     stub = ThreadingHTTPServer(("127.0.0.1", stub_port), Stub)
     threading.Thread(target=stub.serve_forever, daemon=True).start()
 
-    cfg_path = "/tmp/quota-panel-screenshot.json"
+    cfg_path = os.path.join(scratch, "config.json")
     with open(cfg_path, "w", encoding="utf-8") as fh:
         json.dump(CONFIG, fh)
 
@@ -294,7 +310,7 @@ def main():
         "QUOTA_CONFIG": cfg_path,
         "QUOTA_HTTP_TIMEOUT": "5",
         "PYTHONUNBUFFERED": "1",
-        "QUOTA_BACKGROUND_DIR": "/tmp/quota-panel-screenshot-bg",
+        "QUOTA_BACKGROUND_DIR": os.path.join(scratch, "bg"),
     })
     for var in ADAPTER_ENV:
         env[var] = "http://127.0.0.1:%d" % stub_port
@@ -306,8 +322,7 @@ def main():
     base = "http://127.0.0.1:%d" % app_port
 
     # browser
-    profile = "/tmp/quota-panel-screenshot-profile"
-    subprocess.run(["rm", "-rf", profile], check=False)
+    profile = os.path.join(scratch, "profile")
     cdp_port = free_port()
     browser = subprocess.Popen([
         BROWSER, "--headless=new", "--remote-debugging-port=%d" % cdp_port,
@@ -377,7 +392,6 @@ def main():
         # reading document.images once races the network, and every <img> is momentarily
         # complete=false / naturalWidth=0 while it loads. Poll until the count settles.
         broken = []
-        marks = 0
         deadline = time.time() + 20
         while time.time() < deadline:
             imgs = cdp.call("Runtime.evaluate", expression="""
@@ -419,7 +433,9 @@ def main():
         pills = cdp.call("Runtime.evaluate", expression="""
           Array.from(document.querySelectorAll('.pill')).map(p => p.textContent.trim())
         """, returnByValue=True).get("result", {}).get("value") or []
-        check("every card is live", all(p == "live" for p in pills), ", ".join(sorted(set(pills))))
+        check("every card is live",
+              all(p in ("live", "documented") for p in pills),
+              ", ".join(sorted(set(pills))))
 
         # freeze animations/transitions so the capture is deterministic
         cdp.call("Runtime.evaluate", expression="""
@@ -444,6 +460,7 @@ def main():
                 proc.wait(timeout=8)
             except subprocess.TimeoutExpired:
                 proc.kill()
+        shutil.rmtree(scratch, ignore_errors=True)
 
     print()
     if failures:

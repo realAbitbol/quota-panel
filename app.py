@@ -19,13 +19,16 @@ CLI: `app.py --check` polls once, prints JSON, exits (no server, no DB write).
 import io
 import json
 import os
+import re
 import sys
 import threading
 import time
+import traceback
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from typing import Any
 from urllib.parse import urlparse
 
 # ----------------------------------------------------------------------------- config
@@ -33,9 +36,28 @@ from urllib.parse import urlparse
 ROOT = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.environ.get("QUOTA_CONFIG", os.path.join(ROOT, "accounts.json"))
 STATIC_DIR = os.path.join(ROOT, "static")
-POLL_SECONDS = int(os.environ.get("QUOTA_POLL_SECONDS", "60"))
-HTTP_TIMEOUT = int(os.environ.get("QUOTA_HTTP_TIMEOUT", "20"))
-PORT = int(os.environ.get("PORT", "8080"))
+def _env_int(name, default):
+    """An environment integer, or the default.
+
+    Read at import, before the config loader can report anything: a typo here used to be a
+    bare traceback with no hint about which variable was at fault.
+    """
+    raw = os.environ.get(name)
+    if raw is None or raw == "":
+        return default
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        print("[quota-panel] %s=%r is not an integer — using %d" % (name, raw, default), flush=True)
+        return default
+
+
+POLL_SECONDS = _env_int("QUOTA_POLL_SECONDS", 60)
+HTTP_TIMEOUT = _env_int("QUOTA_HTTP_TIMEOUT", 20)
+PORT = _env_int("PORT", 8080)
+# Provider bodies are kilobytes. The timeout bounds latency, not size, so the read is capped
+# too: a host that streams forever must not be able to grow this process without bound.
+MAX_RESPONSE_BYTES = 2 * 1024 * 1024
 
 # The panel's own artwork can be replaced by a URL (`background_url`, or the env var).
 # It is fetched once at startup into the container's non-persistent /tmp — a tmpfs in both
@@ -135,8 +157,19 @@ def load_accounts(path=CONFIG_PATH):
     try:
         with open(path, "r", encoding="utf-8") as fh:
             raw = json.load(fh)
+    except IsADirectoryError:
+        # What a missing bind-mount source looks like: docker creates the path as
+        # a directory. Reporting it as "not found" is the honest message.
+        raise ConfigError(
+            "config path is a directory, not a file: %s "
+            "(a bind mount whose source does not exist creates one)" % path
+        )
     except FileNotFoundError:
         raise ConfigError("config file not found: %s" % path)
+    except PermissionError:
+        raise ConfigError("config file is not readable by this user: %s" % path)
+    except OSError as exc:
+        raise ConfigError("config file could not be read (%s): %s" % (path, exc))
     except ValueError as exc:
         raise ConfigError("config file is not valid JSON (%s): %s" % (path, exc))
 
@@ -164,11 +197,10 @@ def load_accounts(path=CONFIG_PATH):
                 # but every lookup returns "" and the account silently has no credential.
                 # Never echo the value: in this failure mode it IS the credential.
                 log(
-                    "config: accounts[%d] (%s) — 'token_env' holds what looks like a KEY "
-                    "(%s…, %d chars), not an environment variable name. For an inline key "
-                    "the field is 'token'. This account has no credential."
-                    % (idx, item.get("id") or provider,
-                       holder[:4], len(holder))
+                    "config: accounts[%d] (%s) — 'token_env' holds what looks like a KEY, "
+                    "not an environment variable name. For an inline key the field is "
+                    "'token'. This account has no credential."
+                    % (idx, item.get("id") or provider)
                 )
         if not token and item.get("token_file"):
             try:
@@ -242,7 +274,14 @@ def load_background_url(path=CONFIG_PATH):
     if not isinstance(url, str) or not url.strip().lower().startswith(("http://", "https://")):
         log("config: background_url must be an http(s) URL — ignored")
         return None
-    return url.strip()
+    url = url.strip()
+    # An interior control character survives strip(). It used to ride into the log through the
+    # parser's own exception text ("URL can't contain control characters"), on a value this file
+    # otherwise never logs because it may be signed. Refuse the value; do not log it.
+    if any(ch < " " or ch == "\x7f" for ch in url):
+        log("config: background_url contains control characters — ignored")
+        return None
+    return url
 
 
 # ------------------------------------------------------------------ custom background
@@ -309,6 +348,18 @@ def fetch_background(force=False):
         BACKGROUND["attempted_at"] = time.time()
 
     def _give_up(reason):
+        # This reason is published by /api/health, and a fetch failure's exception text quotes
+        # the URL it failed on — sometimes whole, sometimes as a path+query fragment, and that
+        # URL may carry a signature. Scrub every part of it, longest first, before the text is
+        # either published or logged.
+        parsed = urlparse(url)
+        fragments = [url, parsed.netloc]
+        if parsed.query:
+            fragments.append(parsed.path + "?" + parsed.query)
+            fragments.append(parsed.query)
+        fragments.append(parsed.path)
+        for fragment in sorted({f for f in fragments if f}, key=len, reverse=True):
+            reason = reason.replace(fragment, "<the configured image URL>")
         with BACKGROUND_LOCK:
             BACKGROUND["path"] = None
             BACKGROUND["served"] = "bundled"
@@ -346,13 +397,19 @@ def fetch_background(force=False):
         body, ctype, note = shrunk
         log("background: %s" % note)
     target = os.path.join(BACKGROUND_DIR, "background" + BACKGROUND_TYPES[ctype])
+    partial = target + ".part"
     try:
         os.makedirs(BACKGROUND_DIR, exist_ok=True)
-        partial = target + ".part"
         with open(partial, "wb") as fh:
             fh.write(body)
         os.replace(partial, target)
     except OSError as exc:
+        # A half-written file left behind is inherited by the next attempt, and /tmp state can
+        # outlive the container when the tmpfs is shared with the host.
+        try:
+            os.unlink(partial)
+        except OSError:
+            pass
         _give_up("could not store the image in %s (%s)" % (BACKGROUND_DIR, exc))
         return
 
@@ -384,16 +441,19 @@ def http_get_json(url, headers, timeout=HTTP_TIMEOUT):
     req = urllib.request.Request(url, headers=headers, method="GET")
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
-            body = resp.read().decode("utf-8", "replace")
+            raw = resp.read(MAX_RESPONSE_BYTES + 1)
             status = resp.status
     except urllib.error.HTTPError as exc:
         try:
-            body = exc.read().decode("utf-8", "replace")
+            body = exc.read(MAX_RESPONSE_BYTES).decode("utf-8", "replace")
         except Exception:  # noqa: BLE001 - body may be unreadable
             body = ""
         return exc.code, None, "HTTP %s: %s" % (exc.code, body[:200].replace("\n", " "))
     except Exception as exc:  # noqa: BLE001 - network layer, any failure is reported
         return None, None, "network error: %s" % exc
+    if len(raw) > MAX_RESPONSE_BYTES:
+        return status, None, "response body exceeded %d bytes" % MAX_RESPONSE_BYTES
+    body = raw.decode("utf-8", "replace")
 
     if status != 200:
         return status, None, "HTTP %s: %s" % (status, body[:200].replace("\n", " "))
@@ -484,10 +544,10 @@ def fetch_commandcode(account):
     if err_w and status in (401, 403):
         return _fail(account, "auth_error", "CommandCode rejected the key (401/403) — it is invalid, "
                                           "revoked, or belongs to another account. Verify it in the "
-                                          "CommandCode studio.")
+                                          "CommandCode studio.", status=status)
     if err_w and status == 404:
         return _fail(account, "no_access", "CommandCode /alpha/whoami returned 404 — "
-                                           "this plan may not include API access.")
+                                           "this plan may not include API access.", status=404)
     if err_w and whoami is None and status is None:
         return _fail(account, "network_error", err_w)
 
@@ -541,7 +601,7 @@ def fetch_commandcode(account):
     # the spend for the period separately; without the spend there is no percent.
     spend = None
     _, usage, _ = http_get_json(base + "/alpha/usage/summary" + qs, headers)
-    usage_data = unwrap(usage) or {}
+    usage_data = unwrap(usage, "data") or unwrap(usage) or {}
     spend = num(usage_data.get("totalCredits"))
     if spend is not None and used_credits is not None:
         cap = spend + used_credits
@@ -571,6 +631,17 @@ def fetch_commandcode(account):
             )
         )
         remaining = used_credits
+
+    if not windows:
+        # Every other adapter refuses an empty result rather than publishing `state: ok` with
+        # no window: a green "live" pill with nothing under it reads as "everything is fine"
+        # when the truth is that nothing was understood.
+        return _fail(
+            account,
+            "shape_unknown",
+            "CommandCode answered but carried no recognisable window (whoami, credits, "
+            "subscriptions and usage/summary were all unreadable)",
+        )
 
     user = unwrap(whoami, "user") or {}
     return {
@@ -607,12 +678,13 @@ def fetch_opencode_go(account):
             "auth_error",
             "OpenCode Go rejected the key (HTTP %s). 403 = key valid but no Go plan on this "
             "workspace; 401 = key invalid." % status,
+            status=status,
         )
     if err and status is None:
         return _fail(account, "network_error", err)
     usage = unwrap(body, "usage")
     if usage is None:
-        return _fail(account, "provider_error", err or "no 'usage' object in response")
+        return _fail(account, "provider_error", err or "no 'usage' object in response", status=status)
 
     windows = []
     for key, label, src_key in (
@@ -647,7 +719,54 @@ def fetch_opencode_go(account):
     }
 
 
-def _fail(account, state, message, *, status=None):
+# ----------------------------------------------------------------------------- redaction
+
+
+# What a provider key looks like when a provider quotes it back at you in an error body.
+# Used both to redact error text and to refuse a provider-supplied label that is really a
+# fragment of the credential. The trailing run is 20+ characters on purpose: it keeps
+# account ids and widget keys ("cc-work_error", "ci-main_five_hour") out of the net.
+CREDENTIAL_SHAPE = re.compile(r"\b(?:sk|user|cmd|ci_live)[-_][A-Za-z0-9._-]{20,}")
+
+
+def _redact(text: Any, *secrets: Any) -> Any:
+    """Replace credential material in a string.
+
+    A provider that rejects a key often echoes it back, sometimes as a prefix rather than
+    the whole value, so the account's own key is redacted along with the slices a padded or
+    truncated echo would carry. Anything else shaped like a key goes too.
+    """
+    if not isinstance(text, str) or not text:
+        return text
+    for secret in secrets:
+        if not isinstance(secret, str) or len(secret) < 6:
+            continue
+        views = [secret]
+        for size in (8, 12, 16, 24, 32, 48):
+            if len(secret) > size:
+                views.append(secret[:size])
+                views.append(secret[-size:])
+        for view in views:
+            text = text.replace(view, "***")
+    return CREDENTIAL_SHAPE.sub("***", text)
+
+
+def _scrub_result(result: Any, *secrets: Any) -> Any:
+    """Redact every string in a result tree, whatever key it sits under.
+
+    Publishing a credential is the one failure this panel cannot recover from, so the scrub
+    is total rather than per-field: a future adapter field cannot leak by omission.
+    """
+    if isinstance(result, str):
+        return _redact(result, *secrets)
+    if isinstance(result, dict):
+        return {key: _scrub_result(value, *secrets) for key, value in result.items()}
+    if isinstance(result, list):
+        return [_scrub_result(item, *secrets) for item in result]
+    return result
+
+
+def _fail(account, state, message, *, status=None) -> dict:
     return {
         "id": account["id"],
         "provider": account["provider"],
@@ -686,7 +805,8 @@ def _fmt(value):
 # /api/providers so the public UI can never imply more than was measured:
 #   live        -- exercised against a real response from the provider
 #   documented  -- built from the vendor's own published contract, not yet hit live
-# `logo` is a file under static/logos/, monochrome (currentColor). A provider with no
+# `logo` is a file under static/logos/. The UI draws every mark white (an <img> cannot inherit
+# `currentColor`, so a `color:` rule on it does nothing — see static/index.html). A provider with no
 # mark falls back to _fallback.svg rather than rendering an empty box.
 PROVIDERS = {
     "commandcode": {
@@ -762,7 +882,7 @@ def load_balance_fetchers():
     return BALANCE_FETCHERS
 
 
-def _annotate(account, result):
+def _annotate(account, result) -> dict:
     """Stamp the registry facts every card needs, on the success path too."""
     result["kind"] = provider_kind(account["provider"])
     result["contract"] = PROVIDERS.get(account["provider"], {}).get("contract")
@@ -770,34 +890,56 @@ def _annotate(account, result):
     # The account-level `kind` must describe what was actually rendered. OpenRouter is
     # registered as a balance provider but emits a real percent window when the key has
     # a spend limit, so the card kind is derived from the windows, not the registry.
+    registered = provider_kind(account["provider"])
     for win in result.get("windows", []):
         if win.get("kind") is None:
-            win["kind"] = "window"
+            # Defaulting to "window" turned a balance adapter that forgot the tag into an
+            # unreadable percentage window; the provider's registered kind is the honest
+            # default, and an adapter that knows better sets the tag explicitly.
+            win["kind"] = "balance" if registered == "balance" else "window"
         if win["kind"] == "window" and win.get("percent") is None and not win.get("note"):
             win["note"] = "no reading"
     kinds = {w["kind"] for w in result.get("windows", [])}
     if kinds:
         result["kind"] = "window" if "window" in kinds else "balance"
     result.setdefault("http_status", None)
+    for field in ("plan", "account_name"):
+        value = result.get(field)
+        if isinstance(value, str) and CREDENTIAL_SHAPE.search(value):
+            # A provider-supplied identity that is really a fragment of the key is dropped
+            # rather than shown as "***": the card falls back to the provider name, because
+            # index.html renders `acc.plan || acc.provider`.
+            result[field] = None
     return result
 
 
-def poll_account(account):
-    if not account.get("token"):
-        return _fail(account, "auth_error", "no credential configured for this account")
+def poll_account(account) -> dict:
+    # Publishing a credential is the one failure this panel cannot recover from, so every
+    # account dict is scrubbed on the single path that both the window adapters and the
+    # lazily loaded balance adapters return through.
+    token = account.get("token")
+    if not token:
+        return _scrub_result(
+            _fail(account, "auth_error", "no credential configured for this account"), token
+        )
     try:
         fetcher = FETCHERS.get(account["provider"]) or load_balance_fetchers().get(
             account["provider"]
         )
         if fetcher is None:
-            return _fail(
-                account,
-                "unsupported",
-                "no adapter for provider %r" % account["provider"],
+            return _scrub_result(
+                _fail(
+                    account,
+                    "unsupported",
+                    "no adapter for provider %r" % account["provider"],
+                ),
+                token,
             )
-        return _annotate(account, fetcher(account))
+        return _scrub_result(_annotate(account, fetcher(account)), token)
     except Exception as exc:  # noqa: BLE001 - a provider must never kill the poller
-        return _fail(account, "internal_error", "%s: %s" % (type(exc).__name__, exc))
+        return _scrub_result(
+            _fail(account, "internal_error", "%s: %s" % (type(exc).__name__, exc)), token
+        )
 
 
 # ----------------------------------------------------------------------------- storage
@@ -805,6 +947,10 @@ def poll_account(account):
 
 def refresh_all(accounts):
     """Poll every account and publish the state the page and widgets read."""
+    # Health reads this to tell "a poll is running" from "the poller is wedged": a long cycle is
+    # not a fault, but a cycle that outlives its own budget is.
+    with STATE_LOCK:
+        STATE["poll_started_at"] = time.time()
     results = [poll_account(account) for account in accounts]
     bad = [r for r in results if r["state"] != "ok"]
     with STATE_LOCK:
@@ -911,6 +1057,19 @@ def homepage_widgets():
     return {"generated_at": generated_at, "widgets": widgets, "items": items}
 
 
+class Server(ThreadingHTTPServer):
+    """Threaded HTTP/1.0 server with an accept backlog that survives one page load.
+
+    Responses are HTTP/1.0 (no keep-alive), so concurrency maps straight onto the accept
+    queue. The stdlib default is 5, below what a single page load asks for at once —
+    index.html, the artwork, the favicon, /api/quota, /api/homepage and a logo per card —
+    and the losers were reset (measured from 8 simultaneous connections up).
+    """
+
+    daemon_threads = True
+    request_queue_size = 64
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "quota-panel/1.0"
 
@@ -920,6 +1079,9 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        # /background takes its content type from the remote host's Content-Type header, so the
+        # browser must not second-guess it into something executable on this origin.
+        self.send_header("X-Content-Type-Options", "nosniff")
         self.end_headers()
         self.wfile.write(body)
 
@@ -984,6 +1146,18 @@ class Handler(BaseHTTPRequestHandler):
         self._send(200, body, ctype)
 
     def do_GET(self):
+        # A data bug must not read as an outage: an unexpected shape in state used to escape as a
+        # closed connection with no status line, which gives the caller no diagnostic at all.
+        try:
+            self._route()
+        except Exception:  # noqa: BLE001 - the boundary is the point
+            log("handler error on %s:\n%s" % (self.path, traceback.format_exc()))
+            try:
+                self._json(500, {"error": "internal error"})
+            except Exception:  # noqa: BLE001 - the client is already gone
+                pass
+
+    def _route(self):
         path = self.path.split("?")[0]
         if path in ("/", "/index.html"):
             try:
@@ -1002,15 +1176,21 @@ class Handler(BaseHTTPRequestHandler):
             # A page opened while the first poll is still in flight should get real data,
             # not an empty grid. Bounded so a dead provider can never hang the request.
             FIRST_POLL.wait(8)
+            # Snapshot under the lock, then serialise and write outside it: holding the lock
+            # across `wfile.write` let one client that stops reading block the poller, the
+            # health probe and every other reader.
             with STATE_LOCK:
-                self._json(
-                    200,
-                    {
-                        "generated_at": STATE["generated_at"],
-                        "poll_seconds": POLL_SECONDS,
-                        "accounts": list(STATE["accounts"]),
-                    },
-                )
+                payload = {
+                    "generated_at": STATE["generated_at"],
+                    # The server's clock at response time. A client can only guess the clock
+                    # offset from `generated_at`, which folds the AGE OF THE DATA into the clock
+                    # — a two-minute-old payload would look like a server two minutes behind, and
+                    # every countdown and the freshness readout inherited that error.
+                    "now": now_iso(),
+                    "poll_seconds": POLL_SECONDS,
+                    "accounts": list(STATE["accounts"]),
+                }
+            self._json(200, payload)
             return
         if path == "/api/homepage":
             self._json(200, homepage_widgets())
@@ -1043,7 +1223,18 @@ class Handler(BaseHTTPRequestHandler):
             born = iso_to_epoch(generated_at)
             if born is not None:
                 age = round(time.time() - born, 1)
-            ok = age is not None and age < POLL_SECONDS * 3
+            # A poll is a serial loop of HTTP calls, so a legitimate cycle outlasts any fixed
+            # multiple of the cadence: 3 accounts x 4 calls x HTTP_TIMEOUT(20s) = 240s against a
+            # 180s tolerance, i.e. a working panel reported unhealthy for most of its wall time
+            # and Docker pulled it out of rotation. Budget from the account count, and treat a
+            # poll that is still running inside its own budget as healthy — a genuinely wedged
+            # poller still goes stale once that budget expires.
+            cycle_budget = max(POLL_SECONDS, len(accounts) * 4 * HTTP_TIMEOUT)
+            started = STATE.get("poll_started_at")
+            in_flight = started is not None and (born is None or started > born)
+            ok = bool(age is not None and age < POLL_SECONDS + cycle_budget)
+            if not ok and in_flight and started is not None:
+                ok = time.time() - started < cycle_budget
             with BACKGROUND_LOCK:
                 # The URL itself is deliberately absent: it may carry a signature.
                 background = {
@@ -1059,6 +1250,7 @@ class Handler(BaseHTTPRequestHandler):
                     "accounts": len(accounts),
                     "ok_accounts": len([a for a in accounts if a["state"] == "ok"]),
                     "last_poll_age_s": age,
+                    "poll_in_flight": in_flight,
                     "background": background,
                 },
             )
@@ -1066,7 +1258,11 @@ class Handler(BaseHTTPRequestHandler):
         self._json(404, {"error": "not found"})
 
     def log_message(self, fmt, *args):  # keep the container log signal-rich
-        if "/api/health" not in (args[0] if args else ""):
+        # `args[0]` is an HTTPStatus on every send_error path (501/400/414 …),
+        # so the membership test must not assume a string: it used to raise,
+        # which turned every refused request into a closed socket and a traceback.
+        line = args[0] if args and isinstance(args[0], str) else ""
+        if "/api/health" not in line:
             log("%s - %s" % (self.address_string(), fmt % args))
 
 
@@ -1103,7 +1299,7 @@ def main(argv):
     thread = threading.Thread(target=poller_loop, args=(accounts, stop_event), daemon=True)
     thread.start()
 
-    server = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
+    server = Server(("0.0.0.0", PORT), Handler)
     log("listening on 0.0.0.0:%d (poll every %ds)" % (PORT, POLL_SECONDS))
     try:
         server.serve_forever()

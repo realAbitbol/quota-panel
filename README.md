@@ -39,19 +39,27 @@ rate. Each window carries its own `resets_at`, rendered as a live countdown.
 
 ## Quick start
 
-The image is published for `linux/amd64` and `linux/arm64`:
+The image is published for `linux/amd64` and `linux/arm64`. Write the config file
+first: the container has nothing to poll without it, and bind-mounting a path that
+does not exist yet leaves a *directory* in its place.
 
 ```bash
+curl -o accounts.json \
+  https://raw.githubusercontent.com/realAbitbol/quota-panel/main/accounts.example.json
+$EDITOR accounts.json            # one entry per account: token, token_env or token_file
+
 docker run -d \
   --name quota-panel \
   --restart unless-stopped \
-  -p 8080:8080 \
+  -p 127.0.0.1:8080:8080 \
   -v "$PWD/accounts.json:/config/accounts.json:ro" \
   ghcr.io/realabitbol/quota-panel:latest
 ```
 
-Then open <http://localhost:8080>. In production, pin a version tag or a digest
-rather than riding `:latest`.
+Then open <http://localhost:8080>. The port is bound to loopback on purpose: there
+is no built-in login, so the panel belongs behind a reverse proxy that
+authenticates (see [Security](#security)). In production, pin a version tag or a
+digest rather than riding `:latest`.
 
 ### docker compose
 
@@ -142,9 +150,11 @@ curl -s localhost:8080/api/providers | jq
 
 ### Icons
 
-Every card wears its provider's mark, monochrome, from `static/logos/<provider>.svg`
-(`currentColor`, so it inherits the card's text colour and stays legible on both themes).
-No config is needed — the mark is derived from `provider`. A provider with no mark, or a
+Every card wears its provider's mark, monochrome, from `static/logos/<provider>.svg`, drawn
+white. The files are written with `currentColor` so they can be recoloured, but a mark is
+loaded through an `<img>` and `currentColor` cannot cross that boundary — inside an `<img>` it
+resolves to the file's own default rather than the page's colour — so the UI forces white
+with a CSS filter instead of relying on inheritance. A provider with no mark, or a
 missing file, falls back to `_fallback.svg` rather than rendering an empty box. Per-account
 override with an optional `"logo": "my.svg"` (relative to `static/logos/`).
 
@@ -362,8 +372,9 @@ Accept: application/json
   There is no write path and no upstream state change.
 * **Credentials stay in the config.** They are read at startup, held in memory, and
   never logged, never returned by any endpoint, never sent anywhere but the
-  provider that owns them. Redaction is enforced by a test
-  (`GET /api/quota has no credential leak`).
+  provider that owns them. Redaction is enforced by a test: no served body — the
+  page, `/api/quota`, `/api/homepage`, `/api/health` — may contain a configured
+  credential value or anything shaped like a key.
 * **There is no built-in login.** Run it behind something that authenticates — a
   reverse proxy with SSO in front — and keep the published port on loopback.
 * **Config file permissions matter.** If you use inline `token`s, keep

@@ -3,9 +3,10 @@
   "_kind": "documented-example",
   "_live_capture": false,
   "_note": "requests/limit -> percent; renewsAt = reset. Polling /quotas does not consume plan quota",
+  "_decoy_note": "requests is 41, not 0: the asserted percent must be a derivation, not the fabricated zero the suite exists to catch. A literal `percent = 0.0` used to pass.",
   "subscription": {
     "limit": 135,
-    "requests": 0,
+    "requests": 41,
     "renewsAt": "2025-09-21T14:36:14.288Z"
   }
 }

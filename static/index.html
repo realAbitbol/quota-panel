@@ -3,7 +3,9 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="Cache-Control" content="no-store">
+<!-- Cache-Control is set by the server on every response, including index.html. The
+     `http-equiv="Cache-Control"` pragma that used to sit here is not in the HTML spec's
+     pragma list, so it did nothing; the real header is what keeps the UI from going stale. -->
 <link rel="icon" href="/static/favicon.ico" sizes="32x32">
 <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
 <link rel="apple-touch-icon" href="/static/favicon.svg">
@@ -24,7 +26,10 @@
        padding:20px 22px 18px;
        /* /background serves the image configured in accounts.json when there is one,
           and the bundled artwork otherwise — the CSS never needs to know which. */
-       background:var(--bg) url("/background") center / cover fixed no-repeat}
+       /* `background-attachment: fixed` is applied only in the prefers-reduced-motion block
+          below: the shorthand used to set it unconditionally, which made that media query dead
+          code and gave a viewport-pinned image to the user who asked for less motion. */
+       background:var(--bg) url("/background") center / cover no-repeat}
   /* Readability scrim: the photo stays visible, but text keeps its contrast in
      both light and dark areas of the image. Pointer-events off so it never
      swallows clicks. */
@@ -46,17 +51,28 @@
   /* The mark sits flush with the label so the head reads [logo] name / plan … pill.
      Fixed size and flex:0 0 auto keep it from shifting when a label wraps. */
   .card-id{display:flex;gap:9px;align-items:flex-start;min-width:0}
-  .mark{width:20px;height:20px;flex:0 0 auto;color:var(--muted);margin-top:1px;display:block}
+  /* The marks are SVG files loaded through <img>, and `currentColor` cannot cross that
+     boundary: inside an <img> it resolves to the file's own default (black), never the
+     page's colour, so the `color:` rule that used to sit here did nothing and every mark
+     rendered black on a dark card. Force them to white instead. */
+  .mark{width:20px;height:20px;flex:0 0 auto;margin-top:1px;display:block;filter:brightness(0) invert(1)}
   .bal{margin-top:11px}
   .bal-amount{font-size:26px;font-weight:600;letter-spacing:-.3px;font-variant-numeric:tabular-nums;line-height:1.15}
   .bal-amount .cur{font-size:14px;font-weight:500;color:var(--muted);margin-left:4px}
   .bal-amount.empty{color:var(--warn)}
   .bal-note{font-size:11.5px;color:var(--muted);margin-top:3px}
-  .label{font-weight:600;font-size:15px}
+  .label{font-weight:600;font-size:15px;margin:0}   /* an h2: the card's title, for a reader */
   .plan{font-size:11.5px;color:var(--muted);margin-top:2px}
   .pill{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--line);color:var(--muted);white-space:nowrap}
   .pill.ok{color:var(--ok);border-color:#1d5c47}
-  .pill.err{color:var(--hot);border-color:#5c2020}
+  /* Dashed and muted: "documented" must not read as "verified live". */
+  .pill.doc{color:var(--muted);border-style:dashed}
+  /* #ff6b6b measured 3.50:1 on the card surface at 11px — below AA, on the one marker that
+     distinguishes a failing card from a live one in a screenshot. #ffa8a8 measures 5.28:1. */
+  /* The modifier is `bad`, not `err`: an error pill used to carry class="pill err", so it also
+     matched the `.err` error-BOX rule below (background, 9px/11px padding, 9px radius) and the
+     last matching rule won on source order — the pill was painted as a big red block. */
+  .pill.bad{color:#ffa8a8;border-color:#5c2020}
   .win{margin-top:11px}
   .win-top{display:flex;justify-content:space-between;font-size:12.5px;margin-bottom:5px}
   .win-name{color:var(--muted);text-transform:uppercase;letter-spacing:.6px;font-size:11px}
@@ -74,41 +90,79 @@
   #feed{font-variant-numeric:tabular-nums}
   #feed.stale{color:var(--warn)}
   #feed.down{color:var(--hot)}
-  footer{margin-top:18px}
-  </style></style>
+  /* The footer sat directly on the scrim, where the weakest part of the gradient left it at
+     1.42:1 over a bright photo — invisible on exactly the setup a custom wallpaper creates.
+     The card surface measures 5.41:1 at the same spot. */
+  footer{margin-top:18px;background:rgba(var(--card),var(--card-alpha));border:1px solid var(--line);
+       border-radius:12px;padding:10px 13px}
+  </style>
 </head>
 <body>
 <header>
   <img class="logo" src="/static/favicon.svg" width="28" height="28" alt="">
   <h1>Quota Panel</h1>
-  <span class="muted" id="generated">⏰ updated —</span>
+  <span class="muted" id="generated" aria-live="polite">⏰ updated —</span>
+  <!-- #feed repaints once a second, so it is deliberately NOT a live region: a screen reader
+       would announce the data age on every tick. #generated changes only when new data lands. -->
   <span class="muted" id="feed"></span>
 </header>
 
-<div class="grid" id="grid"><div class="card waiting">Loading…</div></div>
+<main>
+  <div class="grid" id="grid"><div class="card waiting">Loading…</div></div>
+</main>
+
+<noscript>
+  <div class="card waiting">This panel paints its data with JavaScript. The raw payload is at
+    <a href="/api/quota">/api/quota</a>.</div>
+</noscript>
 
 <footer class="muted">Read-only. Credentials stay on the host; nothing is sent anywhere else.</footer>
 
 <script>
 'use strict';
-const TICK_MS = 1000;          // countdown repaint
-const MIN_POLL_MS = 15000;     // never hammer the API harder than this
+const TICK_MS = 1000;            // countdown repaint
+const MIN_POLL_MS = 15000;       // never hammer the API harder than this
 const MAX_POLL_MS = 60000;
-const RELOAD_AFTER = 3;        // consecutive failed fetches before a full reload
+const FETCH_TIMEOUT_MS = 12000;  // below MIN_POLL_MS: a fetch must settle before the next one
+const RELOAD_AFTER = 3;          // consecutive failed fetches before the page attempts a reload
+const MAX_RELOADS = 3;           // …and never more than this many in one document
 
 let data = null, clockSkew = 0, pollMs = 30000;
 let lastOkAt = null, failStreak = 0, timer = null, inFlight = false;
+let reloads = 0, lastError = '', reloadTimer = null;
 
 const colorFor = p => p >= 90 ? 'hot' : p >= 70 ? 'warn' : '';
 
 function esc(s){ return String(s === null || s === undefined ? '' : s)
   .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 
+// clockSkew is (server clock - client clock), measured once per fetch, so the server's "now" is
+// clientNow + skew. A reset stamp is on the server's clock, so the skew belongs on the clock —
+// the old code added it to the stamp instead, which doubled the error in the opposite
+// direction: a client 5 minutes slow was told a window reset in 20 minutes when 10 remained.
+function serverNow(){ return Date.now() + clockSkew; }
+
+// The age of the DATA, not of the last successful fetch: /api/quota answers 200 with every
+// account in error, so an HTTP success says nothing about whether the numbers are moving.
+// serverNow() is the server's clock, so `serverNow() - generated_at` is that age directly.
+function dataAge(){
+  const fallback = lastOkAt === null ? 0 : Math.round((Date.now() - lastOkAt)/1000);
+  if(!data || !data.generated_at) return fallback;
+  const born = Date.parse(data.generated_at);
+  if(isNaN(born)) return fallback;
+  return Math.max(0, Math.round((serverNow() - born)/1000));
+}
+
+function isStale(){
+  const cadence = (data && data.poll_seconds) || 60;
+  return dataAge() > cadence * 3;
+}
+
 function countdown(iso){
   if(!iso) return '';
-  const target = Date.parse(iso) + clockSkew;
+  const target = Date.parse(iso);
   if(isNaN(target)) return '';
-  let s = Math.floor((target - Date.now())/1000);
+  let s = Math.floor((target - serverNow())/1000);
   if(s <= 0) return 'resetting…';
   const d = Math.floor(s/86400); s -= d*86400;
   const h = Math.floor(s/3600); s -= h*3600;
@@ -120,9 +174,22 @@ function countdown(iso){
 }
 
 function fmtNum(v){
-  if(v === null || v === undefined) return '—';
-  if(Math.abs(v - Math.round(v)) < 0.005) return String(Math.round(v));
-  return v.toFixed(2);
+  // Total on purpose: a field of the wrong JS type used to throw inside render(), and a throw
+  // there cleared the whole grid. A numeric string is accepted rather than called unreadable —
+  // "98.5" from a provider is a number, not an error.
+  const n = typeof v === 'number' ? v : Number(v);
+  if(v === null || v === undefined || v === '' || !isFinite(n)) return '—';
+  if(Math.abs(n - Math.round(n)) < 0.005) return String(Math.round(n));
+  return n.toFixed(2);
+}
+
+// A percent that is missing, or is not a number at all, is not 0% — and it is not 100% either.
+// `width:NaN%` is an invalid declaration, so the bar fell back to a full-width green fill next
+// to the label "—%": a shape no reading supports. Clamp once, and use that value everywhere.
+function numericPercent(v){
+  const n = typeof v === 'number' ? v : Number(v);
+  if(v === null || v === undefined || v === '' || !isFinite(n)) return null;
+  return Math.min(100, Math.max(0, n));
 }
 
 const CUR_SYMBOL = {USD:'$', CNY:'¥', EUR:'€', GBP:'£', JPY:'¥'};
@@ -131,12 +198,16 @@ const CUR_SYMBOL = {USD:'$', CNY:'¥', EUR:'€', GBP:'£', JPY:'¥'};
 // reading. Never render 0% here — an exhausted balance and an unread one look
 // identical in a bar, and one of them means "you cannot make calls right now".
 function renderBalance(w){
-  const amount = (w.amount === null || w.amount === undefined) ? null : Number(w.amount);
+  const parsed = (w.amount === null || w.amount === undefined || w.amount === '') ? null : Number(w.amount);
+  // A non-numeric amount is unreadable — not zero, and never the string "NaN".
+  const amount = parsed === null || !isFinite(parsed) ? null : parsed;
   const cur = w.currency || 'USD';
   const sym = CUR_SYMBOL[cur] || '';
   const exhausted = amount !== null && amount <= 0;
+  // Built unescaped: this string is escaped once, where it is interpolated. Escaping the
+  // currency here and again there printed literal "&lt;i&gt;USD&lt;/i&gt;" to the user.
   const shown = amount === null ? '—'
-    : (sym ? sym + amount.toFixed(2) : amount.toFixed(2) + ' ' + esc(cur));
+    : (sym ? sym + amount.toFixed(2) : amount.toFixed(2) + ' ' + cur);
   let html = `<div class="bal">
       <div class="bal-amount${exhausted ? ' empty' : ''}">${esc(shown)}${
         sym ? `<span class="cur">${esc(cur)}</span>` : ''}</div>`;
@@ -166,20 +237,110 @@ function renderBalance(w){
 function setFeed(){
   const el = document.getElementById('feed');
   const every = Math.round(pollMs/1000);
-  if(lastOkAt === null){ el.textContent = ''; el.className = 'muted'; return; }
-  const age = Math.round((Date.now() - lastOkAt)/1000);
+  if(lastOkAt === null){
+    // Never tell the user "Loading…" forever: if the very first fetch failed, say so.
+    if(!lastError){ el.textContent = ''; el.className = 'muted'; return; }
+    el.textContent = `⛔ no data yet — ${lastError}`;
+    el.className = 'muted down';
+    return;
+  }
+  const age = dataAge();
+  const tail = lastError ? ` — ${lastError}` : '';
+  const stale = isStale();
   // The cadence and the age read as one sentence, so the state goes in the parentheses and
   // the mark changes with it — colour alone is easy to miss in a screenshot or a terminal.
-  if(failStreak === 0){
+  if(failStreak === 0 && !stale){
     el.textContent = `🔄 auto-refresh every ${every}s (data ${age}s old)`;
     el.className = 'muted';
   } else if(failStreak < RELOAD_AFTER){
-    el.textContent = `⚠️ auto-refresh every ${every}s (reconnecting, data ${age}s old)`;
+    // A payload that parsed fine but stopped moving is not a healthy feed: /api/quota answers
+    // 200 with every account in error, so HTTP success alone says nothing about the data.
+    el.textContent = `⚠️ auto-refresh every ${every}s (${stale ? 'data stale' : 'reconnecting'}, data ${age}s old)${tail}`;
     el.className = 'muted stale';
   } else {
-    el.textContent = `⛔ auto-refresh every ${every}s (feed down, data ${age}s old)`;
+    el.textContent = `⛔ auto-refresh every ${every}s (feed down, data ${age}s old)${tail}`;
     el.className = 'muted down';
   }
+}
+
+// One card's markup. It returns a string so that a throw cannot leave the grid half-built:
+// render() clears the grid first, so an exception in here used to blank the page while the
+// indicator still claimed "auto-refresh every 30s", and that same exception escaped load() as an
+// unhandled rejection — the count then oscillated 0→1 and the reload path was never reached.
+//
+// Why setting innerHTML from this string is safe: every value that originates outside this file
+// (label, plan, account_name, error, notes, resets_at, currency, state, logo) is passed through
+// esc() at the point of interpolation, and esc() escapes &, <, > and ". The only unescaped
+// interpolations are the outputs of fmtNum(), numericPercent() and colorFor(), which can only
+// produce digits, "-", "." and the fixed literals ''/'warn'/'hot'. Attribute contexts are all
+// double-quoted, and src= values are appended to a root-relative path, so a config-supplied
+// logo cannot become an off-origin or javascript: URL.
+function cardHtml(acc){
+  const ok = acc.state === 'ok';
+  // The mark is keyed off the provider the server resolved, falling back to the
+  // neutral glyph — a missing logo file must never render a broken-image box.
+  const mark = acc.logo || '_fallback.svg';
+  // A green "live" pill has to mean what the server means by it: `contract` records whether the
+  // adapter was exercised against a real response ('live') or built from the vendor's published
+  // contract ('documented'). The server serves that field so the UI "can never imply more than
+  // was measured" — and the card used to badge every healthy account the same.
+  const documented = acc.contract !== 'live';
+  const pill = ok ? (documented ? 'documented' : 'live') : acc.state;
+  const pillTitle = ok
+    ? (documented
+        ? 'built from the vendor’s published contract — not yet exercised against a real response'
+        : 'exercised against a real provider response')
+    : (acc.error || acc.state);
+  let html = `<div class="card-head">
+      <div class="card-id">
+        <img class="mark" src="/static/logos/${esc(mark)}" width="20" height="20" alt="" aria-hidden="true">
+        <div style="min-width:0">
+          <h2 class="label">${esc(acc.label)}</h2>
+          <div class="plan">${esc(acc.plan || acc.provider)}${acc.account_name ? ' · ' + esc(acc.account_name) : ''}</div>
+        </div>
+      </div>
+      <span class="pill ${ok ? (documented ? 'doc' : 'ok') : 'bad'}" title="${esc(pillTitle)}">${esc(pill)}</span>
+    </div>`;
+  if(!ok){
+    // http_status is kept separate from state by the server precisely so a card can say "the
+    // provider answered 500" without inventing a reason; it was served and never rendered.
+    html += `<div class="err">${esc(acc.error || acc.state)}${
+      acc.http_status ? esc(' (HTTP ' + acc.http_status + ')') : ''}</div>`;
+    return html;
+  }
+  for(const w of (acc.windows || [])){
+    if((w.kind || 'window') === 'balance'){
+      html += renderBalance(w);
+      continue;
+    }
+    const p = numericPercent(w.percent);
+    const label = p === null ? (w.note || '—') : fmtNum(p) + '%';
+    html += `<div class="win" data-reset="${esc(w.resets_at || '')}">
+        <div class="win-top"><span class="win-name">${esc(w.label)}</span><span class="win-val">${esc(label)}</span></div>`;
+    if(p !== null){
+      html += `<div class="bar"><div class="fill ${colorFor(p)}" style="width:${p}%"></div></div>`;
+    }
+    // The note is printed exactly once, on the detail line: it used to be dropped whenever a
+    // percent was present (except the magic string "credits") and printed twice when it was not.
+    const detail = [];
+    const cd = countdown(w.resets_at);
+    if(cd) detail.push(cd);
+    if(w.used !== null && w.used !== undefined && w.cap) detail.push(`${fmtNum(w.used)} / ${fmtNum(w.cap)}`);
+    if(w.note && p !== null) detail.push(String(w.note));
+    if(detail.length) html += `<div class="reset">${esc(detail.join(' · '))}</div>`;
+    html += `</div>`;
+  }
+  const t = acc.totals || {};
+  if(t.requests || t.tokens_in){
+    html += `<div class="totals">${fmtNum(t.requests || 0)} requests · in ${fmtNum(t.tokens_in || 0)} / out ${fmtNum(t.tokens_out || 0)} tokens${t.success_rate !== undefined && t.success_rate !== null ? ' · ' + fmtNum(t.success_rate) + '% success' : ''}</div>`;
+  }
+  if(acc.period_end){
+    // The server passes a provider-supplied string through when it merely looks ISO-ish, so an
+    // unparseable one used to print "period ends Invalid Date" as if it were a fact.
+    const end = Date.parse(acc.period_end);
+    html += `<div class="reset">period ends ${isNaN(end) ? esc(acc.period_end) : new Date(end).toLocaleString()}</div>`;
+  }
+  return html;
 }
 
 function render(){
@@ -193,52 +354,16 @@ function render(){
   for(const acc of accounts){
     const el = document.createElement('div');
     el.className = 'card';
-    const ok = acc.state === 'ok';
-    // The mark is keyed off the provider the server resolved, falling back to the
-    // neutral glyph — a missing logo file must never render a broken-image box.
-    const mark = acc.logo || '_fallback.svg';
-    let html = `<div class="card-head">
-        <div class="card-id">
-          <img class="mark" src="/static/logos/${esc(mark)}" width="20" height="20" alt="" aria-hidden="true">
-          <div style="min-width:0">
-            <div class="label">${esc(acc.label)}</div>
-            <div class="plan">${esc(acc.plan || acc.provider)}${acc.account_name ? ' · ' + esc(acc.account_name) : ''}</div>
-          </div>
-        </div>
-        <span class="pill ${ok ? 'ok' : 'err'}">${ok ? 'live' : esc(acc.state)}</span>
-      </div>`;
-    if(!ok){
-      html += `<div class="err">${esc(acc.error || acc.state)}</div>`;
-    } else {
-      for(const w of acc.windows){
-        if((w.kind || 'window') === 'balance'){
-          html += renderBalance(w);
-          continue;
-        }
-        const p = w.percent;
-        const label = p === null ? (w.note || '—') : fmtNum(p) + '%';
-        html += `<div class="win" data-reset="${esc(w.resets_at || '')}">
-            <div class="win-top"><span class="win-name">${esc(w.label)}</span><span class="win-val">${esc(label)}</span></div>`;
-        if(p !== null){
-          html += `<div class="bar"><div class="fill ${colorFor(p)}" style="width:${Math.min(100, Math.max(0, p))}%"></div></div>
-            <div class="reset">${countdown(w.resets_at)}${w.used !== null && w.cap ? ` · ${fmtNum(w.used)} / ${fmtNum(w.cap)}${w.note==='credits' ? ' credits' : ''}` : ''}</div>`;
-        } else if(w.note){
-          html += `<div class="reset">${esc(w.note)}</div>`;
-        }
-        html += `</div>`;
-      }
-      const t = acc.totals || {};
-      if(t.requests || t.tokens_in){
-        html += `<div class="totals">${fmtNum(t.requests || 0)} requests · in ${fmtNum(t.tokens_in || 0)} / out ${fmtNum(t.tokens_out || 0)} tokens${t.success_rate !== undefined && t.success_rate !== null ? ' · ' + fmtNum(t.success_rate) + '% success' : ''}</div>`;
-      }
-      if(acc.period_end){
-        html += `<div class="reset">period ends ${new Date(acc.period_end).toLocaleString()}</div>`;
-      }
+    try{
+      // Every interpolated value in cardHtml passes through esc() (label/plan/error/notes come
+      // from the local config and provider APIs), so no raw remote string is parsed as markup.
+      el.innerHTML = cardHtml(acc);
+    }catch(e){
+      // One malformed field must cost one card, not the whole grid — and the failure has to be
+      // visible, because a blank panel under a green indicator is the worst possible outcome.
+      el.innerHTML = `<h2 class="label">${esc(acc.label || acc.id || 'account')}</h2>
+          <div class="err">could not render this card: ${esc((e && e.message) || String(e))}</div>`;
     }
-    // Every interpolated value above passes through esc() before it reaches innerHTML
-    // (label/plan/error/notes come from the local config and provider APIs), so no raw
-    // remote string is ever parsed as markup.
-    el.innerHTML = html;
     grid.appendChild(el);
   }
   const gen = data.generated_at ? new Date(data.generated_at).toLocaleTimeString() : '—';
@@ -247,16 +372,18 @@ function render(){
 }
 
 function tick(){
-  for(const el of document.querySelectorAll('.win[data-reset]')){
+  // Window cards put data-reset on the wrapper (.win) and the text lives in a .reset child;
+  // balance cards put it on the .reset element itself. Only the first shape used to be
+  // matched, so every money card's countdown froze at render time while the window countdowns
+  // beside it kept ticking.
+  for(const el of document.querySelectorAll('[data-reset]')){
     const iso = el.getAttribute('data-reset');
-    const node = el.querySelector('.reset');
-    if(node && iso){
-      const cd = countdown(iso);
-      if(cd){
-        const parts = node.textContent.split(' · ');
-        node.textContent = cd + (parts.length > 1 ? ' · ' + parts.slice(1).join(' · ') : '');
-      }
-    }
+    const node = el.classList.contains('reset') ? el : el.querySelector('.reset');
+    if(!node || !iso) continue;
+    const cd = countdown(iso);
+    if(!cd) continue;
+    const parts = node.textContent.split(' · ');
+    node.textContent = cd + (parts.length > 1 ? ' · ' + parts.slice(1).join(' · ') : '');
   }
   setFeed();
 }
@@ -271,28 +398,55 @@ async function load(){
   // within milliseconds of each other and used to produce three identical requests).
   if(inFlight) return;
   inFlight = true;
+  // A fetch that never settles used to latch `inFlight` forever: every later load() returned at
+  // the line above, auto-refresh stopped, `failStreak` never moved, and nothing on the page said
+  // so. Bound it, so the catch path always runs and the latch is always released.
+  const ctrl = new AbortController();
+  const bail = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS);
   try{
-    const res = await fetch('/api/quota?t=' + Date.now(), {cache:'no-store'});
+    const res = await fetch('/api/quota?t=' + Date.now(), {cache:'no-store', signal:ctrl.signal});
     if(!res.ok) throw new Error('HTTP ' + res.status);
     const fresh = await res.json();
     data = fresh;
-    clockSkew = fresh.generated_at ? (Date.parse(fresh.generated_at) - Date.now()) : 0;
+    // `now` is the server's clock at response time, i.e. a real clock offset. Falling back to
+    // `generated_at` (an older server) contaminates it with the data's age — the client then
+    // believes the server clock is behind by however stale the payload is, which is precisely
+    // the error the countdown used to show.
+    const serverClock = fresh.now || fresh.generated_at;
+    clockSkew = serverClock ? (Date.parse(serverClock) - Date.now()) : 0;
     lastOkAt = Date.now();
     failStreak = 0;
+    lastError = '';
+    if(reloadTimer){ clearTimeout(reloadTimer); reloadTimer = null; }
     const wanted = Math.min(MAX_POLL_MS, Math.max(MIN_POLL_MS, (fresh.poll_seconds || 60) * 1000 / 2));
     if(wanted !== pollMs){ pollMs = wanted; schedule(); }
     render();
   }catch(e){
     failStreak++;
-    // Keep the last good render on screen; only escalate to a full reload when the
-    // feed has been down long enough that a fresh page is the reliable recovery.
-    if(failStreak >= RELOAD_AFTER && document.visibilityState === 'visible'){
-      failStreak = 0;
-      location.reload();
-      return;
-    }
+    lastError = (e && e.name === 'AbortError')
+      ? `no answer within ${Math.round(FETCH_TIMEOUT_MS/1000)}s`
+      : ((e && e.message) || 'fetch failed');
+    // Keep the last good render on screen and paint the failure state BEFORE deciding whether to
+    // reload — the reload branch used to clear failStreak first, which made the "feed down" state
+    // unreachable in any visible tab. setFeed() is called explicitly because render() returns
+    // early when no payload has ever arrived.
     render();
+    setFeed();
+    // A reload is bounded, backed off, and never a loop: the failure this page is built to
+    // survive is the server being gone, and that is exactly when reloading cannot help — the old
+    // bare location.reload() stormed forever, said nothing, and discarded the last good render.
+    if(failStreak >= RELOAD_AFTER && document.visibilityState === 'visible'){
+      if(reloads >= MAX_RELOADS){
+        lastError = `${lastError} (reloads exhausted — this page will keep retrying the feed)`;
+        setFeed();
+      }else{
+        reloads++;
+        setFeed();
+        reloadTimer = setTimeout(() => location.reload(), reloads * 5000);
+      }
+    }
   }finally{
+    clearTimeout(bail);
     inFlight = false;
   }
 }

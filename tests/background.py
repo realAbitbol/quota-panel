@@ -35,6 +35,11 @@ def main():
     try:
         from PIL import Image
     except ImportError:
+        if os.environ.get("CI"):
+            # CI pins and installs Pillow before this step: "not installed" there means the
+            # install broke, and a green skip would hide the whole shrink path going untested.
+            print("FAIL: Pillow is not installed and CI is set (the CI step pins and installs it)")
+            return 1
         print("Pillow is not installed - nothing to test (CI installs it before this script).")
         return 0
 

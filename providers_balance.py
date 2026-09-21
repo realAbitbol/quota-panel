@@ -25,6 +25,7 @@ Design rules these adapters obey:
 
 import json
 import os
+import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -106,9 +107,9 @@ def fetch_cheaperinference(account):
             "403 = the key is valid but lacks the 'account:read' scope this endpoint "
             "requires (a usage-only key cannot read the balance)." % status
         )
-        return _fail(account, "auth_error", detail)
+        return _fail(account, "auth_error", detail, status=status)
     if err and status is None:
-        return _fail(account, "network_error", err)
+        return _fail(account, "network_error", err, status=status)
     if err and status == 404:
         return _fail(
             account,
@@ -116,18 +117,21 @@ def fetch_cheaperinference(account):
             "CheaperInference /v1/account/balance returned 404 — the base URL is wrong "
             "for this account (api.cheaperinference.com and api.cheapestinference.com "
             "are different vendors).",
-        )
+             status=status,
+         )
     if body is None:
-        return _fail(account, "provider_error", err or "empty response body")
+        return _fail(account, "provider_error", err or "empty response body", status=status)
 
     # The wallet object sits at the top level, or one `data` envelope deep.
-    root = unwrap(body) or body
+    root = unwrap(body, "data") or body
 
     available = num(root.get("available_usd"))
     balance = num(root.get("balance_usd"))
     reserved = num(root.get("reserved_usd"))
     currency = (root.get("currency") or "USD")
-    auto = root.get("auto_recharge") or root.get("autoRecharge")
+    # The published field is `auto_recharge_enabled` (boolean). `auto_recharge` does not
+    # exist anywhere in the vendor's OpenAPI for this route, so the old lookup was dead code.
+    auto = root.get("auto_recharge_enabled")
 
     if available is None and balance is None:
         return _fail(
@@ -135,13 +139,14 @@ def fetch_cheaperinference(account):
             "shape_unknown",
             "unrecognised CheaperInference balance response (no available_usd/balance_usd): %s"
             % json.dumps(body)[:200],
-        )
+             status=status,
+         )
     # available_usd is the honest number; fall back to balance_usd only if it is absent.
     shown = available if available is not None else balance
     note = None
     if reserved:
         note = "%s reserved in flight" % _money(reserved, currency)
-    if isinstance(auto, dict) and auto.get("enabled"):
+    if auto is True or str(auto).lower() == "true":
         note = (note + " · " if note else "") + "auto-recharge on"
 
     extra = {}
@@ -188,19 +193,25 @@ def fetch_openrouter(account):
     }
     status, credits, err_c = http_get_json(OPENROUTER_BASE + "/v1/credits", headers)
 
-    if err_c and status in (401, 403):
-        return _fail(
-            account,
-            "auth_error",
-            "OpenRouter rejected the key (HTTP %s). Check the key at "
-            "openrouter.ai/settings/keys." % status,
-        )
     if err_c and status is None:
-        return _fail(account, "network_error", err_c)
+        return _fail(account, "network_error", err_c, status=status)
+    # /v1/credits requires a *management* key: an ordinary key is refused with 403 ("Only
+    # management keys can perform this operation"). That is not a dead key — /v1/key still
+    # answers — so the key reading is kept and the card says what is missing rather than
+    # blaming the credential.
+    credits_blocked = status in (401, 403)
 
     _, keyinfo, err_k = http_get_json(OPENROUTER_BASE + "/v1/key", headers)
     if credits is None and keyinfo is None:
-        return _fail(account, "provider_error", err_c or err_k or "no data from OpenRouter")
+        if credits_blocked and status == 401:
+            return _fail(
+                account,
+                "auth_error",
+                "OpenRouter rejected the key (HTTP 401). Check the key at "
+                "openrouter.ai/settings/keys.",
+                 status=status,
+             )
+        return _fail(account, "provider_error", err_c or err_k or "no data from OpenRouter", status=status)
 
     cdata = unwrap(credits, "data") or unwrap(credits) or {}
     kdata = unwrap(keyinfo, "data") or unwrap(keyinfo) or {}
@@ -213,6 +224,7 @@ def fetch_openrouter(account):
 
     limit = num(kdata.get("limit"))
     limit_remaining = num(kdata.get("limit_remaining"))
+    key_usage = num(kdata.get("usage"))
     daily = num(kdata.get("usage_daily"))
     weekly = num(kdata.get("usage_weekly"))
     monthly = num(kdata.get("usage_monthly"))
@@ -223,7 +235,7 @@ def fetch_openrouter(account):
     # you whether you can still make calls.
     recognised = any(
         value is not None
-        for value in (total, spent, limit, limit_remaining, daily, weekly, monthly)
+        for value in (total, spent, limit, limit_remaining, key_usage, daily, weekly, monthly)
     )
     if not recognised:
         return _fail(
@@ -232,7 +244,8 @@ def fetch_openrouter(account):
             "unrecognised OpenRouter response (no known fields in /credits or /key): "
             "credits=%s key=%s"
             % (json.dumps(cdata)[:100], json.dumps(kdata)[:100]),
-        )
+             status=status,
+         )
 
     windows = []
     if limit and limit > 0:
@@ -257,13 +270,37 @@ def fetch_openrouter(account):
         resets = kdata.get("limit_reset")
         if resets:
             windows[-1]["note"] = "resets %s" % resets
-    elif keyinfo is not None:
+        if credits_blocked:
+            # A capped key renders this window, so the branch below never runs — but the
+            # wallet reading is still missing, and a card that shows only the cap implies the
+            # balance was read. Say it here too.
+            windows[-1]["note"] = "; ".join(
+                part for part in [windows[-1]["note"], "wallet balance needs a management key"]
+                if part
+            )
+    elif limit == 0:
+        # A reported spend limit of 0 is a reading, not the absence of one: calling it "no
+        # cap" would show a spendable balance on a key that cannot spend anything.
         windows.append(
             _balance(
                 account,
-                amount=remaining,
+                amount=limit_remaining,
                 currency="USD",
-                note="no spend cap set on this key",
+                note="spend limit reported as 0 — nothing spendable on this key",
+            )
+        )
+    elif keyinfo is not None:
+        note = "no spend cap set on this key"
+        if credits_blocked:
+            note = "wallet balance needs a management key"
+            if key_usage is not None:
+                note += "; this key has used %s" % _money(key_usage, "USD")
+        windows.append(
+            _balance(
+                account,
+                amount=limit_remaining if credits is None else remaining,
+                currency="USD",
+                note=note,
             )
         )
 
@@ -331,11 +368,12 @@ def fetch_deepseek(account):
             "auth_error",
             "DeepSeek rejected the key (HTTP %s). Note the unauth body is "
             "'Authentication Fails (governor)'." % status,
-        )
+             status=status,
+         )
     if err and status is None:
-        return _fail(account, "network_error", err)
+        return _fail(account, "network_error", err, status=status)
     if body is None:
-        return _fail(account, "provider_error", err or "empty response body")
+        return _fail(account, "provider_error", err or "empty response body", status=status)
 
     infos = body.get("balance_infos")
     if not isinstance(infos, list) or not infos:
@@ -343,7 +381,8 @@ def fetch_deepseek(account):
             account,
             "shape_unknown",
             "DeepSeek returned no balance_infos array: %s" % json.dumps(body)[:200],
-        )
+             status=status,
+         )
 
     chosen = None
     for info in infos:
@@ -362,7 +401,8 @@ def fetch_deepseek(account):
             account,
             "shape_unknown",
             "DeepSeek balance entry has no total_balance: %s" % json.dumps(chosen)[:200],
-        )
+             status=status,
+         )
 
     is_available = body.get("is_available")
     # `is_available` describes the ACCOUNT, not the currency shown here. With a
@@ -418,7 +458,7 @@ def fetch_deepseek(account):
 # GET /v1/users/me/balance -> {code:0, status:true, scode:"0x0",
 #                              data:{available_balance, voucher_balance, cash_balance}}
 #
-# Success is `status == True AND code == 0`. Amounts are USD. `cash_balance` can be
+# Success is `status == True AND code == 0`. `cash_balance` can be
 # negative (the user owes money) and `available_balance` is then just the vouchers.
 
 def fetch_kimi(account):
@@ -437,11 +477,12 @@ def fetch_kimi(account):
             "Kimi/Moonshot rejected the key (HTTP %s). platform.kimi.ai and "
             "platform.kimi.com keys are not interchangeable — a key from one platform "
             "answers 401 on the other, so check MOONSHOT_API_BASE." % status,
-        )
+             status=status,
+         )
     if err and status is None:
-        return _fail(account, "network_error", err)
+        return _fail(account, "network_error", err, status=status)
     if body is None:
-        return _fail(account, "provider_error", err or "empty response body")
+        return _fail(account, "provider_error", err or "empty response body", status=status)
 
     if body.get("status") is not True or body.get("code") not in (0, None):
         return _fail(
@@ -449,7 +490,8 @@ def fetch_kimi(account):
             "provider_error",
             "Kimi balance call did not succeed (code=%s status=%s): %s"
             % (body.get("code"), body.get("status"), json.dumps(body)[:160]),
-        )
+             status=status,
+         )
 
     data = unwrap(body, "data")
     if not isinstance(data, dict):
@@ -457,7 +499,8 @@ def fetch_kimi(account):
             account,
             "shape_unknown",
             "Kimi returned no balance data object: %s" % json.dumps(body)[:200],
-        )
+             status=status,
+         )
 
     available = num(data.get("available_balance"))
     voucher = num(data.get("voucher_balance"))
@@ -467,16 +510,21 @@ def fetch_kimi(account):
             account,
             "shape_unknown",
             "Kimi balance has no available_balance: %s" % json.dumps(data)[:200],
-        )
+             status=status,
+         )
 
     note = None
     if available <= 0:
         note = "balance exhausted — the inference API returns exceeded_current_quota_error"
+    # platform.kimi.com bills in CNY, platform.kimi.ai in USD. The payload carries no currency
+    # field of its own, so it is derived from the host that answered rather than assumed: a
+    # yuan balance printed as dollars is a wrong number, not a cosmetic bug.
+    currency = "CNY" if "kimi.com" in MOONSHOT_BASE else "USD"
     bits = []
     if voucher is not None:
-        bits.append("%s voucher" % _money(voucher, "USD"))
+        bits.append("%s voucher" % _money(voucher, currency))
     if cash is not None:
-        bits.append("%s cash" % _money(cash, "USD"))
+        bits.append("%s cash" % _money(cash, currency))
     if bits:
         note = (note + " · " if note else "") + ", ".join(bits)
 
@@ -497,9 +545,9 @@ def fetch_kimi(account):
         "monthly_remaining": available,
         "period_end": None,
         "totals": {},
-        "currency": "USD",
+        "currency": currency,
         "windows": [
-            _balance(account, amount=available, currency="USD", note=note, extra=extra)
+            _balance(account, amount=available, currency=currency, note=note, extra=extra)
         ],
         "fetched_at": _now(),
     }
@@ -535,11 +583,11 @@ def fetch_zai(account):
     status, body, err = http_get_json(url, headers)
 
     if err and status in (401, 403):
-        return _fail(account, "auth_error", "z.ai rejected the key (HTTP %s)." % status)
+        return _fail(account, "auth_error", "z.ai rejected the key (HTTP %s)." % status, status=status)
     if err and status is None:
-        return _fail(account, "network_error", err)
+        return _fail(account, "network_error", err, status=status)
     if body is None:
-        return _fail(account, "provider_error", err or "empty response body")
+        return _fail(account, "provider_error", err or "empty response body", status=status)
 
     # The trap: 200 with success=false.
     if body.get("success") is False or body.get("code") not in (200, None):
@@ -548,7 +596,8 @@ def fetch_zai(account):
             "auth_error",
             "z.ai answered HTTP 200 but reported failure (code=%s success=%s): %s"
             % (body.get("code"), body.get("success"), body.get("msg") or "no message"),
-        )
+             status=status,
+         )
 
     container = unwrap(body, "data") or {}
     limits = container.get("limits")
@@ -561,7 +610,8 @@ def fetch_zai(account):
             "z.ai returned no quota limits. Empty limits are what a Coding Plan answers "
             "when the org/project selectors are missing for a team account, so check the "
             "region and the account scope.",
-        )
+             status=status,
+         )
 
     plan = None
     for field in ("planName", "plan", "planType", "packageName"):
@@ -589,12 +639,17 @@ def fetch_zai(account):
         percent = None
         used = None
         if cap and cap > 0:
-            if remaining is not None:
-                used = cap - remaining
-            if used is None:
-                used = current
-            if used is not None:
-                used = max(0.0, min(cap, used))
+            # Both implementations this adapter was built against derive usage the same way:
+            # used = max(0, min(cap, max(cap - remaining, currentValue))). Taking only
+            # `cap - remaining` under-reports whenever the two counts disagree, which is a
+            # card promising more headroom than the account actually has.
+            candidates = [
+                value
+                for value in ((cap - remaining) if remaining is not None else None, current)
+                if value is not None
+            ]
+            if candidates:
+                used = max(0.0, min(cap, max(candidates)))
                 percent = used / cap * 100.0
         if percent is None:
             direct = num(raw.get("percentage"))
@@ -612,10 +667,14 @@ def fetch_zai(account):
             elif unit == "6":
                 label = "Weekly"
 
+        # `number` belongs in the key: two limits of the same type and unit (a 5-hour and a
+        # 7-day TOKENS_LIMIT both arrive as unit 3 / unit 6) collided on one key, and the
+        # homepage items map silently dropped the second one.
+        span = "%g" % number if number else "x"
         windows.append(
             {
                 "kind": "window",
-                "key": "zai_%s_%s" % (kind_type.lower(), unit or "x"),
+                "key": "zai_%s_%s_%s" % (kind_type.lower(), unit or "x", span),
                 "label": label,
                 "percent": None if percent is None else round(percent, 2),
                 "used": used,
@@ -627,7 +686,7 @@ def fetch_zai(account):
         )
 
     if not windows:
-        return _fail(account, "shape_unknown", "z.ai limits carried no recognisable window")
+        return _fail(account, "shape_unknown", "z.ai limits carried no recognisable window", status=status)
 
     return {
         "id": account["id"],
@@ -667,15 +726,16 @@ def fetch_synthetic(account):
             account,
             "auth_error",
             "Synthetic rejected the key (HTTP %s)." % status,
-        )
+             status=status,
+         )
     if err and status is None:
-        return _fail(account, "network_error", err)
+        return _fail(account, "network_error", err, status=status)
     if body is None:
-        return _fail(account, "provider_error", err or "empty response body")
+        return _fail(account, "provider_error", err or "empty response body", status=status)
 
     sub = unwrap(body, "subscription")
     if not isinstance(sub, dict):
-        sub = unwrap(body) or {}
+        sub = body if isinstance(body, dict) else {}
     limit = num(sub.get("limit"))
     requests = num(sub.get("requests"))
     renews = sub.get("renewsAt")
@@ -685,7 +745,19 @@ def fetch_synthetic(account):
             account,
             "shape_unknown",
             "Synthetic returned no subscription limit/requests: %s" % json.dumps(body)[:200],
-        )
+             status=status,
+         )
+
+    # Anything else in the payload shaped like another window is named instead of being
+    # dropped without a word: one bar drawn while the API reports two is a quiet lie. The
+    # extras are undocumented, so they are summarised rather than parsed.
+    others = sorted(
+        key
+        for key, value in (body.items() if isinstance(body, dict) else [])
+        if key != "subscription"
+        and isinstance(value, dict)
+        and any(field in value for field in ("limit", "requests", "used", "remaining"))
+    )
 
     percent = None
     if limit and limit > 0:
@@ -700,7 +772,7 @@ def fetch_synthetic(account):
             "used": requests,
             "cap": limit,
             "resets_at": _reset_from(renews),
-            "note": None,
+            "note": ("also reported: %s" % ", ".join(others)) if others else None,
         }
     ]
 
@@ -749,8 +821,12 @@ def _looks_like_credential(value):
     low = text.lower()
     if low.startswith(CREDENTIAL_PREFIXES):
         return True
-    # A long opaque run with no spaces is treated as a secret rather than a name.
-    return len(text) >= 24 and " " not in text and any(c.isdigit() for c in text)
+    # A long opaque run with no separators is treated as a secret rather than a name: a label
+    # a human typed reads as words ("production-workspace-2024", longest run 11), a key does
+    # not. The word-only rule alone was measured dropping legitimate labels.
+    if len(text) >= 24 and " " not in text and any(c.isdigit() for c in text):
+        return max(len(part) for part in re.split(r"[-_./]", text)) >= 16
+    return False
 
 
 def _now():

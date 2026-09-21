@@ -20,6 +20,7 @@ this).
 """
 import json
 import os
+import socket
 import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -49,6 +50,12 @@ ROUTES = {}
 
 
 class Stub(BaseHTTPRequestHandler):
+    """Replays one route table. A route is a body (answered 200) or (status, body).
+
+    The status was hardcoded to 200 before, which made every 401/403/404 branch in every
+    adapter structurally unreachable from this file.
+    """
+
     def do_GET(self):
         path = self.path.split("?")[0]
         if path not in ROUTES:
@@ -56,8 +63,9 @@ class Stub(BaseHTTPRequestHandler):
             self.send_header("Content-Length", "0")
             self.end_headers()
             return
-        body = json.dumps(ROUTES[path]).encode()
-        self.send_response(200)
+        status, payload = ROUTES[path]
+        body = payload if isinstance(payload, bytes) else json.dumps(payload).encode()
+        self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
@@ -65,6 +73,14 @@ class Stub(BaseHTTPRequestHandler):
 
     def log_message(self, fmt, *args):
         pass
+
+
+def free_port():
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    port = s.getsockname()[1]
+    s.close()
+    return port
 
 
 def serve():
@@ -93,7 +109,10 @@ CI_SETTLED = {
     "available_usd": 0.0,
     "reserved_usd": 0.0,
     "currency": "USD",
-    "auto_recharge": {"enabled": False},
+    # The published field, plus the shape the adapter used to look for as a decoy: the two
+    # disagree on purpose, so this fixture can tell which one is actually read.
+    "auto_recharge_enabled": False,
+    "auto_recharge": {"enabled": True},
 }
 CI_RESERVED = {
     "object": "account.balance",
@@ -101,15 +120,25 @@ CI_RESERVED = {
     "available_usd": 37.5,
     "reserved_usd": 2.5,
     "currency": "USD",
-    "auto_recharge": {"enabled": True},
+    "auto_recharge_enabled": True,
+    "auto_recharge": {"enabled": False},
 }
 
 
-def run(provider, routes, base):
+def run(provider, routes, base, token="t"):
+    """Poll one account through the SERVER's own path: registry -> adapter -> annotate -> scrub.
+
+    This used to call `pb.BALANCE_FETCHERS[provider](acct)` directly, which skipped
+    `poll_account`, `load_balance_fetchers()` and the HTTP layer — so a server in which the
+    registry never loaded (six providers dead, every card `unsupported`) left this file 61/61
+    green. `poll_account` is the one function both the window and the balance adapters go
+    through, so it is the only honest thing to test.
+    """
     ROUTES.clear()
-    ROUTES.update(routes)
-    acct = {"id": "%s-1" % provider, "provider": provider, "label": provider, "token": "t"}
-    return app._annotate(acct, pb.BALANCE_FETCHERS[provider](acct))
+    for path, value in routes.items():
+        ROUTES[path] = value if isinstance(value, tuple) else (200, value)
+    acct = {"id": "%s-1" % provider, "provider": provider, "label": provider, "token": token}
+    return app.poll_account(acct)
 
 
 def window(res, key):
@@ -129,15 +158,36 @@ def main():
     pb.MOONSHOT_BASE = base
     pb.SYNTHETIC_BASE = base
     pb.ZAI_BASE = base
+    # A base that is pointed anywhere else is a call to a real vendor: after the six
+    # assignments above, every `*_BASE` the module exposes must be the stub.
+    strays = sorted(k for k in dir(pb) if k.endswith("_BASE") and getattr(pb, k) != base)
+    check("no provider base still points at a real host", not strays,
+          "%s -> %s" % (strays, [getattr(pb, k) for k in strays]))
 
     try:
         # ---- registry + logos -------------------------------------------------
         for provider, info in sorted(app.PROVIDERS.items()):
             logo = os.path.join(ROOT, "static", "logos", info["logo"])
             check("logo file exists for %s (%s)" % (provider, info["logo"]), os.path.exists(logo))
+        # The registry and the adapters must stay in step: a provider with no adapter renders
+        # an error card on a working install, and an adapter for an unregistered provider is
+        # unreachable code. Neither was asserted anywhere.
+        check("every provider in the registry is served by an adapter",
+              set(app.PROVIDERS) == set(app.FETCHERS) | set(pb.BALANCE_FETCHERS),
+              "registry-only=%s adapter-only=%s"
+              % (sorted(set(app.PROVIDERS) - set(app.FETCHERS) - set(pb.BALANCE_FETCHERS)),
+                 sorted((set(app.FETCHERS) | set(pb.BALANCE_FETCHERS)) - set(app.PROVIDERS))))
+        # Every `*_BASE` in the module must have been pointed at the stub below. A seventh
+        # adapter with a new base name would otherwise call the real vendor with token "t",
+        # and nothing in this file would notice.
+        check("every advertised provider has a base pointed at the stub",
+              len([k for k in dir(pb) if k.endswith("_BASE")]) == len(pb.BALANCE_FETCHERS),
+              str(sorted(k for k in dir(pb) if k.endswith("_BASE"))))
         check("an unknown provider falls back to the neutral glyph",
               app.provider_logo("nope") == app.LOGO_FALLBACK)
-        check("a broken logo path falls back too",
+        # The fallback case itself is further down (a provider whose mark is missing); this
+        # line asserts the opposite path, and used to claim the fallback in its name.
+        check("a registered provider's own mark is returned",
               app.provider_logo("zai") == "zai.svg")
         check("an unknown provider is treated as a window provider",
               app.provider_kind("nope") == "window")
@@ -271,14 +321,81 @@ def main():
               all(w["resets_at"] is None or w["resets_at"].endswith("Z") for w in res["windows"]))
 
         # ---- Synthetic --------------------------------------------------------
+        # `requests` is 41 of 135 on purpose: with a 0 in the fixture the one asserted value
+        # was the fabricated zero this suite exists to prevent, and `percent = 0.0` (a
+        # hardcoded literal) passed it. 30.37 % cannot be produced by accident.
         res = run("synthetic", {"/v2/quotas": load("synthetic_quotas.json")}, base)
         win = window(res, "subscription")
         check("Synthetic: percent derived from requests/limit",
-              win is not None and win["percent"] == 0.0 and win["cap"] == 135.0,
+              win is not None and abs(win["percent"] - 41.0 / 135.0 * 100.0) < 0.01
+              and win["cap"] == 135.0,
               "pct=%s cap=%s" % ((win or {}).get("percent"), (win or {}).get("cap")))
         check("Synthetic: keeps the renewal stamp",
               win is not None and (win.get("resets_at") or "").startswith("2025-09-21"),
               (win or {}).get("resets_at"))
+
+        # ---- the failure branches: 401, 403 and a dead host --------------------
+        # Every auth_error message, every `state` string and the "never fatal" promise were
+        # unverified for six of the eight adapters: the stub could only answer 200, so ~30
+        # auth/network/404 branches were structurally unreachable from this file.
+        for provider, path in (
+            ("cheaperinference", "/v1/account/balance"),
+            ("deepseek", "/user/balance"),
+            ("kimi", "/v1/users/me/balance"),
+            ("zai", "/api/monitor/usage/quota/limit"),
+            ("synthetic", "/v2/quotas"),
+        ):
+            res = run(provider, {path: (401, {"error": "invalid api key"})}, base)
+            check("%s: a 401 is an auth_error, not a parsed body" % provider,
+                  res["state"] == "auth_error", "state=%s error=%r" % (res["state"], res["error"]))
+            check("%s: the 401's own status reaches the card" % provider,
+                  res.get("http_status") == 401, repr(res.get("http_status")))
+            check("%s: an auth_error carries no windows" % provider,
+                  res["windows"] == [], str(res["windows"]))
+
+        res = run("openrouter", {"/v1/credits": (401, {"error": "invalid api key"}),
+                                 "/v1/key": (401, {"error": "invalid api key"})}, base)
+        check("openrouter: a 401 on both routes is an auth_error",
+              res["state"] == "auth_error", "state=%s error=%r" % (res["state"], res["error"]))
+        check("openrouter: the 401's own status reaches the card",
+              res.get("http_status") == 401, repr(res.get("http_status")))
+
+        # 403 on /v1/credits means "a management key is required", not "the key is dead":
+        # /v1/key still answers. Blaming the credential was the bug; this keeps it fixed.
+        res = run("openrouter",
+                  {"/v1/credits": (403, {"error": {"message": "Only management keys can perform this operation"}}),
+                   "/v1/key": load("openrouter_key.json")}, base)
+        check("openrouter: a 403 on /credits is not reported as a bad key",
+              res["state"] == "ok", "state=%s error=%r" % (res["state"], res["error"]))
+        check("openrouter: the card says the wallet needs a management key",
+              "management key" in json.dumps(res), json.dumps(res)[:200])
+
+        # A host that refuses the connection must be a network_error: not a traceback, and
+        # not a card that quietly reads as fine.
+        saved_base = pb.DEEPSEEK_BASE
+        pb.DEEPSEEK_BASE = "http://127.0.0.1:%d" % free_port()
+        try:
+            res = run("deepseek", {}, base)
+            check("a refused connection is a network_error, not a crash",
+                  res["state"] == "network_error",
+                  "state=%s error=%r" % (res["state"], res["error"]))
+        finally:
+            pb.DEEPSEEK_BASE = saved_base
+
+        # A provider that quotes the credential back in a body it also fails to understand:
+        # the body is dumped into the served error text, so only the total scrub inside
+        # poll_account stops the key from being published. The token is deliberately NOT
+        # key-shaped (no sk-/user-/cmd- prefix), so the shape rule cannot be what saves it.
+        KEY = "opaque-TOKEN-abcdefghijklmnopqrstuvwxyz"
+        res = run("deepseek", {"/user/balance": {"error": "invalid api key %s" % KEY,
+                                                 "detail": "no balance_infos array here"}}, base,
+                  token=KEY)
+        check("deepseek: a body quoting the key is an error, not a zero",
+              res["state"] == "shape_unknown", "state=%s" % res["state"])
+        check("a credential echoed by the provider never reaches the result",
+              KEY not in json.dumps(res), json.dumps(res)[:200])
+        check("a key-shaped echo is redacted too",
+              not app.CREDENTIAL_SHAPE.search(json.dumps(res)), json.dumps(res)[:200])
 
         # ---- the guard that matters: never fabricate a zero -------------------
         for provider, path, junk, expect in (

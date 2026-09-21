@@ -55,14 +55,25 @@ jobs:
       - name: Balance providers, registry and icons
         run: python tests/balance.py
 
-      - name: Screenshot harness compiles
-        # The capture itself needs a Chromium and is run manually (see tests/screenshot.py);
-        # CI only guarantees the committed harness still parses, so it cannot rot silently.
-        run: python -m py_compile tests/screenshot.py
+      - name: Screenshot harness (real render, real Chromium)
+        # py_compile only proved the harness parses. The DOM contract it depends on
+        # (.card, .bal-amount, .pill, img.mark) is checked by nothing, so a CSS rename was
+        # invisible until someone next shot the README image — and a missing browser printed
+        # a skip and *succeeded*. Actions sets CI=true, which makes that absence a failure.
+        env:
+          SCREENSHOT_OUT: /tmp/quota-panel-screenshot.png
+        run: |
+          SCREENSHOT_BROWSER="$(command -v google-chrome || command -v google-chrome-stable \
+            || command -v chromium || command -v chromium-browser || true)"
+          export SCREENSHOT_BROWSER
+          echo "browser: ${SCREENSHOT_BROWSER:-<none found>}"
+          python tests/screenshot.py
 
       - name: Background image shrink (Pillow)
         run: |
-          pip install --quiet pillow
+          # Pinned and matching the Dockerfile: this script asserts exact re-encoded
+          # dimensions and byte sizes, so a Pillow major must not arrive unannounced.
+          pip install --quiet pillow==12.3.0
           python tests/background.py
 
   docker:
