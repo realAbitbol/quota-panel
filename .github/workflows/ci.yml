@@ -43,7 +43,7 @@ jobs:
           python-version: "3.12"
 
       - name: Compile
-        run: python -m py_compile app.py providers_balance.py tests/smoke.py tests/background.py tests/balance.py tests/screenshot.py tests/cadence_soak.py
+        run: python -m py_compile app.py providers_balance.py tests/smoke.py tests/background.py tests/balance.py tests/screenshot.py tests/cadence_soak.py tests/tab_switch.py
 
       - name: Validate the example config
         run: |
@@ -102,6 +102,15 @@ jobs:
           # shrinking interval, which is the whole point of watching it.
           SOAK_SECONDS: "34"
         run: python tests/cadence_soak.py
+
+      - name: Tab-switch behaviour (must keep refreshing)
+        # The reported risk: a burst of tab switches while a request is in flight can leave the
+        # refresh timer unarmed, and a throttled background tab then shows numbers minutes old.
+        # Drives a real page through real visibility transitions.
+        env:
+          SCREENSHOT_BROWSER: ${{ steps.browser.outputs.path }}
+          QUOTA_POLL_SECONDS: "10"
+        run: python tests/tab_switch.py
 
       - name: Background image shrink (Pillow)
         run: |

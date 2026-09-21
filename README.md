@@ -13,31 +13,26 @@
   <a href="https://www.python.org/"><img alt="python: 3.12" src="https://img.shields.io/badge/python-3.12-3776AB?logo=python&amp;logoColor=white"></a>
 </p>
 
-<p align="center">
-  <a href="#install">Install</a> · <a href="#configuration">Configuration</a> · <a href="#providers">Providers</a> · <a href="#endpoints">Endpoints</a> · <a href="#homepage-gethomepage-integration">Homepage tile</a> · <a href="#security">Security</a> · <a href="#if-it-does-not-work">FAQ</a>
-</p>
-
 ![quota-panel dashboard](docs/screenshot.png)
 
-*Screenshot uses synthetic data. Its artwork is generated and served by the screenshot harness itself: the repository carries no image, and the shipped wallpaper URL is what a container fetches at runtime.*
+*Screenshot uses synthetic data.*
 
-## What you get
+**Any number of accounts, any mix of providers** — two CommandCode keys, three OpenRouter keys and a
+DeepSeek key on one page, each with its own card. An account whose credential is missing or refused
+renders as an error card and never takes the panel down.
 
-* Eight providers on one page: percent windows for plans that refill, money balances for prepaid credit.
-* One container, no database. State lives in memory, so there is nothing to back up or migrate.
-* The browser talks only to the panel, so ten open tabs cost the same as one and no page load triggers a provider request.
-* `python3 app.py --check` polls once, prints the normalised JSON, and exits non-zero if an account is unhappy: a config validator and a cron probe.
-* Read-only by construction. Only `GET` requests, credentials never leave the host, and no endpoint can echo one: a test stub echoes the `Authorization` header it received and no served body may contain it.
-* A gethomepage tile through `/api/homepage`.
-
-Coding subscriptions meter you in rolling windows (5 h, weekly, monthly) and mostly only tell you where you stand if you go and ask a CLI. This polls the provider APIs directly and renders one page you can leave open.
+**Providers:** `commandcode`, `opencode_go`, `zai`, `openrouter`, `cheaperinference`, `deepseek`,
+`kimi`, `synthetic` — see [Providers](#providers) for what each one reports. This panel implements a
+subset of the adapters catalogued by [AIMeter](https://github.com/bugwz/AIMeter#supported-providers),
+which lists many more providers with logos and their auth requirements; if yours is missing here,
+that page is where to check whether it is reachable at all.
 
 ## Install
 
 ```bash
 curl -o accounts.json \
   https://raw.githubusercontent.com/realAbitbol/quota-panel/main/accounts.example.json
-$EDITOR accounts.json            # one entry per account: token, token_env or token_file
+$EDITOR accounts.json            # one entry per account
 
 docker run -d \
   --name quota-panel \
@@ -47,11 +42,9 @@ docker run -d \
   ghcr.io/realabitbol/quota-panel:latest
 ```
 
-Write the config first: the container has nothing to poll without it, and bind-mounting a path that does not exist yet leaves a *directory* in its place. Then open <http://localhost:8080>.
+Write the config first: the container polls nothing without it, and bind-mounting a path that does not exist yet leaves a *directory* in its place. Then open <http://localhost:8080>.
 
-The port is bound to loopback on purpose. There is no built-in login, and the page shows account labels, plan names and spend, so it belongs behind a reverse proxy that authenticates (see [Security](#security)).
-
-`latest` is convenient, not reproducible. For production, pin a digest: `docker buildx imagetools inspect ghcr.io/realabitbol/quota-panel:latest`.
+The port is bound to loopback because there is no built-in login and the page shows labels, plan names and spend. Put it behind a reverse proxy that authenticates.
 
 <details>
 <summary>docker compose, with the hardening from this repo</summary>
@@ -62,20 +55,17 @@ services:
     image: ghcr.io/realabitbol/quota-panel:latest
     restart: unless-stopped
     ports:
-      - "127.0.0.1:8080:8080"          # loopback only, behind a reverse proxy
+      - "127.0.0.1:8080:8080"
     volumes:
       - ./accounts.json:/config/accounts.json:ro
     read_only: true
     tmpfs:
-      # 32m: an artwork fetch is read (8 MB cap) and written back as WebP, so both copies must fit.
       - "/tmp:rw,size=32m,noexec,nosuid,nodev"
     cap_drop:
       - ALL
     security_opt:
       - no-new-privileges:true
-    # Measured: a 6000x4000 wallpaper shrunk to 3240x2160 peaks at 323-346 MB RSS, because Pillow
-    # decodes the whole bitmap before resizing. Below 512m the shrink is OOM-killed, with the container.
-    mem_limit: 512m
+    mem_limit: 512m                  # artwork resize decodes the whole bitmap
     logging:
       driver: json-file
       options:
@@ -89,9 +79,13 @@ services:
       start_period: 60s              # /api/health answers 503 until the first poll finishes
 ```
 
-`docker-compose.yml` in this repo is the same service with the fuller comments.
+`docker-compose.yml` in this repo is the same service with fuller comments.
 
 </details>
+
+The shipped wallpaper is
+`https://r4.wallpaperflare.com/wallpaper/65/18/546/ai-art-city-street-lofi-japan-hd-wallpaper-d8618916d8ff4e5a70f17a71496ff810.jpg`.
+Set `"background_url": "none"` if you would rather the container talked to nobody but your providers.
 
 <details>
 <summary>Build from source</summary>
@@ -99,20 +93,19 @@ services:
 ```bash
 git clone https://github.com/realAbitbol/quota-panel.git
 cd quota-panel
-cp accounts.example.json accounts.json   # then edit it
+cp accounts.example.json accounts.json
 docker build -t quota-panel .
 docker run -d -p 127.0.0.1:8080:8080 \
-  -v "$PWD/accounts.json:/config/accounts.json:ro" \
-  quota-panel
+  -v "$PWD/accounts.json:/config/accounts.json:ro" quota-panel
 ```
 
-Nothing to compile. `python3 app.py` runs the same code outside a container; the only dependency is Pillow, for the artwork resize.
+`python3 app.py` runs the same code outside a container; the only dependency is Pillow, for the artwork resize.
 
 </details>
 
 ## Configuration
 
-One file, `accounts.json`, mounted read-only at `/config/accounts.json`:
+`accounts.json`, mounted read-only at `/config/accounts.json`:
 
 ```json
 {
@@ -128,69 +121,34 @@ One file, `accounts.json`, mounted read-only at `/config/accounts.json`:
 
 | Field | Required | Meaning |
 |---|---|---|
-| `id` | yes, in practice | The account's identity key. Unique, and it should not change once the panel is running. |
-| `provider` | yes | One of the [providers](#providers) below. Anything else is refused at startup. |
-| `label` | no | Card title. Cosmetic, defaults to `id`. |
-| `token` / `token_env` / `token_file` | exactly one | The key itself, the *name* of an environment variable holding it, or a path to a file holding it. |
+| `id` | yes, in practice | Identity key. Unique; don't change it once running. |
+| `provider` | yes | One of the providers below. Anything else is refused at startup. |
+| `label` | no | Card title, defaults to `id`. |
+| `token` / `token_env` / `token_file` | exactly one | The key, the *name* of an env var holding it, or a path to a file holding it. |
+| `poll_seconds` | no | Seconds between polls, `10`–`3600`. Default `60`. |
+| `background_url` | no | Page artwork: an `http(s)` URL, `none`, or absent for the shipped wallpaper (hotlinked, not redistributed). Images are fetched once at startup, capped at 4K and re-encoded as WebP. |
+| `logo` | no | Override the card's mark, e.g. `"my.svg"`. |
 
-`id` keys everything: the `/api/quota` payload, the Homepage widget map (`items["<id>_<window>"]`, e.g. `cc-work_five_hour`) and the error list. Set it explicitly, because omitting it falls back to a positional `<provider>-<index>`, so inserting an account silently reassigns ids — with lowercase letters, digits and dashes, since the value ends up inside a widget key. Duplicate ids are fatal.
+`id` keys everything: `/api/quota`, the Homepage map (`items["<id>_<window>"]`) and the error list. Set it explicitly — omitting it falls back to a positional `<provider>-<index>`, so inserting an account silently reassigns ids. Use lowercase letters, digits and dashes. Duplicate ids are fatal.
 
-Any number of accounts, any mix of providers, polled in one pass. An account whose credential is missing or refused renders as an error card and never takes the panel down.
+Any number of accounts, any mix of providers. An account whose credential is missing or refused renders as an error card and never takes the panel down.
+
+> **Trap:** putting the key *into* `token_env` parses, loads and renders — and every lookup returns `""`, because the field holds the *name* of a variable, not the value. The key goes in `token`.
 
 ### Providers
-
-The registry, as the panel serves it from `/api/providers`:
 
 | `provider` | Card | Reports | Contract |
 |---|---|---|---|
 | `commandcode` | window | 5 h / weekly / monthly percent | verified live |
 | `opencode_go` | window | rolling / weekly / monthly percent | verified live |
-| `zai` | window | quota windows (session / weekly / web searches) | third-party |
+| `zai` | window | session / weekly / web-search quota | third-party |
 | `synthetic` | window | request allowance percent | documented |
 | `openrouter` | balance | credit balance; **percent only if the key has a spend limit** | documented |
-| `cheaperinference` | balance | wallet balance, incl. money reserved in flight | documented |
-| `deepseek` | balance | balance in CNY or USD (`is_available` flag) | documented |
-| `kimi` | balance | available / voucher / cash balance (USD) | documented |
+| `cheaperinference` | balance | wallet balance | documented |
+| `deepseek` | balance | balance in CNY or USD | documented |
+| `kimi` | balance | available / voucher / cash balance | documented |
 
-The Contract column is the provenance of the parse, and the panel serves its own word rather than re-deriving one:
-
-* `verified live`: exercised against a real response in daily use, from the maintainer's own account (`commandcode`, `opencode_go`).
-* `documented`: built from the vendor's published contract, tested against a recorded fixture. A first real key may still reveal a field nobody documents.
-* `third-party`: the vendor publishes no contract for that route and the shape comes from independent implementations (`zai`; its own page documents quota *policy*, not the monitor API). Calling that `documented` would claim a vendor promise that does not exist.
-
-`contract_note` repeats the provenance per provider, and each fixture in `tests/fixtures/providers/` records its own. `openrouter` is the one provider that can render either shape: a key with a `limit` set gets a real percent window, a key without one gets a balance and the note *"no spend cap set on this key"*.
-
-### Icons
-
-Every card wears its provider's mark from `static/logos/<provider>.svg`, forced white with a CSS filter (`currentColor` cannot cross an `<img>` boundary, so it would resolve to the file's own default). A missing mark falls back to `_fallback.svg` rather than an empty box, and an account can override it with `"logo": "my.svg"`. A credential-shaped label returned by OpenRouter is dropped in favour of the plain provider name, so a card never prints a key.
-
-### `poll_seconds`
-
-How often the providers are polled, bounded to `10`–`3600` (out-of-range values are logged and ignored). The page polls that same cadence, a little behind it so a request can never land fractionally before the publication it is waiting for, and the header counts down to its own next poll — one number, re-armed at one cadence every cycle. Overridable per container with `QUOTA_POLL_SECONDS`, **but only as a fallback**: a `poll_seconds` in the config file wins.
-
-> **Trap:** writing the key *into* `token_env` looks like it works: the config parses, the accounts load, the panel renders — but every lookup returns `""` and the log says `no account has a credential configured`, because the field holds the *name* of a variable. The value goes in `token`. The app detects the mistake and warns (masked) at startup.
-
-### `background_url`
-
-The page artwork. The panel ships with a wallpaper it fetches once at startup, and your own image can replace it:
-
-| Value | What `/background` serves |
-|---|---|
-| an `http(s)` URL | that image, fetched once at startup |
-| `"none"` or `"off"` | nothing, and no fetch at all |
-| absent or `""` | the wallpaper the panel ships with |
-
-A config still needs at least one account, since the panel refuses to start with none; the artwork alone is not enough.
-
-The shipped wallpaper is
-`https://r4.wallpaperflare.com/wallpaper/65/18/546/ai-art-city-street-lofi-japan-hd-wallpaper-d8618916d8ff4e5a70f17a71496ff810.jpg`,
-fetched with the panel's own user agent (`200`, `image/jpeg`, 316 KB, 2912×1632 measured). It is **hotlinked, not redistributed**: the repository carries no copy, so the container asks that host for the image exactly as it would ask yours, and the repository redistributes nobody's file. The day that host stops answering, the panel has no artwork: `/background` answers `404` and the page keeps the colour it draws itself. That host sits behind Cloudflare, which refuses some automated user agents with a `403` while the panel's own fetcher gets a `200` today; set `"none"` if you would rather the container talked to nobody but your providers, or you are on a metered link.
-
-Whichever image is chosen, it is downloaded **once at container startup** and served from `/background` out of the container's non-persistent `/tmp` (a tmpfs in the compose files), so nothing about it survives a restart, and a URL that stops working takes the artwork with it. Served types: `webp`, `png`, `jpeg`, `avif`, `gif`, up to 8 MB; the host's `Content-Type` decides, the URL extension is the fallback.
-
-The download is capped at 4K and re-encoded as WebP (an image already 4K-or-smaller WebP is served untouched, and a re-encode larger than the original is discarded). Without Pillow the bytes are served as-is. How much smaller the result is is a property of the image, not a promise: a smooth 6000×4000 wallpaper measured 497 KB in and 46 KB out, a noisy photo of the same size roughly 866 KB, so size your own tmpfs and memory limit for your own image.
-
-A fetch that fails is logged, `/background` answers `404` for as long as it keeps failing, and the retry runs in the background at most once every 5 minutes. The URL may be signed, so it is **never** logged and never returned by `/api/health`, which reports only whether one is configured, which image is served, and the last error. `QUOTA_BACKGROUND_DIR` and `QUOTA_BACKGROUND_TIMEOUT` tune where the copy lives and how long the fetch may take.
+`Contract` is the provenance of the parse, served verbatim by `/api/providers`: `verified live` was exercised against a real response in daily use; `documented` was built from the vendor's published contract and tested against a recorded fixture; `third-party` means the vendor publishes nothing for that route and the shape comes from independent implementations. A first real key may still reveal an undocumented field.
 
 ### Environment variables
 
@@ -198,35 +156,27 @@ A fetch that fails is logged, `/background` answers `404` for as long as it keep
 |---|---|---|
 | `PORT` | `8080` | Listen port. |
 | `QUOTA_CONFIG` | `/config/accounts.json` | Config path. |
-| `QUOTA_POLL_SECONDS` | `60` | Poll interval **fallback**. A `poll_seconds` in the config file wins outright, so setting this in a compose file while `accounts.json` still declares one changes nothing. If you set it and the header keeps counting to the old cadence, that is why. |
+| `QUOTA_POLL_SECONDS` | `60` | Poll interval **fallback** — `poll_seconds` in the config file wins. |
 | `QUOTA_HTTP_TIMEOUT` | `20` | Per-request timeout, in seconds. |
-| `QUOTA_CURRENCY` | `USD` | Which currency a multi-currency balance is reported in, since DeepSeek lists several. |
-| `QUOTA_BACKGROUND_URL` | the shipped wallpaper | Artwork URL, or `none`/`off` for no artwork at all; the config file's `background_url` wins. |
-| `QUOTA_BACKGROUND_DIR` | `/tmp/quota-panel` | Where the fetched artwork is stored. Keep it on a writable path, or the panel silently serves no artwork. |
-| `QUOTA_BACKGROUND_TIMEOUT` | `20` | Fetch timeout for the artwork, in seconds. |
+| `QUOTA_CURRENCY` | `USD` | Currency reported for a multi-currency balance. |
+| `QUOTA_BACKGROUND_URL` | the shipped wallpaper | Artwork URL, or `none`/`off`. The config file wins. |
+| `QUOTA_BACKGROUND_DIR` | `/tmp/quota-panel` | Where the fetched artwork is stored. |
+| `QUOTA_BACKGROUND_TIMEOUT` | `20` | Artwork fetch timeout, in seconds. |
 
-Every provider also has a `*_API_BASE` override (`COMMANDCODE_API_BASE`, `DEEPSEEK_API_BASE`, `Z_AI_API_BASE`, `MOONSHOT_API_BASE` and the rest), so the test suite can point an adapter at a local stub and run with no provider call at all. Nothing in production needs them.
+Every provider also has a `*_API_BASE` override so the test suite can point an adapter at a local stub. Nothing in production needs them.
 
 ## Endpoints
 
 | Path | Purpose |
 |---|---|
-| `/` | the card UI, live countdowns, self-refreshing |
+| `/` | the card UI |
 | `/api/quota` | normalized JSON: every account, every window, with `resets_at` |
-| `/api/providers` | the provider registry: id, label, card kind, contract and its note, logo path |
+| `/api/providers` | the provider registry: id, label, card kind, contract, logo |
 | `/api/homepage` | flat `items` map keyed `<account_id>_<window>`, for a gethomepage tile |
 | `/api/health` | `200` while the last poll is fresh, `503` when stale |
-| `/static/…` | the UI's own assets (image, favicon); path-traversal safe, allow-listed types |
-| `/background` | the page artwork: your URL or the shipped wallpaper, `404` when the artwork is off or the fetch failed |
-
-```bash
-curl -s localhost:8080/api/quota \
-  | jq '.accounts[] | {id, plan, windows: [.windows[] | {key, percent, resets_at}]}'
-```
+| `/background` | the page artwork, `404` when off or the fetch failed |
 
 ## Homepage (gethomepage) integration
-
-`/api/homepage` returns a `widgets` array and a flat `items` map, so either the `customapi` widget or the `customapi` + `mappings` form works:
 
 ```yaml
     - Quotas:
@@ -239,124 +189,52 @@ curl -s localhost:8080/api/quota \
           mappings:
             - field: items.cc-work_five_hour.value
               label: Work — 5 h
-            - field: items.oc-personal_monthly.value
-              label: Personal — month
 ```
 
-Each item also carries `percent`, `resets_at` and a `detail` string, so a tile can render a progress bar instead of a bare value. An account in error publishes a single `items["<id>_error"]` entry rather than pretending to have numbers.
-
-## How it works
-
-```
-        ┌──────────── poller thread (every poll_seconds) ───────────┐
-        │  for each account: GET the provider's usage endpoints,    │
-        │  normalize into {id, provider, label, plan, state,        │
-        │  windows:[{key,label,percent,used,cap,resets_at}]}        │
-        └───────────────┬───────────────────────────┬──────────────┘
-                        │                           │
-            in-memory state (guarded by a lock)
-                        │
-        ┌───────────────┴───────────────┐
-        │  HTTP handlers (read-only)    │
-        │  /  /api/quota  /api/homepage │
-        │  /api/health  /static/…       │
-        │  /background                  │
-        └───────────────────────────────┘
-```
-
-The standard library does the work, with Pillow for the artwork resize. Percentages are never invented: the monthly CommandCode figure, for instance, is derived from spend and remaining credit, and when those numbers cannot be reconciled the window renders without a percentage rather than with a wrong one. A balance the provider did not report renders as an error, never as `0.00`, because "unreadable" and "empty" mean opposite things.
-
-The UI degrades honestly too: a failed fetch keeps the last good render on screen and labels itself (`reconnecting`, `data stale`, `feed down`) with the data's age, instead of showing stale numbers as if they were current. Background tabs get their timers throttled by the browser, so the page also refreshes on `visibilitychange`, `focus` and `online`.
-
-<details>
-<summary>Provider contracts</summary>
-
-**CommandCode**: `https://api.commandcode.ai`
-
-```
-Authorization: Bearer *** API key>      # the user_… key from the studio
-x-command-code-version: 1.54.2
-x-cli-environment: production
-
-GET /alpha/whoami?limits=1
-GET /alpha/billing/credits[?orgId=<id>]
-GET /alpha/billing/subscriptions[?orgId=<id>]
-GET /alpha/usage/summary[?orgId=<id>]
-```
-
-* Three independent implementations agree: the `command-code` CLI bundle, the `cmd-usage` crate, and a macOS quota-bar app.
-* The version header is sensitive. `/alpha/*` is CLI-internal, and `x-command-code-version` has to track the CLI: the value kept here is the one the adapter has actually been run against, and its disagreement with `command-code@1.58.0` is recorded in `app.py` rather than resolved by a guess.
-* ⚠️ `/provider/v1/models` is **unauthenticated**: it answers `200` even with a bogus key, so it proves nothing about a key being alive. `/provider/v1/chat/completions` and every `/alpha/*` route answer `401` for a dead key. Verify a key with `--check`, never with `/models`.
-* `billing/credits` returns `{windowLimits:{fiveHour,weekly}, credits:{monthlyCredits,…}}` and `usage/summary` returns the spend for the period; the monthly percentage is `spend / (spend + remaining)`.
-
-**OpenCode Go**: `GET https://opencode.ai/zen/go/v1/usage`
-
-```
-Authorization: Bearer *** key>
-User-Agent: <a browser UA>     # Cloudflare answers 403 (error 1010) otherwise
-Accept: application/json
-```
-
-→ `{"usage":{"rolling":{percent,resetsAt},"weekly":{…},"monthly":{…}}}`. `401` = invalid key, `403` = key valid but the workspace has no Go plan. A `resetsAt` returned alongside `percent == 0` is a placeholder and is discarded.
-
-</details>
+Each item also carries `percent` and `resets_at`, so a tile can render a progress bar instead of a bare value.
 
 ## Security
 
-* Read-only, outbound only: one `GET` per configured provider (up to eight hosts), plus one artwork fetch at startup: the shipped wallpaper, your own URL, or nothing at all with `none`. No write path, no upstream state change.
-* Credentials stay in the config: read at startup, held in memory, never logged, never returned by any endpoint, never sent anywhere but the provider that owns them. Redaction happens in one place on the whole result, and the suite proves it end to end: the stub echoes the `Authorization` header it received and no served body may contain it.
-* There is no built-in login. Run it behind something that authenticates and keep the published port on loopback. With inline `token`s, keep `accounts.json` at mode `600`/`640`, owned by the container user.
-* The container is hardened: unprivileged user (uid 10001), read-only rootfs, all capabilities dropped, `no-new-privileges`, a 32 MB `noexec` tmpfs, log rotation so a crash-loop cannot fill the disk. The static route resolves and containment-checks every path, then allows a fixed extension list; `..`, symlink escapes and unexpected types are refused.
+* Read-only, outbound only: one `GET` per configured provider, plus one artwork fetch at startup. No write path.
+* Credentials are read at startup, held in memory, never logged, never returned by any endpoint, and sent only to the provider that owns them. A test stub echoes the `Authorization` header it received and no served body may contain it.
+* No built-in login. Run it behind something that authenticates and keep the port on loopback. With inline `token`s, keep `accounts.json` at mode `600`/`640`.
+* The container runs unprivileged (uid 10001) on a read-only rootfs with all capabilities dropped. The static route containment-checks every path and allows a fixed extension list.
 
 ## Development
 
 ```bash
-git clone https://github.com/realAbitbol/quota-panel.git
-cd quota-panel
 cp accounts.example.json accounts.json
 python3 app.py --check                  # one poll, prints JSON, non-zero if any account is not ok
-PORT=8080 python3 app.py                # run it
+PORT=8080 python3 app.py
 python3 tests/smoke.py                  # boots the app and exercises the HTTP surface
 python3 tests/balance.py                # registry, balance adapters, error branches
-python3 tests/background.py             # artwork shrink + URL resolution (needs Pillow)
+python3 tests/background.py             # artwork shrink (needs Pillow)
 python3 tests/screenshot.py             # renders the real page in Chromium and re-shoots the README image
+QUOTA_POLL_SECONDS=10 python3 tests/cadence_soak.py   # the header's countdown must not decay
 ```
 
-Every suite talks to a local stub instead of a provider, so they run offline and cannot spend anyone's quota. Each one had a mutation lab behind it: a regression is reapplied to a throwaway copy of the tree, and a mutation the suite stays green on counts as a finding.
-
-`--check` is side-effect free: it reads the config, hits the providers once, prints the normalized JSON and writes nothing — so it doubles as a config validator and a cron probe:
-
-```bash
-docker compose run --rm --no-deps --entrypoint python3 quota-panel /app/app.py --check
-```
-
-### CI and releases
-
-Every push and pull request runs the suites and the screenshot harness against real Chromium, then builds the image for `linux/amd64` + `linux/arm64` and pushes to GHCR from `main` and from `v*` tags. Every action is pinned to a commit SHA, the workflow asks for `contents: read`, and a newer push cancels an older run so a stale build cannot publish itself as `latest`.
-
-A release is a tag: `git tag v1.0.0 && git push origin v1.0.0` publishes `1.0.0`, `1.0`, the short commit SHA and `latest`. No version tag has been published yet, so today the registry holds `main`, `latest` and a short SHA per commit. To update a deployment, pull the image and restart; restart only when `accounts.json` changed.
+Every suite talks to a local stub instead of a provider, so they run offline and spend no quota. Every push runs them against real Chromium, then builds `linux/amd64` + `linux/arm64` and pushes to GHCR from `main` and `v*` tags. A release is a tag: `git tag v1.0.0 && git push origin v1.0.0`.
 
 ## If it does not work
 
-**The panel starts, the log says `no account has a credential configured`, every card is an error.** A key was written into `token_env`, which holds the *name* of a variable. Move the value to `token`, or set the variable you named there.
+**`no account has a credential configured`, every card is an error.** A key was written into `token_env`. Move it to `token`.
 
-**Docker created a directory where `accounts.json` should be.** The bind mount pointed at a path that did not exist. Stop the container, remove the directory, write the file, start again.
+**Docker created a directory where `accounts.json` should be.** The bind mount pointed at a missing path. Remove the directory, write the file, start again.
 
-**One card says the provider rejected the key.** `401` is a bad or revoked key; `403` is usually a valid key missing a scope or a plan (CheaperInference needs `account:read`; on OpenCode Go a `403` means the workspace has no Go plan). `python3 app.py --check` gives the same answer without the UI.
+**One card says the provider rejected the key.** `401` is a bad or revoked key; `403` is usually a valid key missing a scope or a plan (CheaperInference needs `account:read`; on OpenCode Go, `403` means no Go plan). `python3 app.py --check` gives the same answer without the UI.
 
-**Everything is red after moving host and the config looks right.** Check the mounted path inside the container rather than on the host, and check permissions: the process runs as uid 10001 and cannot read a `600` file owned by someone else.
+**Everything is red after moving host and the config looks right.** Check the path *inside* the container, and the permissions: the process runs as uid 10001 and cannot read a `600` file owned by someone else.
 
-**The wallpaper never appears.** The artwork fetch fails quietly, `/background` answers `404` and the page keeps its own colour; `/api/health` reports `background.served: none` and the last error.
+**The wallpaper never appears.** `/api/health` reports `background.served: none` and the last error.
 
 ## Limits
 
-* Read-only: only `GET`s, nothing written upstream.
-* No token refresh: the providers' OAuth flows are out of scope by design, so an expired key is reported as `auth_error` for that account until you re-mint it and update the config.
-* Polling is sequential, so a cycle takes roughly `sum(requests per account)` × latency. Comfortable to a few dozen accounts; a hanging account can stretch a cycle, bounded by `QUOTA_HTTP_TIMEOUT`.
-* Nothing is inferred from a missing field or a top-up: an amount the provider did not report renders as an error, never as `0.00`.
+* No token refresh: the providers' OAuth flows are out of scope, so an expired key is reported as `auth_error` until you re-mint it and update the config.
+* Polling is sequential: a cycle takes roughly `sum(requests per account)` × latency. Comfortable to a few dozen accounts.
+* Nothing is inferred from a missing field: an amount the provider did not report renders as an error, never as `0.00`.
 
 ## License
 
 MIT, see [LICENSE](LICENSE).
 
-The container image installs [Pillow](https://python-pillow.org/) (MIT-CMU) for the optional background resize. The marks in the header are [Font Awesome Free](https://fontawesome.com/) 7.3.1 solid icons (`arrows-rotate`, and `triangle-exclamation` / `circle-xmark` for the two degraded feed states), inlined as SVG paths: those icons are CC BY 4.0, Copyright Fonticons, Inc. No icon font or CDN stylesheet is fetched, so the page asks for nothing off-origin.
+The container image installs [Pillow](https://python-pillow.org/) (MIT-CMU) for the artwork resize. The header marks are [Font Awesome Free](https://fontawesome.com/) 7.3.1 solid icons, inlined as SVG paths: CC BY 4.0, Copyright Fonticons, Inc. No icon font or CDN stylesheet is fetched.
