@@ -1,0 +1,21 @@
+{
+  "_source": "https://api-docs.deepseek.com/api/get-user-balance",
+  "_kind": "documented-example (schema shape; both-currency variant)",
+  "_live_capture": false,
+  "_note": "balance_infos is an ARRAY -> adapter must pick a currency deterministically",
+  "is_available": false,
+  "balance_infos": [
+    {
+      "currency": "CNY",
+      "total_balance": "0.00",
+      "granted_balance": "0.00",
+      "topped_up_balance": "0.00"
+    },
+    {
+      "currency": "USD",
+      "total_balance": "12.34",
+      "granted_balance": "2.34",
+      "topped_up_balance": "10.00"
+    }
+  ]
+}

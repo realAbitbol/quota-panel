@@ -97,18 +97,67 @@ One file, `accounts.json`, mounted read-only at `/config/accounts.json`:
 {
   "poll_seconds": 60,
   "accounts": [
-    { "id": "cc-work",     "provider": "commandcode", "label": "CommandCode — work",     "token": "user_…" },
-    { "id": "oc-personal", "provider": "opencode_go", "label": "OpenCode Go — personal", "token": "sk-…"   }
+    { "id": "cc-work",     "provider": "commandcode",      "label": "CommandCode — work", "token": "user_…"   },
+    { "id": "oc-personal", "provider": "opencode_go",      "label": "OpenCode Go — personal", "token": "sk-…" },
+    { "id": "or-main",     "provider": "openrouter",       "label": "OpenRouter",         "token": "sk-or-…"  },
+    { "id": "ci-main",     "provider": "cheaperinference", "label": "CheaperInference",   "token": "ci_live_…" }
   ]
 }
 ```
+
+### Providers
+
+Two card shapes, because the providers report two different things:
+
+| `provider` | Card | Reports | Contract |
+|---|---|---|---|
+| `commandcode` | window | 5 h / weekly / monthly percent | verified live |
+| `opencode_go` | window | rolling / weekly / monthly percent | verified live |
+| `zai` | window | quota windows (session / weekly / web searches) | documented |
+| `synthetic` | window | request allowance percent | documented |
+| `openrouter` | balance | credit balance; **percent only if the key has a spend limit** | documented |
+| `cheaperinference` | balance | wallet balance, incl. money reserved in flight | documented |
+| `deepseek` | balance | balance in CNY or USD (`is_available` flag) | documented |
+| `kimi` | balance | available / voucher / cash balance (USD) | documented |
+
+* **window** — an envelope that refills on a clock. A percentage is the whole story.
+* **balance** — prepaid money with no cap. There is no honest percentage to draw, so the
+  card shows the amount. Nothing is ever inferred from a top-up: an unreadable balance
+  renders as an error, never as `0.00`, because those two mean opposite things.
+
+`openrouter` is the one provider that can render either: a key with a `limit` set gets a
+real percent window; a key without one gets a balance and the note *"no spend cap set on
+this key"*.
+
+The **Contract** column is deliberate. `verified live` means the adapter has been
+exercised against a real response from the provider. `documented` means it was built from
+the vendor's own published contract and not yet hit with a live credential — the parse is
+tested against a recorded fixture, but the first real key may reveal a field nobody
+documents. Each fixture carries its provenance in `tests/fixtures/providers/`. Ask the
+panel directly:
+
+```sh
+curl -s localhost:8080/api/providers | jq
+```
+
+### Icons
+
+Every card wears its provider's mark, monochrome, from `static/logos/<provider>.svg`
+(`currentColor`, so it inherits the card's text colour and stays legible on both themes).
+No config is needed — the mark is derived from `provider`. A provider with no mark, or a
+missing file, falls back to `_fallback.svg` rather than rendering an empty box. Per-account
+override with an optional `"logo": "my.svg"` (relative to `static/logos/`).
+
+Cards never print a credential: OpenRouter's `/key` returns a label that *defaults to the
+key's own prefix*, so a credential-shaped label is dropped in favour of the plain provider
+name. That check is covered by the test suite.
 
 ### `id` — unique, stable, and effectively required
 
 | Field | Required | Meaning |
 |---|---|---|
 | `id` | **yes, in practice** | The account's identity key. Must be **unique per account** and must not change once the panel is running. |
-| `provider` | yes | `commandcode` or `opencode_go`. |
+| `provider` | yes | one of the providers in the table above. |
 | `label` | no | Free-text card title. Purely cosmetic; change it whenever. Defaults to `id`. |
 | `token` | exactly one of these three | The API key itself, inline. |
 | `token_env` | " | The **name** of an environment variable holding the key. |

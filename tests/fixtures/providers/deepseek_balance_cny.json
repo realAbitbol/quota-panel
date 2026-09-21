@@ -1,0 +1,15 @@
+{
+  "_source": "https://api-docs.deepseek.com/api/get-user-balance",
+  "_kind": "documented-example",
+  "_live_capture": false,
+  "_note": "total_balance/granted_balance/topped_up_balance are STRINGS; currency is CNY or USD",
+  "is_available": true,
+  "balance_infos": [
+    {
+      "currency": "CNY",
+      "total_balance": "110.00",
+      "granted_balance": "10.00",
+      "topped_up_balance": "100.00"
+    }
+  ]
+}

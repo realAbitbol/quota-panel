@@ -1,0 +1,14 @@
+{
+  "_source": "https://platform.kimi.ai/docs/api/balance",
+  "_kind": "documented-example",
+  "_live_capture": false,
+  "_note": "USD; success gate is status==true AND code==0. platform.kimi.ai and platform.kimi.com keys are NOT interchangeable (cross-use -> 401)",
+  "code": 0,
+  "data": {
+    "available_balance": 49.58894,
+    "voucher_balance": 46.58893,
+    "cash_balance": 3.00001
+  },
+  "scode": "0x0",
+  "status": true
+}

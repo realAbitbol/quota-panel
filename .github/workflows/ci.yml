@@ -25,18 +25,24 @@ jobs:
           python-version: "3.12"
 
       - name: Compile
-        run: python -m py_compile app.py tests/smoke.py tests/background.py
+        run: python -m py_compile app.py providers_balance.py tests/smoke.py tests/background.py tests/balance.py
 
       - name: Validate the example config
         run: |
           python - <<'PY'
-          import json
+          import json, os, sys
+          sys.path.insert(0, ".")
+          from app import PROVIDERS
           cfg = json.load(open("accounts.example.json"))
           assert isinstance(cfg["accounts"], list) and cfg["accounts"], "empty accounts list"
           ids = [a["id"] for a in cfg["accounts"]]
           assert len(set(ids)) == len(ids), "duplicate ids in accounts.example.json: %s" % ids
           for a in cfg["accounts"]:
-              assert a["provider"] in ("commandcode", "opencode_go"), a
+              assert a["provider"] in PROVIDERS, "%s is not a registered provider" % a["provider"]
+              # Every example account must resolve a mark that is actually on disk, or a
+              # public screenshot ships with an empty icon box.
+              logo = os.path.join("static", "logos", PROVIDERS[a["provider"]]["logo"])
+              assert os.path.exists(logo), "missing logo for %s: %s" % (a["provider"], logo)
           b = cfg.get("background_url")
           assert b is None or (isinstance(b, str) and (b == "" or b.startswith(("http://", "https://")))), b
           assert "retention" not in cfg, "the panel stores no history any more"
@@ -45,6 +51,9 @@ jobs:
 
       - name: Smoke test the HTTP surface
         run: python tests/smoke.py
+
+      - name: Balance providers, registry and icons
+        run: python tests/balance.py
 
       - name: Background image shrink (Pillow)
         run: |

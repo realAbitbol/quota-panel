@@ -1,0 +1,50 @@
+{
+  "_source": "schema derived from TWO independent implementations: https://github.com/steipete/CodexBar/blob/main/docs/zai.md and https://github.com/bugwz/AIMeter/blob/main/docs/providers/zai/README.md",
+  "_kind": "SCHEMA-DERIVED SYNTHETIC - not a captured response; replace with a live capture before trusting numbers",
+  "_live_capture": false,
+  "_note": "gates: success==true AND code==200 AND data.limits[]. unit codes: 1=days, 3=hours, 5=minutes, 6=days(weekly). type: TOKENS_LIMIT|TIME_LIMIT|CREDIT_LIMIT",
+  "code": 200,
+  "msg": "ok",
+  "success": true,
+  "data": {
+    "planName": "GLM Coding Plan Pro",
+    "limits": [
+      {
+        "type": "TOKENS_LIMIT",
+        "unit": 3,
+        "number": 5,
+        "usage": 1000000,
+        "currentValue": 620000,
+        "remaining": 380000,
+        "percentage": 62,
+        "nextResetTime": 1758384000000
+      },
+      {
+        "type": "TOKENS_LIMIT",
+        "unit": 6,
+        "number": 7,
+        "usage": 5000000,
+        "currentValue": 1250000,
+        "remaining": 3750000,
+        "percentage": 25,
+        "nextResetTime": 1758902400000
+      },
+      {
+        "type": "TIME_LIMIT",
+        "unit": 3,
+        "number": 5,
+        "usage": 100,
+        "currentValue": 12,
+        "remaining": 88,
+        "percentage": 12,
+        "nextResetTime": 1758384000000
+      }
+    ],
+    "usageDetails": [
+      {
+        "modelCode": "glm-5.3",
+        "usage": 620000
+      }
+    ]
+  }
+}

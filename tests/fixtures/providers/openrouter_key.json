@@ -1,0 +1,23 @@
+{
+  "_source": "https://openrouter.ai/api/v1/key (shape also in AIMeter demo fixture, MIT)",
+  "_kind": "documented-example",
+  "_live_capture": false,
+  "_note": "percent IS available here when limit != null: limit_remaining/limit",
+  "data": {
+    "label": "sk-or-v1-12a...333",
+    "is_management_key": false,
+    "limit": 33,
+    "limit_reset": "daily",
+    "limit_remaining": 33,
+    "usage": 0,
+    "usage_daily": 0,
+    "usage_weekly": 0,
+    "usage_monthly": 0,
+    "is_free_tier": false,
+    "expires_at": null,
+    "rate_limit": {
+      "requests": -1,
+      "interval": "10s"
+    }
+  }
+}

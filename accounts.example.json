@@ -46,6 +46,43 @@
       "provider": "opencode_go",
       "label": "OpenCode Go — personal",
       "token": "sk-xxx_replace_me"
+    },
+    {
+      "_note": "Money-balance providers have no cap, so the card shows the amount instead of a percent. Optional 'logo' overrides the mark from the registry.",
+      "id": "or-main",
+      "provider": "openrouter",
+      "label": "OpenRouter",
+      "token": "sk-or-v1-xxx_replace_me"
+    },
+    {
+      "id": "ci-main",
+      "provider": "cheaperinference",
+      "label": "CheaperInference",
+      "token": "ci_live_xxx_replace_me"
+    },
+    {
+      "id": "ds-main",
+      "provider": "deepseek",
+      "label": "DeepSeek",
+      "token": "sk-xxx_replace_me"
+    },
+    {
+      "id": "kimi-main",
+      "provider": "kimi",
+      "label": "Kimi",
+      "token": "sk-xxx_replace_me"
+    },
+    {
+      "id": "zai-main",
+      "provider": "zai",
+      "label": "z.ai GLM Coding Plan",
+      "token": "xxx_replace_me"
+    },
+    {
+      "id": "syn-main",
+      "provider": "synthetic",
+      "label": "Synthetic",
+      "token": "xxx_replace_me"
     }
   ]
 }

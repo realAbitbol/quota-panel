@@ -1,0 +1,11 @@
+{
+  "_source": "https://dev.synthetic.new/docs/synthetic/quotas",
+  "_kind": "documented-example",
+  "_live_capture": false,
+  "_note": "requests/limit -> percent; renewsAt = reset. Polling /quotas does not consume plan quota",
+  "subscription": {
+    "limit": 135,
+    "requests": 0,
+    "renewsAt": "2025-09-21T14:36:14.288Z"
+  }
+}

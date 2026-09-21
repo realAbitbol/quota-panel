@@ -1,0 +1,10 @@
+{
+  "_source": "https://openrouter.ai/api/v1/credits (shape also in AIMeter demo fixture, MIT)",
+  "_kind": "documented-example",
+  "_live_capture": false,
+  "_note": "money only: remaining = total_credits - total_usage. No percentage without a key limit",
+  "data": {
+    "total_credits": 40,
+    "total_usage": 38.388786896
+  }
+}

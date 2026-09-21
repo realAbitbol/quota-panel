@@ -6,6 +6,7 @@ FROM python:3.12-alpine
 WORKDIR /app
 
 COPY app.py /app/app.py
+COPY providers_balance.py /app/providers_balance.py
 COPY static /app/static
 
 RUN pip install --no-cache-dir pillow \

@@ -149,10 +149,10 @@ def load_accounts(path=CONFIG_PATH):
         if not isinstance(item, dict):
             raise ConfigError("accounts[%d] is not an object" % idx)
         provider = item.get("provider")
-        if provider not in ("commandcode", "opencode_go"):
+        if provider not in PROVIDERS:
             raise ConfigError(
-                "accounts[%d].provider must be 'commandcode' or 'opencode_go' (got %r)"
-                % (idx, provider)
+                "accounts[%d].provider must be one of %s (got %r)"
+                % (idx, ", ".join(sorted(PROVIDERS)), provider)
             )
         token = item.get("token")
         if not token and item.get("token_env"):
@@ -188,6 +188,9 @@ def load_accounts(path=CONFIG_PATH):
                 "provider": provider,
                 "label": item.get("label") or item.get("id") or provider,
                 "token": token,
+                # Optional per-account override of where the mark comes from; the
+                # registry default is what makes the common case zero-config.
+                "logo": item.get("logo") or provider_logo(provider),
             }
         )
     ids = [a["id"] for a in out]
@@ -644,12 +647,18 @@ def fetch_opencode_go(account):
     }
 
 
-def _fail(account, state, message):
+def _fail(account, state, message, *, status=None):
     return {
         "id": account["id"],
         "provider": account["provider"],
         "label": account["label"],
+        "kind": provider_kind(account["provider"]),
+        "contract": PROVIDERS.get(account["provider"], {}).get("contract"),
+        "logo": account.get("logo") or provider_logo(account["provider"]),
         "state": state,
+        # `status` is the provider's own HTTP code, kept separate from `state`: a card
+        # must be able to say "the provider answered 500" without inventing a reason.
+        "http_status": status,
         "error": message,
         "plan": None,
         "account_name": None,
@@ -669,14 +678,124 @@ def _fmt(value):
     return "%.2f" % value
 
 
+# Provider registry. `kind` says which card variant the provider feeds:
+#   window  -> an envelope that refills on a clock (percent is the whole story)
+#   balance -> prepaid money with no cap (percent would need a denominator
+#              nobody publishes, so the card shows money instead)
+# `contract` records what the adapter was actually verified against, and is served by
+# /api/providers so the public UI can never imply more than was measured:
+#   live        -- exercised against a real response from the provider
+#   documented  -- built from the vendor's own published contract, not yet hit live
+# `logo` is a file under static/logos/, monochrome (currentColor). A provider with no
+# mark falls back to _fallback.svg rather than rendering an empty box.
+PROVIDERS = {
+    "commandcode": {
+        "kind": "window", "contract": "live", "logo": "commandcode.svg",
+        "label": "CommandCode",
+    },
+    "opencode_go": {
+        "kind": "window", "contract": "live", "logo": "opencode_go.svg",
+        "label": "OpenCode Go",
+    },
+    "openrouter": {
+        "kind": "balance", "contract": "documented", "logo": "openrouter.svg",
+        "label": "OpenRouter",
+    },
+    "cheaperinference": {
+        "kind": "balance", "contract": "documented", "logo": "cheaperinference.svg",
+        "label": "CheaperInference",
+    },
+    "deepseek": {
+        "kind": "balance", "contract": "documented", "logo": "deepseek.svg",
+        "label": "DeepSeek",
+    },
+    "kimi": {
+        "kind": "balance", "contract": "documented", "logo": "kimi.svg",
+        "label": "Kimi / Moonshot",
+    },
+    "zai": {
+        "kind": "window", "contract": "documented", "logo": "zai.svg",
+        "label": "z.ai GLM Coding Plan",
+    },
+    "synthetic": {
+        "kind": "window", "contract": "documented", "logo": "synthetic.svg",
+        "label": "Synthetic",
+    },
+}
+LOGO_FALLBACK = "_fallback.svg"
+
+
+def provider_kind(provider):
+    return PROVIDERS.get(provider, {}).get("kind", "window")
+
+
+def provider_logo(provider):
+    """The mark for a provider, falling back to the neutral glyph.
+
+    The fallback is what keeps an unknown provider from rendering a broken-image box
+    in a card head; the file itself is asserted to exist by the test suite.
+    """
+    name = PROVIDERS.get(provider, {}).get("logo") or LOGO_FALLBACK
+    if not os.path.exists(os.path.join(STATIC_DIR, "logos", name)):
+        return LOGO_FALLBACK
+    return name
+
+
 FETCHERS = {"commandcode": fetch_commandcode, "opencode_go": fetch_opencode_go}
+
+# The money-balance and GLM-plan adapters live in their own module: one file per
+# provider family, each carrying the documented contract it was built against.
+# Imported lazily so a syntax error in a balance adapter can never stop the panel
+# from serving the two providers that were already working.
+BALANCE_FETCHERS = {}
+
+
+def load_balance_fetchers():
+    if BALANCE_FETCHERS:
+        return BALANCE_FETCHERS
+    try:
+        from providers_balance import BALANCE_FETCHERS as _fetchers
+
+        BALANCE_FETCHERS.update(_fetchers)
+    except Exception as exc:  # noqa: BLE001 - degraded, not dead
+        log("providers_balance could not be imported (%s: %s)" % (type(exc).__name__, exc))
+    return BALANCE_FETCHERS
+
+
+def _annotate(account, result):
+    """Stamp the registry facts every card needs, on the success path too."""
+    result["kind"] = provider_kind(account["provider"])
+    result["contract"] = PROVIDERS.get(account["provider"], {}).get("contract")
+    result["logo"] = account.get("logo") or provider_logo(account["provider"])
+    # The account-level `kind` must describe what was actually rendered. OpenRouter is
+    # registered as a balance provider but emits a real percent window when the key has
+    # a spend limit, so the card kind is derived from the windows, not the registry.
+    for win in result.get("windows", []):
+        if win.get("kind") is None:
+            win["kind"] = "window"
+        if win["kind"] == "window" and win.get("percent") is None and not win.get("note"):
+            win["note"] = "no reading"
+    kinds = {w["kind"] for w in result.get("windows", [])}
+    if kinds:
+        result["kind"] = "window" if "window" in kinds else "balance"
+    result.setdefault("http_status", None)
+    return result
 
 
 def poll_account(account):
     if not account.get("token"):
         return _fail(account, "auth_error", "no credential configured for this account")
     try:
-        return FETCHERS[account["provider"]](account)
+        fetcher = FETCHERS.get(account["provider"]) or load_balance_fetchers().get(
+            account["provider"]
+        )
+        if fetcher is None:
+            return _fail(
+                account,
+                "unsupported",
+                "no adapter for provider %r" % account["provider"],
+            )
+        return _annotate(account, fetcher(account))
     except Exception as exc:  # noqa: BLE001 - a provider must never kill the poller
         return _fail(account, "internal_error", "%s: %s" % (type(exc).__name__, exc))
 
@@ -691,7 +810,15 @@ def refresh_all(accounts):
     with STATE_LOCK:
         STATE["accounts"] = results
         STATE["generated_at"] = now_iso()
-        STATE["errors"] = [{"id": r["id"], "state": r["state"], "error": r["error"]} for r in bad]
+        STATE["errors"] = [
+            {
+                "id": r["id"],
+                "state": r["state"],
+                "error": r["error"],
+                "http_status": r.get("http_status"),
+            }
+            for r in bad
+        ]
     FIRST_POLL.set()
     log(
         "polled %d account(s), %d ok"
@@ -739,10 +866,37 @@ def homepage_widgets():
             continue
         for win in res["windows"]:
             percent = win["percent"]
+            kind = win.get("kind") or "window"
+            if kind == "balance":
+                # A gethomepage customapi tile shows text, so a balance becomes the
+                # value: "$12.40" reads correctly in a tile where "40% used" would not.
+                amount = win.get("amount")
+                currency = win.get("currency") or "USD"
+                symbol = {"USD": "$", "CNY": "¥", "EUR": "€"}.get(currency, "")
+                if amount is None:
+                    value = win.get("note") or "—"
+                elif symbol:
+                    value = "%s%.2f" % (symbol, amount)
+                else:
+                    value = "%.2f %s" % (amount, currency)
+                entry = {
+                    "label": "%s · %s" % (res["label"], win["label"]),
+                    "value": value,
+                    "resets_at": win.get("resets_at") or "",
+                    "percent": None,
+                    "kind": "balance",
+                    "amount": amount,
+                    "currency": currency,
+                }
+                widgets.append(entry)
+                items["%s_%s" % (res["id"], win["key"])] = entry
+                continue
             if percent is None and win.get("note"):
                 value = win["note"]
             elif percent is None:
-                continue
+                # Unreadable window: publish it as an explicit dash rather than
+                # dropping it, so a missing widget also means a visible gap.
+                value = "—"
             else:
                 value = "%.0f%% used" % percent
             entry = {
@@ -750,6 +904,7 @@ def homepage_widgets():
                 "value": value,
                 "resets_at": win["resets_at"] or "",
                 "percent": percent,
+                "kind": "window",
             }
             widgets.append(entry)
             items["%s_%s" % (res["id"], win["key"])] = entry
@@ -859,6 +1014,26 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/api/homepage":
             self._json(200, homepage_widgets())
+            return
+        if path == "/api/providers":
+            # The registry, so a consumer (or the README generation) never has to
+            # guess which card kind a provider feeds or how well it was verified.
+            self._json(
+                200,
+                {
+                    "providers": [
+                        {
+                            "id": key,
+                            "label": info["label"],
+                            "kind": info["kind"],
+                            "contract": info["contract"],
+                            "logo": "/static/logos/" + info["logo"],
+                        }
+                        for key, info in sorted(PROVIDERS.items())
+                    ],
+                    "logo_fallback": "/static/logos/" + LOGO_FALLBACK,
+                },
+            )
             return
         if path == "/api/health":
             with STATE_LOCK:

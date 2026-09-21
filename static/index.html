@@ -43,6 +43,15 @@
        backdrop-filter:blur(var(--card-blur));-webkit-backdrop-filter:blur(var(--card-blur))}
   .grid{display:grid;gap:16px;grid-template-columns:repeat(auto-fill,minmax(310px,1fr))}
   .card-head{display:flex;justify-content:space-between;align-items:flex-start;gap:10px}
+  /* The mark sits flush with the label so the head reads [logo] name / plan … pill.
+     Fixed size and flex:0 0 auto keep it from shifting when a label wraps. */
+  .card-id{display:flex;gap:9px;align-items:flex-start;min-width:0}
+  .mark{width:20px;height:20px;flex:0 0 auto;color:var(--muted);margin-top:1px;display:block}
+  .bal{margin-top:11px}
+  .bal-amount{font-size:26px;font-weight:600;letter-spacing:-.3px;font-variant-numeric:tabular-nums;line-height:1.15}
+  .bal-amount .cur{font-size:14px;font-weight:500;color:var(--muted);margin-left:4px}
+  .bal-amount.empty{color:var(--warn)}
+  .bal-note{font-size:11.5px;color:var(--muted);margin-top:3px}
   .label{font-weight:600;font-size:15px}
   .plan{font-size:11.5px;color:var(--muted);margin-top:2px}
   .pill{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--line);color:var(--muted);white-space:nowrap}
@@ -116,6 +125,44 @@ function fmtNum(v){
   return v.toFixed(2);
 }
 
+const CUR_SYMBOL = {USD:'$', CNY:'¥', EUR:'€', GBP:'£', JPY:'¥'};
+
+// A money balance has no cap, so there is no percentage to draw: the number IS the
+// reading. Never render 0% here — an exhausted balance and an unread one look
+// identical in a bar, and one of them means "you cannot make calls right now".
+function renderBalance(w){
+  const amount = (w.amount === null || w.amount === undefined) ? null : Number(w.amount);
+  const cur = w.currency || 'USD';
+  const sym = CUR_SYMBOL[cur] || '';
+  const exhausted = amount !== null && amount <= 0;
+  const shown = amount === null ? '—'
+    : (sym ? sym + amount.toFixed(2) : amount.toFixed(2) + ' ' + esc(cur));
+  let html = `<div class="bal">
+      <div class="bal-amount${exhausted ? ' empty' : ''}">${esc(shown)}${
+        sym ? `<span class="cur">${esc(cur)}</span>` : ''}</div>`;
+  if(amount === null){
+    html += `<div class="bal-note">${esc(w.note || 'no reading')}</div>`;
+  } else if(exhausted){
+    html += `<div class="bal-note">${esc(w.note || 'balance exhausted')}</div>`;
+  } else if(w.note){
+    html += `<div class="bal-note">${esc(w.note)}</div>`;
+  }
+  const ex = w.extra || {};
+  const bits = [];
+  if(ex.total_credits !== undefined) bits.push(`${fmtNum(ex.total_credits)} credited`);
+  if(ex.total_usage !== undefined) bits.push(`${fmtNum(ex.total_usage)} spent`);
+  if(ex.usage_daily !== undefined) bits.push(`today ${fmtNum(ex.usage_daily)}`);
+  if(ex.reserved_usd !== undefined) bits.push(`${fmtNum(ex.reserved_usd)} reserved`);
+  if(ex.voucher_balance !== undefined) bits.push(`voucher ${fmtNum(ex.voucher_balance)}`);
+  if(ex.cash_balance !== undefined) bits.push(`cash ${fmtNum(ex.cash_balance)}`);
+  if(ex.granted_balance !== undefined) bits.push(`granted ${fmtNum(ex.granted_balance)}`);
+  if(ex.topped_up_balance !== undefined) bits.push(`topped up ${fmtNum(ex.topped_up_balance)}`);
+  if(bits.length) html += `<div class="bal-note">${esc(bits.join(' · '))}</div>`;
+  if(w.resets_at) html += `<div class="reset" data-reset="${esc(w.resets_at)}">${countdown(w.resets_at)}</div>`;
+  html += `</div>`;
+  return html;
+}
+
 function setFeed(){
   const el = document.getElementById('feed');
   const every = Math.round(pollMs/1000);
@@ -147,10 +194,16 @@ function render(){
     const el = document.createElement('div');
     el.className = 'card';
     const ok = acc.state === 'ok';
+    // The mark is keyed off the provider the server resolved, falling back to the
+    // neutral glyph — a missing logo file must never render a broken-image box.
+    const mark = acc.logo || '_fallback.svg';
     let html = `<div class="card-head">
-        <div>
-          <div class="label">${esc(acc.label)}</div>
-          <div class="plan">${esc(acc.plan || acc.provider)}${acc.account_name ? ' · ' + esc(acc.account_name) : ''}</div>
+        <div class="card-id">
+          <img class="mark" src="/static/logos/${esc(mark)}" width="20" height="20" alt="" aria-hidden="true">
+          <div style="min-width:0">
+            <div class="label">${esc(acc.label)}</div>
+            <div class="plan">${esc(acc.plan || acc.provider)}${acc.account_name ? ' · ' + esc(acc.account_name) : ''}</div>
+          </div>
         </div>
         <span class="pill ${ok ? 'ok' : 'err'}">${ok ? 'live' : esc(acc.state)}</span>
       </div>`;
@@ -158,6 +211,10 @@ function render(){
       html += `<div class="err">${esc(acc.error || acc.state)}</div>`;
     } else {
       for(const w of acc.windows){
+        if((w.kind || 'window') === 'balance'){
+          html += renderBalance(w);
+          continue;
+        }
         const p = w.percent;
         const label = p === null ? (w.note || '—') : fmtNum(p) + '%';
         html += `<div class="win" data-reset="${esc(w.resets_at || '')}">

@@ -1,0 +1,11 @@
+{
+  "_source": "LIVE probe of https://api.z.ai/api/monitor/usage/quota/limit with no credentials",
+  "_kind": "live-capture",
+  "_live_capture": true,
+  "_captured": "2026-09-21",
+  "_http_status": 200,
+  "_note": "THE TRAP: HTTP 200 with success=false. A status-code check reads this as a valid payload",
+  "code": 1001,
+  "msg": "Authentication parameter not received in Header, unable to authenticate",
+  "success": false
+}
