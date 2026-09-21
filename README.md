@@ -21,11 +21,23 @@
 DeepSeek key on one page, each with its own card. An account whose credential is missing or refused
 renders as an error card and never takes the panel down.
 
-**Providers:** `commandcode`, `opencode_go`, `zai`, `openrouter`, `cheaperinference`, `deepseek`,
-`kimi`, `synthetic` — see [Providers](#providers) for what each one reports. This panel implements a
-subset of the adapters catalogued by [AIMeter](https://github.com/bugwz/AIMeter#supported-providers),
-which lists many more providers with logos and their auth requirements; if yours is missing here,
-that page is where to check whether it is reachable at all.
+### Supported providers
+
+| | `provider` | Card | Reports | Contract |
+|---|---|---|---|---|
+| <img src="static/logos/commandcode.svg" width="18"> | `commandcode` | window | 5 h / weekly / monthly percent | verified live |
+| <img src="static/logos/opencode_go.svg" width="18"> | `opencode_go` | window | rolling / weekly / monthly percent | verified live |
+| <img src="static/logos/zai.svg" width="18"> | `zai` | window | session / weekly / web-search quota | third-party |
+| <img src="static/logos/synthetic.svg" width="18"> | `synthetic` | window | request allowance percent | documented |
+| <img src="static/logos/openrouter.svg" width="18"> | `openrouter` | balance | credit balance; **percent only if the key has a spend limit** | documented |
+| <img src="static/logos/cheaperinference.svg" width="18"> | `cheaperinference` | balance | wallet balance | documented |
+| <img src="static/logos/deepseek.svg" width="18"> | `deepseek` | balance | balance in CNY or USD | documented |
+| <img src="static/logos/kimi.svg" width="18"> | `kimi` | balance | available / voucher / cash balance | documented |
+
+A subset of the adapters catalogued by
+[AIMeter](https://github.com/bugwz/AIMeter#supported-providers) — that page lists many more
+providers, with logos and their auth requirements, and is the place to check whether a provider
+this panel does not carry is reachable at all.
 
 ## Install
 
@@ -110,6 +122,7 @@ docker run -d -p 127.0.0.1:8080:8080 \
 ```json
 {
   "poll_seconds": 60,
+  "background_url": "https://example.com/wallpaper.jpg",
   "accounts": [
     { "id": "cc-work",     "provider": "commandcode",      "label": "CommandCode — work", "token": "user_…"   },
     { "id": "oc-personal", "provider": "opencode_go",      "label": "OpenCode Go — personal", "token": "sk-…" },
@@ -126,8 +139,7 @@ docker run -d -p 127.0.0.1:8080:8080 \
 | `label` | no | Card title, defaults to `id`. |
 | `token` / `token_env` / `token_file` | exactly one | The key, the *name* of an env var holding it, or a path to a file holding it. |
 | `poll_seconds` | no | Seconds between polls, `10`–`3600`. Default `60`. |
-| `background_url` | no | Page artwork: an `http(s)` URL, `none`, or absent for the shipped wallpaper (hotlinked, not redistributed). Images are fetched once at startup, capped at 4K and re-encoded as WebP. |
-| `logo` | no | Override the card's mark, e.g. `"my.svg"`. |
+| `background_url` | no | Page artwork: an `http(s)` URL at the top level of the file (see the example above), `"none"` for no artwork, or empty/absent for the shipped wallpaper (hotlinked, not redistributed). Fetched once at startup, capped at 4K, re-encoded as WebP. |
 
 `id` keys everything: `/api/quota`, the Homepage map (`items["<id>_<window>"]`) and the error list. Set it explicitly — omitting it falls back to a positional `<provider>-<index>`, so inserting an account silently reassigns ids. Use lowercase letters, digits and dashes. Duplicate ids are fatal.
 
@@ -135,20 +147,13 @@ Any number of accounts, any mix of providers. An account whose credential is mis
 
 > **Trap:** putting the key *into* `token_env` parses, loads and renders — and every lookup returns `""`, because the field holds the *name* of a variable, not the value. The key goes in `token`.
 
-### Providers
+### Provider contracts
 
-| `provider` | Card | Reports | Contract |
-|---|---|---|---|
-| `commandcode` | window | 5 h / weekly / monthly percent | verified live |
-| `opencode_go` | window | rolling / weekly / monthly percent | verified live |
-| `zai` | window | session / weekly / web-search quota | third-party |
-| `synthetic` | window | request allowance percent | documented |
-| `openrouter` | balance | credit balance; **percent only if the key has a spend limit** | documented |
-| `cheaperinference` | balance | wallet balance | documented |
-| `deepseek` | balance | balance in CNY or USD | documented |
-| `kimi` | balance | available / voucher / cash balance | documented |
-
-`Contract` is the provenance of the parse, served verbatim by `/api/providers`: `verified live` was exercised against a real response in daily use; `documented` was built from the vendor's published contract and tested against a recorded fixture; `third-party` means the vendor publishes nothing for that route and the shape comes from independent implementations. A first real key may still reveal an undocumented field.
+`Contract` is the provenance of the parse, served verbatim by `/api/providers`: `verified live` was
+exercised against a real response in daily use; `documented` was built from the vendor's published
+contract and tested against a recorded fixture; `third-party` means the vendor publishes nothing for
+that route and the shape comes from independent implementations. A first real key may still reveal
+an undocumented field.
 
 ### Environment variables
 

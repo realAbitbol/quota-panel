@@ -64,7 +64,9 @@
   /* The marks are SVG files loaded through <img>, and `currentColor` cannot cross that
      boundary: inside an <img> it resolves to the file's own default (black), never the
      page's colour, so the `color:` rule that used to sit here did nothing and every mark
-     rendered black on a dark card. Force them to white instead. */
+     rendered black on a dark card. Force them to white instead -- which also means the
+     files' own stroke colour is free, and the README badges use those same files on a
+     white page, so they carry a mid-grey that reads on both. */
   .mark{width:20px;height:20px;flex:0 0 auto;margin-top:1px;display:block;filter:brightness(0) invert(1)}
   .bal{margin-top:11px}
   .bal-amount{font-size:26px;font-weight:600;letter-spacing:-.3px;font-variant-numeric:tabular-nums;line-height:1.15}

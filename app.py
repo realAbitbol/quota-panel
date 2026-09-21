@@ -244,7 +244,7 @@ def load_accounts(path=CONFIG_PATH):
                 "token": token,
                 # Optional per-account override of where the mark comes from; the
                 # registry default is what makes the common case zero-config.
-                "logo": item.get("logo") or provider_logo(provider),
+                "logo": provider_logo(provider),
             }
         )
     ids = [a["id"] for a in out]
@@ -824,7 +824,7 @@ def _fail(account, state, message, *, status=None) -> dict:
         "kind": provider_kind(account["provider"]),
         "contract": PROVIDERS.get(account["provider"], {}).get("contract"),
         "contract_note": PROVIDERS.get(account["provider"], {}).get("contract_note"),
-        "logo": account.get("logo") or provider_logo(account["provider"]),
+        "logo": provider_logo(account["provider"]),
         "state": state,
         # `status` is the provider's own HTTP code, kept separate from `state`: a card
         # must be able to say "the provider answered 500" without inventing a reason.
@@ -954,7 +954,7 @@ def _annotate(account, result) -> dict:
     result["kind"] = provider_kind(account["provider"])
     result["contract"] = PROVIDERS.get(account["provider"], {}).get("contract")
     result["contract_note"] = PROVIDERS.get(account["provider"], {}).get("contract_note")
-    result["logo"] = account.get("logo") or provider_logo(account["provider"])
+    result["logo"] = provider_logo(account["provider"])
     # The account-level `kind` must describe what was actually rendered. OpenRouter is
     # registered as a balance provider but emits a real percent window when the key has
     # a spend limit, so the card kind is derived from the windows, not the registry.

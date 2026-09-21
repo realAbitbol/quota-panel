@@ -50,7 +50,7 @@
       "token": "sk-xxx_replace_me"
     },
     {
-      "_note": "Money-balance providers have no cap, so the card shows the amount instead of a percent. Optional 'logo' overrides the mark from the registry.",
+      "_note": "Money-balance providers have no cap, so the card shows the amount instead of a percent.",
       "id": "or-main",
       "provider": "openrouter",
       "label": "OpenRouter",
