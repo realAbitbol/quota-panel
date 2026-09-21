@@ -556,9 +556,11 @@ def main():
             # Floor and ceiling: one cadence plus this page's 1.1 poll margin and rounding. Never
             # the few-second value the stamp-alignment bug produced, and never more than the margin
             # the page actually waits.
-            step = cadence * 1.1
-            check("  -> is one cadence (plus the page's own margin), not a spinner",
-                  cadence <= first <= step + 2,
+            # The client waits the configured cadence itself -- the margin lives on the server,
+            # where it does not lengthen what the user asked for.
+            step = cadence
+            check("  -> is the cadence the user configured, not a spinner",
+                  cadence <= first <= step + 1,
                   "countdown says %ss, /api/quota publishes every %ss"
                   % (first, cadence))
             time.sleep(2.4)
@@ -576,7 +578,7 @@ def main():
             # The reader must be able to trust the unit: the number can exceed the cadence by the
             # page's own margin, but it must never claim a longer period than that.
             check("  -> the header never claims a period it does not wait",
-                  bool(m2) and int(m2.group(2)) <= step + 2,
+                  bool(m2) and int(m2.group(2)) <= step + 1,
                   "%r vs a %ss cadence + margin" % (after, cadence))
 
         # The mark is inline SVG, so it renders with the page's own colour and with no icon font to
@@ -593,11 +595,32 @@ def main():
                      document.getElementById('feed').textContent),
             external: Array.from(document.querySelectorAll('link[href],script[src],img[src]'))
                         .filter(e => /^https?:/.test(e.getAttribute('href') || e.getAttribute('src')))
-                        .map(e => e.getAttribute('href') || e.getAttribute('src'))
+                        .map(e => e.getAttribute('href') || e.getAttribute('src')),
+            // The gap between the mark and the first word, measured in the real layout. The mark
+            // is an inline-block box, so a space in the markup collapses against its edge and the
+            // glyph sits glued to the text -- reading the source looks fine and the render is
+            // wrong. This measures the rendered pixels instead of trusting the markup.
+            gap: (() => {
+              const feed = document.getElementById('feed');
+              const box = feed.querySelector('.ic');
+              if (!box) return null;
+              // The text node is a child of #feed, NOT a sibling of the <svg>, which is the only
+              // child of the .ic span. Walking from the svg finds nothing and silently reports a
+              // null gap, so this looks for the first non-empty text node of #feed itself.
+              const t = Array.from(feed.childNodes).find(n => n.nodeType === 3 && n.textContent.trim());
+              if (!t) return null;
+              const r = document.createRange();
+              r.selectNodeContents(t);
+              const rects = Array.from(r.getClientRects()).filter(x => x.width > 0);
+              if (!rects.length) return null;
+              return Math.round((rects[0].left - box.getBoundingClientRect().right) * 10) / 10;
+            })()
           })
         """, returnByValue=True).get("result", {}).get("value") or {}
         check("the header mark renders as an inline icon, not emoji",
               icons.get("feed") == 1 and not icons.get("emoji"), str(icons))
+        check("the header mark is not glued to the first word",
+              (icons.get("gap") or 0) >= 2, "rendered gap=%rpx" % icons.get("gap"))
         check("the redundant 'updated' stamp is gone", icons.get("generated") == 0, str(icons))
         check("the page requests nothing off-origin", not icons.get("external"), str(icons))
 

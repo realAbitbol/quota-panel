@@ -1041,10 +1041,20 @@ def refresh_all(accounts):
     return results
 
 
+# How far inside the configured interval the server republishes. The client waits the full
+# configured interval and no less: a 30-second setting must refresh in 30 seconds, and the header
+# prints 30 because that is what it waits. So the ordering that keeps a poll from arriving before
+# the publication it is waiting for is bought here, on the server, where it is invisible -- the
+# server has fresh data ready marginally before anyone asks. Paying for it on the client instead
+# (client waits 1.1x) is what turned a 30s panel into a 33s one.
+SERVER_REPUBLISH_MARGIN = 0.9
+
+
 def poller_loop(accounts, stop_event):
     # Poll immediately, then keep a steady cadence measured from the END of each poll:
     # a plain `wait(POLL_SECONDS)` after the work stretches the interval by the fetch
     # time (measured: 60s config -> 66-68s actual).
+    interval = max(1.0, POLL_SECONDS * SERVER_REPUBLISH_MARGIN)
     while not stop_event.is_set():
         started = time.monotonic()
         try:
@@ -1052,7 +1062,7 @@ def poller_loop(accounts, stop_event):
         except Exception as exc:  # noqa: BLE001
             log("poll cycle failed: %s" % exc)
         elapsed = time.monotonic() - started
-        stop_event.wait(max(1.0, POLL_SECONDS - elapsed))
+        stop_event.wait(max(1.0, interval - elapsed))
 
 
 def homepage_widgets():

@@ -274,14 +274,18 @@ def main():
                 run.append(cur)
         peaks.append(run)
 
+        # The client waits the interval the user configured -- that is the contract now. Nothing
+        # is added on the client side, so a peak BELOW the cadence is a decay and a peak far ABOVE
+        # it means the page stopped honouring the setting. The old bounds allowed one cadence + 10%
+        # of skew, which is exactly the 30s -> 33s behaviour this test now forbids.
         lo = POLL
-        hi = int(CADENCE_MS * SKEW / 1000) + 2
+        hi = POLL + 3
         peak_vals = [p[0][2] for p in peaks]
         print("  peaks per cycle: %s" % peak_vals)
 
         overshoot = [p for p, v in zip(peaks, peak_vals) if v > hi]
         if overshoot:
-            print("\nFAIL: a cycle re-armed above one cadence + skew (%s)" % max(peak_vals))
+            print("\nFAIL: a cycle re-armed above the configured cadence (%s)" % max(peak_vals))
             return 1
 
         # Let the first cycle be partial (the page may be mid-countdown when sampling starts), and
