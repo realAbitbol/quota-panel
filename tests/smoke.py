@@ -301,9 +301,12 @@ def main():
         check("GET / is HTML", status == 200 and "text/html" in ctype, "%s %s" % (status, ctype))
         check("GET / renders the panel", b"Quota Panel" in body)
         check("GET / references the favicon", b"favicon" in body)
-        check("header status line keeps the clock and the cadence in one string",
-              b"\xe2\x8f\xb0 updated" in body and b"auto-refresh every" in body
+        check("header status line keeps the clock icon and the cadence in one string",
+              b"updated" in body and b"auto-refresh ' + cadence" in body and b"checked every" in body
+              and b'<span class="ic"' in body
               and b"\xc2\xb7 live \xc2\xb7 data" not in body)
+        check("the two header marks are inline icons, not emoji",
+              "\u23f0".encode("utf-8") not in body and "\U0001f504".encode("utf-8") not in body)
 
         status, ctype, body = get(base + "/static/favicon.svg")
         check("GET /static/favicon.svg", status == 200 and "image/svg" in ctype, "%s %s" % (status, ctype))

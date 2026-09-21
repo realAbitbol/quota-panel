@@ -19,6 +19,7 @@ reproducible instead of drifting with live usage.
 """
 import json
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -451,6 +452,45 @@ def main():
         check("the page does not flatten the contract vocabulary to one word",
               len(words) > 1, str(words))
         check("a third-party contract renders as third-party", "third-party" in words, str(words))
+
+        # The header states when the numbers refresh. That number has to be the cadence the data
+        # follows, not the client's own fetch interval: printing the half cadence promised a
+        # refresh the page could not deliver — at the default poll_seconds of 60 the header said
+        # "every 30s" while the numbers visibly moved once a minute.
+        feed = cdp.call("Runtime.evaluate",
+                        expression="document.getElementById('feed').textContent",
+                        returnByValue=True).get("result", {}).get("value") or ""
+        m = re.search(r"auto-refresh every (\d+)s(?:, checked every (\d+)s)?", feed)
+        check("the header states its refresh cadence in one readable phrase", bool(m), feed)
+        if m:
+            check("the stated cadence is the server's publication cadence",
+                  int(m.group(1)) == served["poll_seconds"],
+                  "label says %ss, /api/quota publishes every %ss"
+                  % (m.group(1), served["poll_seconds"]))
+            if m.group(2):
+                client = min(60, max(15, served["poll_seconds"] // 2))
+                check("the interval stated beside it is the client's own, clamped",
+                      int(m.group(2)) == client,
+                      "label says %ss, the client uses %ss" % (m.group(2), client))
+
+        # The marks are inline SVG, so they render with the page's own colour and with no icon
+        # font to fetch: a CDN <link> would be a fourth-party request the panel promises not to
+        # make. Emoji in the same slots would fall back to whatever font the viewer has.
+        icons = cdp.call("Runtime.evaluate", expression="""
+          ({
+            generated: document.querySelectorAll('#generated svg').length,
+            feed: document.querySelectorAll('#feed svg').length,
+            emoji: /[\\u23f0\\uD83D\\uDD04]/.test(document.getElementById('generated').textContent
+                                                 + document.getElementById('feed').textContent),
+            external: Array.from(document.querySelectorAll('link[href],script[src],img[src]'))
+                        .filter(e => /^https?:/.test(e.getAttribute('href') || e.getAttribute('src')))
+                        .map(e => e.getAttribute('href') || e.getAttribute('src'))
+          })
+        """, returnByValue=True).get("result", {}).get("value") or {}
+        check("the header marks render as inline icons, not emoji",
+              icons.get("generated") == 1 and icons.get("feed") == 1 and not icons.get("emoji"),
+              str(icons))
+        check("the page requests nothing off-origin", not icons.get("external"), str(icons))
 
         # freeze animations/transitions so the capture is deterministic
         cdp.call("Runtime.evaluate", expression="""
