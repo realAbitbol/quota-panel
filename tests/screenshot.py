@@ -529,9 +529,14 @@ def main():
               len(words) > 1, str(words))
         check("a third-party contract renders as third-party", "third-party" in words, str(words))
 
-        # The header's one number is the countdown to the next update, and it must count the
-        # server's cadence: the page used to print its own fetch interval beside the server's,
-        # which described a timer nobody asked about.
+        # The header's one number is the countdown to the page's next poll. It must read one
+        # cadence (the server's period, plus a design skew so a poll never arrives fractionally
+        # before the publication it is waiting for), and it must stay that way.
+        #
+        # The old countdown aligned to the publication stamp. When a poll arrived before the next
+        # publication, it re-armed 2.5s out and stayed there — the header counted 3, 2, 1 forever
+        # while the numbers moved once a minute. So this asserts a FLOOR, not just a ceiling: the
+        # bug was a too-small number, and a ceiling-only check passed it happily.
         def feed_text():
             return cdp.call("Runtime.evaluate",
                             expression="document.getElementById('feed').textContent",
@@ -546,37 +551,54 @@ def main():
         m = re.match(pattern, feed.strip())
         check("the header counts down to the next update in plain words", bool(m), repr(feed))
         if m:
-            # The countdown runs to the next attempt, which the page schedules one cadence after
-            # the publication stamp plus a moment for the server's own poll to finish, so it
-            # legitimately reads poll_seconds + 1 at the top of a cycle.
-            check("  -> inside one publication cadence (plus the grace)",
-                  0 < int(m.group(2)) <= served["poll_seconds"] + 2,
+            cadence = served["poll_seconds"]
+            first = int(m.group(2))
+            # Floor and ceiling: one cadence plus this page's 1.1 poll margin and rounding. Never
+            # the few-second value the stamp-alignment bug produced, and never more than the margin
+            # the page actually waits.
+            step = cadence * 1.1
+            check("  -> is one cadence (plus the page's own margin), not a spinner",
+                  cadence <= first <= step + 2,
                   "countdown says %ss, /api/quota publishes every %ss"
-                  % (m.group(2), served["poll_seconds"]))
+                  % (first, cadence))
             time.sleep(2.4)
             after = feed_text()
             m2 = re.match(pattern, after.strip())
             check("  -> and it actually ticks down",
-                  bool(m2) and int(m2.group(2)) < int(m.group(2)),
+                  bool(m2) and int(m2.group(2)) < first,
                   "%r then %r" % (feed, after))
+            # The regression this file exists to prevent: the value must not decay toward a
+            # single-digit retry loop as the page keeps polling. Sample it well past the cadence
+            # to be sure the schedule re-arms at the cadence and not at a retry constant.
+            check("  -> and never decays toward a few seconds",
+                  bool(m2) and int(m2.group(2)) >= cadence - 5,
+                  "%r after 2.4s of a %ss cadence" % (after, cadence))
+            # The reader must be able to trust the unit: the number can exceed the cadence by the
+            # page's own margin, but it must never claim a longer period than that.
+            check("  -> the header never claims a period it does not wait",
+                  bool(m2) and int(m2.group(2)) <= step + 2,
+                  "%r vs a %ss cadence + margin" % (after, cadence))
 
-        # The marks are inline SVG, so they render with the page's own colour and with no icon
-        # font to fetch: a CDN <link> would be a fourth-party request the panel promises not to
-        # make. Emoji in the same slots would fall back to whatever font the viewer has.
+        # The mark is inline SVG, so it renders with the page's own colour and with no icon font to
+        # fetch: a CDN <link> would be a fourth-party request the panel promises not to make. Emoji
+        # in the same slot would fall back to whatever font the viewer has.
+        #
+        # #generated (the "updated HH:MM:SS" stamp) was removed: it repeated what the countdown and
+        # the cards already said. Asserting its absence keeps it from creeping back.
         icons = cdp.call("Runtime.evaluate", expression="""
           ({
-            generated: document.querySelectorAll('#generated svg').length,
             feed: document.querySelectorAll('#feed svg').length,
-            emoji: /[\\u23f0\\uD83D\\uDD04]/.test(document.getElementById('generated').textContent
-                                                 + document.getElementById('feed').textContent),
+            generated: document.getElementById('generated') ? 1 : 0,
+            emoji: /[\\u23f0\\uD83D\\uDD04\\u26a0\\u26d4\\ufe0f]/.test(
+                     document.getElementById('feed').textContent),
             external: Array.from(document.querySelectorAll('link[href],script[src],img[src]'))
                         .filter(e => /^https?:/.test(e.getAttribute('href') || e.getAttribute('src')))
                         .map(e => e.getAttribute('href') || e.getAttribute('src'))
           })
         """, returnByValue=True).get("result", {}).get("value") or {}
-        check("the header marks render as inline icons, not emoji",
-              icons.get("generated") == 1 and icons.get("feed") == 1 and not icons.get("emoji"),
-              str(icons))
+        check("the header mark renders as an inline icon, not emoji",
+              icons.get("feed") == 1 and not icons.get("emoji"), str(icons))
+        check("the redundant 'updated' stamp is gone", icons.get("generated") == 0, str(icons))
         check("the page requests nothing off-origin", not icons.get("external"), str(icons))
 
         # freeze animations/transitions so the capture is deterministic

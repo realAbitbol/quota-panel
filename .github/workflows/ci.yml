@@ -43,7 +43,7 @@ jobs:
           python-version: "3.12"
 
       - name: Compile
-        run: python -m py_compile app.py providers_balance.py tests/smoke.py tests/background.py tests/balance.py
+        run: python -m py_compile app.py providers_balance.py tests/smoke.py tests/background.py tests/balance.py tests/screenshot.py tests/cadence_soak.py
 
       - name: Validate the example config
         run: |
@@ -74,6 +74,7 @@ jobs:
         run: python tests/balance.py
 
       - name: Screenshot harness (real render, real Chromium)
+        id: browser
         # py_compile only proved the harness parses. The DOM contract it depends on
         # (.card, .bal-amount, .pill, img.mark) is checked by nothing, so a CSS rename was
         # invisible until someone next shot the README image — and a missing browser printed
@@ -85,7 +86,22 @@ jobs:
             || command -v chromium || command -v chromium-browser || true)"
           export SCREENSHOT_BROWSER
           echo "browser: ${SCREENSHOT_BROWSER:-<none found>}"
+          echo "path=$SCREENSHOT_BROWSER" >> "$GITHUB_OUTPUT"
           python tests/screenshot.py
+
+      - name: Countdown soak (must not decay)
+        # The screenshot harness samples the countdown twice, which cannot see a counter that
+        # re-arms at a shrinking interval over time -- the actual reported bug. This watches it
+        # across several full cycles at a 10s cadence and requires every cycle to re-arm at one
+        # cadence. Verified to FAIL on the old stamp-alignment scheduling and pass on the current
+        # one; a check that cannot fail is not a check.
+        env:
+          SCREENSHOT_BROWSER: ${{ steps.browser.outputs.path }}
+          QUOTA_POLL_SECONDS: "10"
+          # Long enough for at least two full re-arms: with one cycle the soak cannot see a
+          # shrinking interval, which is the whole point of watching it.
+          SOAK_SECONDS: "34"
+        run: python tests/cadence_soak.py
 
       - name: Background image shrink (Pillow)
         run: |

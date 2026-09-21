@@ -307,12 +307,22 @@ def main():
         check("GET / is HTML", status == 200 and "text/html" in ctype, "%s %s" % (status, ctype))
         check("GET / renders the panel", b"Quota Panel" in body)
         check("GET / references the favicon", b"favicon" in body)
+        # Asserted on the BEHAVIOUR, not on one contiguous byte sequence: the countdown composes
+        # its phrase from the verb plus the number, so "updating in " is not a literal in the
+        # source and never was after the verb became a parameter. The old assertion matched the
+        # string the implementation happened to use, which is the kind of check that fails on a
+        # harmless refactor and passes on a broken page.
         check("the header counts down to the next update in plain words",
-              b"updating in " in body and b"waiting for the first update" in body
-              and b"function secondsToUpdate()" in body and b"cadenceText" not in body
+              b"waiting for the first update" in body
+              and b"function secondsToUpdate()" in body
+              and b"in ${s} seconds" in body and b"cadenceText" not in body
               and b'<span class="ic"' in body)
-        check("the two header marks are inline icons, not emoji",
-              "\u23f0".encode("utf-8") not in body and "\U0001f504".encode("utf-8") not in body)
+        # ⚠ and ⛔ (with the variation selector U+FE0F) belong in this list: they were the two
+        # marks that stayed emoji when the other header icons became inline SVG.
+        check("the header marks are inline icons, not emoji",
+              all(ch.encode("utf-8") not in body for ch in ("\u23f0", "\U0001f504", "\u26a0",
+                                                              "\u26d4"))
+              and b"\ufe0f" not in body)
 
         status, ctype, body = get(base + "/static/favicon.svg")
         check("GET /static/favicon.svg", status == 200 and "image/svg" in ctype, "%s %s" % (status, ctype))

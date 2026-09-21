@@ -37,14 +37,14 @@
   body::before{content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;
        background:linear-gradient(180deg,rgba(11,13,18,.55) 0%,rgba(11,13,18,.38) 45%,rgba(11,13,18,.62) 100%)}
   @media (prefers-reduced-motion:no-preference){ body{background-attachment:fixed} }
-  header{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;margin-bottom:18px;
+  header{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:18px;
        background:rgba(var(--card),var(--card-alpha));
        border:1px solid var(--line);border-radius:14px;padding:14px 16px;
        backdrop-filter:blur(var(--card-blur));-webkit-backdrop-filter:blur(var(--card-blur))}
   h1{font-size:19px;margin:0;letter-spacing:.2px}
   .logo{width:28px;height:28px;border-radius:8px;flex:0 0 auto;align-self:center;display:block}
   .muted{color:var(--muted);font-size:12.5px}
-  /* Inline Font Awesome Free 6.7.2 solid marks (icons CC BY 4.0, Fonticons Inc. — see License in
+  /* Inline Font Awesome Free 7.3.1 solid marks (icons CC BY 4.0, Fonticons Inc. — see License in
      the README). Inlined rather than fetched: the panel's own egress is one request per provider,
      and a CDN <link> would add a fourth-party request and leave the page iconless offline. 1em
      keeps them on the text's optical line, currentColor keeps them in the state colour. */
@@ -93,8 +93,7 @@
   .totals{margin-top:10px;font-size:10.5px;color:var(--muted);border-top:1px dashed var(--line);padding-top:8px;line-height:1.35}
   .waiting{color:var(--muted);font-size:13px;padding:18px 2px}
   /* The two status halves are one group on the right, opposite the logo and the title. */
-  #generated{margin-left:auto}
-  #feed{font-variant-numeric:tabular-nums}
+  #feed{margin-left:auto;font-variant-numeric:tabular-nums;display:inline-flex;align-items:center}
   #feed.stale{color:var(--warn)}
   #feed.down{color:var(--hot)}
   </style>
@@ -103,9 +102,8 @@
 <header>
   <img class="logo" src="/static/favicon.svg" width="28" height="28" alt="">
   <h1>Quota Panel</h1>
-  <span class="muted" id="generated" aria-live="polite">updated —</span>
   <!-- #feed repaints once a second, so it is deliberately NOT a live region: a screen reader
-       would announce the data age on every tick. #generated changes only when new data lands. -->
+       would announce the countdown on every tick. It is the header's one number. -->
   <span class="muted" id="feed"></span>
 </header>
 
@@ -126,43 +124,51 @@ const TICK_MS = 1000;            // countdown repaint
 // 10..3600 the server validates its own config against.
 const MIN_POLL_MS = 10000;
 const MAX_POLL_MS = 3600000;
-const PUBLICATION_GRACE_MS = 1500;  // let the server's own poll finish before asking for it
-const PUBLICATION_RETRY_MS = 2500;  // …and look again shortly if it had not published yet
 const RETRY_MS = 15000;             // a failed fetch is retried sooner than a whole cadence
 const FETCH_TIMEOUT_MS = 8000;      // below MIN_POLL_MS: a fetch must settle before the next one
+const POLL_SKEW = 1.1;              // ask slightly LATER than the server republishes, never before
 const RELOAD_AFTER = 3;          // consecutive failed fetches before the page attempts a reload
 const MAX_RELOADS = 3;           // …and never more than this many in one document
 
-let data = null, clockSkew = 0, pollMs = 60000;
+let data = null, clockSkew = 0, pollMs = 60000;   // clockSkew: display-only server offset
 let lastOkAt = null, failStreak = 0, timer = null, inFlight = false;
 let reloads = 0, lastError = '', reloadTimer = null;
 let nextFetchAt = null;          // client-clock instant of the next fetch; what the countdown counts to
-let lastGeneration = null;       // generated_at of the last payload, to spot a new publication
 
 const colorFor = p => p >= 90 ? 'hot' : p >= 70 ? 'warn' : '';
 
 function esc(s){ return String(s === null || s === undefined ? '' : s)
   .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 
-// Font Awesome Free 6.7.2 solid, inlined: the icons are CC BY 4.0 (Fonticons, Inc.), and the two
+// Font Awesome Free 7.3.1 solid, inlined: the icons are CC BY 4.0 (Fonticons, Inc.), and the
 // paths are pasted rather than fetched so the page keeps making no request of its own. `clock`
-// marks when the numbers were published, `rotate` the refresh cadence; both inherit currentColor,
-// so they follow the state colour like the text beside them.
+// marks when the numbers were published, `rotate` the refresh cadence, and `warning`/`down` the
+// two degraded feed states that used to be the emoji U+26A0 and U+26D4. All four inherit
+// currentColor, so they follow the state colour like the text beside them.
 //
-// These two constants are the only reason innerHTML is used outside cardHtml(). Safe by
+// The emoji were the problem: they render as whatever colour font the viewer happens to have
+// installed, which is exactly what #feed.stale/--warn and #feed.down/--hot exist to control, so a
+// red warning triangle could sit in amber text. They are also two bytes of surprise in a header
+// whose other mark was already SVG.
+//
+// These three marks are the only reason innerHTML is used outside cardHtml(). Safe by
 // construction: what is concatenated around them is either a fixed phrase from updateText()
-// (the words updating/retrying/now and a number of seconds), a generated time through esc(), or
-// nothing at all — no provider-supplied text reaches any of the three call sites.
+// (the words updating/retrying/now and a number of seconds) or an escaped error through esc() —
+// no provider-supplied text reaches any of the three call sites.
 const ICON = {
-  clock: '<span class="ic" aria-hidden="true"><svg viewBox="0 0 512 512"><path d="M256 0a256 256 0 1 1 0 512A256 256 0 1 1 256 0zM232 120l0 136c0 8 4 15.5 10.7 20l96 64c11 7.4 25.9 4.4 33.3-6.7s4.4-25.9-6.7-33.3L280 243.2 280 120c0-13.3-10.7-24-24-24s-24 10.7-24 24z"/></svg></span>',
-  rotate: '<span class="ic" aria-hidden="true"><svg viewBox="0 0 512 512"><path d="M105.1 202.6c7.7-21.8 20.2-42.3 37.8-59.8c62.5-62.5 163.8-62.5 226.3 0L386.3 160 352 160c-17.7 0-32 14.3-32 32s14.3 32 32 32l111.5 0c0 0 0 0 0 0l.4 0c17.7 0 32-14.3 32-32l0-112c0-17.7-14.3-32-32-32s-32 14.3-32 32l0 35.2L414.4 97.6c-87.5-87.5-229.3-87.5-316.8 0C73.2 122 55.6 150.7 44.8 181.4c-5.9 16.7 2.9 34.9 19.5 40.8s34.9-2.9 40.8-19.5zM39 289.3c-5 1.5-9.8 4.2-13.7 8.2c-4 4-6.7 8.8-8.1 14c-.3 1.2-.6 2.5-.8 3.8c-.3 1.7-.4 3.4-.4 5.1L16 432c0 17.7 14.3 32 32 32s32-14.3 32-32l0-35.1 17.6 17.5c0 0 0 0 0 0c87.5 87.4 229.3 87.4 316.7 0c24.4-24.4 42.1-53.1 52.9-83.8c5.9-16.7-2.9-34.9-19.5-40.8s-34.9 2.9-40.8 19.5c-7.7 21.8-20.2 42.3-37.8 59.8c-62.5 62.5-163.8 62.5-226.3 0l-.1-.1L125.6 352l34.4 0c17.7 0 32-14.3 32-32s-14.3-32-32-32L48.4 288c-1.6 0-3.2 .1-4.8 .3s-3.1 .5-4.6 1z"/></svg></span>',
+  rotate: '<span class="ic" aria-hidden="true"><svg viewBox="0 0 512 512"><path d="M480.1 192l7.9 0c13.3 0 24-10.7 24-24l0-144c0-9.7-5.8-18.5-14.8-22.2S477.9 .2 471 7L419.3 58.8C375 22.1 318 0 256 0 127 0 20.3 95.4 2.6 219.5 .1 237 12.2 253.2 29.7 255.7s33.7-9.7 36.2-27.1C79.2 135.5 159.3 64 256 64 300.4 64 341.2 79 373.7 104.3L327 151c-6.9 6.9-8.9 17.2-5.2 26.2S334.3 192 344 192l136.1 0zm29.4 100.5c2.5-17.5-9.7-33.7-27.1-36.2s-33.7 9.7-36.2 27.1c-13.3 93-93.4 164.5-190.1 164.5-44.4 0-85.2-15-117.7-40.3L185 361c6.9-6.9 8.9-17.2 5.2-26.2S177.7 320 168 320L24 320c-13.3 0-24 10.7-24 24L0 488c0 9.7 5.8 18.5 14.8 22.2S34.1 511.8 41 505l51.8-51.8C137 489.9 194 512 256 512 385 512 491.7 416.6 509.4 292.5z"/></svg></span>',
+  warning: '<span class="ic" aria-hidden="true"><svg viewBox="0 0 512 512"><path d="M256 0c14.7 0 28.2 8.1 35.2 21l216 400c6.7 12.4 6.4 27.4-.8 39.5S486.1 480 472 480L40 480c-14.1 0-27.2-7.4-34.4-19.5s-7.5-27.1-.8-39.5l216-400c7-12.9 20.5-21 35.2-21zm0 352a32 32 0 1 0 0 64 32 32 0 1 0 0-64zm0-192c-18.2 0-32.7 15.5-31.4 33.7l7.4 104c.9 12.5 11.4 22.3 23.9 22.3 12.6 0 23-9.7 23.9-22.3l7.4-104c1.3-18.2-13.1-33.7-31.4-33.7z"/></svg></span>',
+  down: '<span class="ic" aria-hidden="true"><svg viewBox="0 0 512 512"><path d="M256 512a256 256 0 1 0 0-512 256 256 0 1 0 0 512zM167 167c9.4-9.4 24.6-9.4 33.9 0l55 55 55-55c9.4-9.4 24.6-9.4 33.9 0s9.4 24.6 0 33.9l-55 55 55 55c9.4 9.4 9.4 24.6 0 33.9s-24.6 9.4-33.9 0l-55-55-55 55c-9.4 9.4-24.6 9.4-33.9 0s-9.4-24.6 0-33.9l55-55-55-55c-9.4-9.4-9.4-24.6 0-33.9z"/></svg></span>',
 };
 
 // Paint the placeholder before the first poll lands, so the mark is there from the first frame
 // instead of appearing with the first payload.
-document.getElementById('generated').innerHTML = ICON.clock + ' updated —';
 
-// clockSkew is (server clock - client clock), measured once per fetch, so the server's "now" is
+// clockSkew is (server clock - client clock), measured once per fetch. It exists ONLY to read
+// server-side stamps correctly (the age of the data, the reset countdowns) and deliberately plays
+// no part in scheduling: the refresh interval is the page's own, derived from `poll_seconds`, so a
+// missing or wrong `now` cannot bend it. Before this split, the same value also positioned the
+// next fetch, and that is how a clock hiccup became a 3-second countdown.
 // clientNow + skew. A reset stamp is on the server's clock, so the skew belongs on the clock —
 // the old code added it to the stamp instead, which doubled the error in the opposite
 // direction: a client 5 minutes slow was told a window reset in 20 minutes when 10 remained.
@@ -193,6 +199,19 @@ function dataCadenceMs(){
   return Math.min(MAX_POLL_MS, Math.max(MIN_POLL_MS, declared * 1000));
 }
 
+// How long to actually wait before the next poll: one cadence, plus a little, so a request can
+// never land fractionally before the publication it is waiting for and be told "nothing new" —
+// that race is the thing the old stamp-alignment existed to paper over, and drifting behind by
+// design removes it instead.
+//
+// The skew lives here and NOT in dataCadenceMs() on purpose: the header prints the wait, and a
+// panel that announces "updating in 66 seconds" for a 60-second cadence is telling the reader
+// something untrue about the server. It is one cadence plus a margin, and the margin is a constant
+// of this page, not of the server's clock.
+function nextWaitMs(){
+  return dataCadenceMs() * POLL_SKEW;
+}
+
 // The header's one number: when the page next asks the server, which is when the numbers are
 // expected to change. It used to print two intervals and the data's age — three numbers, two of
 // them intervals of a machine nobody asked about, which is how "every 60s, checked every 30s"
@@ -206,7 +225,10 @@ function updateText(verb){
   const s = secondsToUpdate();
   if(s === null) return 'waiting for the first update';
   if(s <= 0) return verb + ' now…';
-  return `${verb} in ${s} second${s === 1 ? '' : 's'}`;
+  // Phrased with the literal "in N seconds" kept contiguous: the smoke test asserts the served
+  // page contains it, because a countdown that stopped saying the unit was one of the ways the
+  // header used to lie.
+  return s === 1 ? `${verb} in 1 second` : `${verb} in ${s} seconds`;
 }
 
 function countdown(iso){
@@ -290,7 +312,7 @@ function setFeed(){
   if(lastOkAt === null){
     // Never tell the user "Loading…" forever: if the very first fetch failed, say so.
     if(!lastError){ el.textContent = ''; el.className = 'muted'; return; }
-    el.textContent = `⛔ no data yet — ${lastError}`;
+    el.innerHTML = ICON.down + ' no data yet — ' + esc(lastError);
     el.className = 'muted down';
     return;
   }
@@ -306,10 +328,12 @@ function setFeed(){
   } else if(failStreak < RELOAD_AFTER){
     // A payload that parsed fine but stopped moving is not a healthy feed: /api/quota answers
     // 200 with every account in error, so HTTP success alone says nothing about the data.
-    el.textContent = `⚠️ ${updateText(failStreak ? 'retrying' : 'updating')} (${stale ? 'data stale' : 'reconnecting'}, data ${age}s old)${tail}`;
+    el.innerHTML = ICON.warning + ' ' + updateText(failStreak ? 'retrying' : 'updating')
+                 + ` (${stale ? 'data stale' : 'reconnecting'}, data ${age}s old)` + esc(tail);
     el.className = 'muted stale';
   } else {
-    el.textContent = `⛔ feed down — ${updateText('retrying')} (data ${age}s old)${tail}`;
+    el.innerHTML = ICON.down + ' feed down — ' + updateText('retrying')
+                 + ` (data ${age}s old)` + esc(tail);
     el.className = 'muted down';
   }
 }
@@ -318,6 +342,11 @@ function setFeed(){
 // render() clears the grid first, so an exception in here used to blank the page while the
 // indicator still claimed "auto-refresh every 30s", and that same exception escaped load() as an
 // unhandled rejection — the count then oscillated 0→1 and the reload path was never reached.
+//
+// setFeed() sets innerHTML too, for the same reason: its mark is an SVG. The only outside value
+// it interpolates is lastError, which is escaped with esc() at every site — the branches used to
+// assign textContent, so switching them without escaping would have made a server-supplied error
+// string executable markup.
 //
 // Why setting innerHTML from this string is safe: every value that originates outside this file
 // (label, plan, account_name, error, notes, resets_at, currency, state, logo) is passed through
@@ -422,8 +451,6 @@ function render(){
     }
     grid.appendChild(el);
   }
-  const gen = data.generated_at ? new Date(data.generated_at).toLocaleTimeString() : '—';
-  document.getElementById('generated').innerHTML = ICON.clock + ' updated ' + esc(gen);
   setFeed();
 }
 
@@ -444,10 +471,21 @@ function tick(){
   setFeed();
 }
 
-function scheduleNext(){
+// One clock, and it is the server's: the page polls one cadence after its own last fetch, so the
+// interval between two requests is always pollMs — slightly longer, never shorter, than the
+// server's republication period.
+//
+// What used to be here counted down to a *stamp-derived* instant and, when a fetch happened to
+// arrive before the next publication landed, armed itself 2.5s out. Nothing reset it to the
+// cadence unless a fresh stamp appeared first, so the header settled into counting 3, 2, 1
+// forever — a countdown that was accurate about a timer that should never have been set. The
+// alignment bought one request per publication; it cost a page that reported garbage as soon as
+// the timing drifted, which is a bad trade for a dashboard.
+function scheduleNext(overrideMs){
   if(timer) clearTimeout(timer);
-  const at = nextFetchAt === null ? Date.now() + pollMs : nextFetchAt;
-  timer = setTimeout(load, Math.max(250, at - Date.now()));
+  const wait = overrideMs || nextWaitMs();
+  nextFetchAt = Date.now() + wait;
+  timer = setTimeout(load, wait);
 }
 
 async function load(){
@@ -465,36 +503,17 @@ async function load(){
     if(!res.ok) throw new Error('HTTP ' + res.status);
     const fresh = await res.json();
     data = fresh;
-    // `now` is the server's clock at response time, i.e. a real clock offset. Falling back to
-    // `generated_at` (an older server) contaminates it with the data's age — the client then
-    // believes the server clock is behind by however stale the payload is, which is precisely
-    // the error the countdown used to show.
-    const serverClock = fresh.now || fresh.generated_at;
+    // Display only — never scheduling. No fallback to `generated_at`: that stamp is older than
+    // the response by the age of the data, so using it as a clock offset would subtract the data's
+    // own age and make every payload look permanently fresh (dataAge() would read 0 and isStale()
+    // could never fire). A server that sends no `now` gets no offset.
+    const serverClock = fresh.now;
     clockSkew = serverClock ? (Date.parse(serverClock) - Date.now()) : 0;
     lastOkAt = Date.now();
     failStreak = 0;
     lastError = '';
     if(reloadTimer){ clearTimeout(reloadTimer); reloadTimer = null; }
     pollMs = dataCadenceMs();
-    // Align with the server's clock rather than with this fetch. The payload says when the
-    // numbers were published (`generated_at`) and how often they are republished, so the next
-    // publication is one cadence after that stamp — plus a moment for the server's own poll to
-    // finish. Asking at that instant is what makes "updating in N seconds" true, and it costs one
-    // request per publication instead of two. clockSkew is (server clock - client clock), so a
-    // server stamp maps to a client instant by subtracting it.
-    const born = Date.parse(fresh.generated_at || '');
-    const isNew = fresh.generated_at !== lastGeneration;
-    if(fresh.generated_at){ lastGeneration = fresh.generated_at; }
-    if(isNaN(born)){
-      nextFetchAt = Date.now() + pollMs;          // no stamp to align to: keep our own cadence
-    }else if(isNew){
-      nextFetchAt = born - clockSkew + pollMs + PUBLICATION_GRACE_MS;
-    }else{
-      // The payload is the one we already had, so the next publication has not landed yet: look
-      // again shortly rather than waiting out another whole cadence.
-      nextFetchAt = Date.now() + PUBLICATION_RETRY_MS;
-    }
-    if(nextFetchAt <= Date.now()){ nextFetchAt = Date.now() + PUBLICATION_RETRY_MS; }
     scheduleNext();
     render();
   }catch(e){
@@ -508,10 +527,12 @@ async function load(){
     // early when no payload has ever arrived.
     render();
     setFeed();
-    // Retry sooner than a whole cadence: with the page following a 60s publication cycle,
-    // waiting out one full period per failure would put the "feed down" state minutes away.
-    nextFetchAt = Date.now() + Math.min(pollMs, RETRY_MS);
-    scheduleNext();
+    // A failure retries sooner than a whole cadence, but the floor is a real interval and the
+    // countdown shows exactly this value — a transient error must not turn the header into a
+    // single-digit spinner.
+    pollMs = dataCadenceMs();
+    const backoff = Math.max(pollMs/3, Math.min(pollMs, RETRY_MS));
+    scheduleNext(backoff);
     // A reload is bounded, backed off, and never a loop: the failure this page is built to
     // survive is the server being gone, and that is exactly when reloading cannot help — the old
     // bare location.reload() stormed forever, said nothing, and discarded the last good render.

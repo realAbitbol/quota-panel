@@ -166,7 +166,7 @@ Every card wears its provider's mark from `static/logos/<provider>.svg`, forced 
 
 ### `poll_seconds`
 
-How often the providers are polled, bounded to `10`–`3600` (out-of-range values are logged and ignored). The page follows the same cadence, and its header counts down to the next update. Overridable per container with `QUOTA_POLL_SECONDS`.
+How often the providers are polled, bounded to `10`–`3600` (out-of-range values are logged and ignored). The page polls that same cadence, a little behind it so a request can never land fractionally before the publication it is waiting for, and the header counts down to its own next poll — one number, re-armed at one cadence every cycle. Overridable per container with `QUOTA_POLL_SECONDS`, **but only as a fallback**: a `poll_seconds` in the config file wins.
 
 > **Trap:** writing the key *into* `token_env` looks like it works: the config parses, the accounts load, the panel renders — but every lookup returns `""` and the log says `no account has a credential configured`, because the field holds the *name* of a variable. The value goes in `token`. The app detects the mistake and warns (masked) at startup.
 
@@ -198,7 +198,7 @@ A fetch that fails is logged, `/background` answers `404` for as long as it keep
 |---|---|---|
 | `PORT` | `8080` | Listen port. |
 | `QUOTA_CONFIG` | `/config/accounts.json` | Config path. |
-| `QUOTA_POLL_SECONDS` | `60` | Poll interval; the config file's `poll_seconds` wins. |
+| `QUOTA_POLL_SECONDS` | `60` | Poll interval **fallback**. A `poll_seconds` in the config file wins outright, so setting this in a compose file while `accounts.json` still declares one changes nothing. If you set it and the header keeps counting to the old cadence, that is why. |
 | `QUOTA_HTTP_TIMEOUT` | `20` | Per-request timeout, in seconds. |
 | `QUOTA_CURRENCY` | `USD` | Which currency a multi-currency balance is reported in, since DeepSeek lists several. |
 | `QUOTA_BACKGROUND_URL` | the shipped wallpaper | Artwork URL, or `none`/`off` for no artwork at all; the config file's `background_url` wins. |
@@ -359,4 +359,4 @@ A release is a tag: `git tag v1.0.0 && git push origin v1.0.0` publishes `1.0.0`
 
 MIT, see [LICENSE](LICENSE).
 
-The container image installs [Pillow](https://python-pillow.org/) (MIT-CMU) for the optional background resize. The two marks in the header are [Font Awesome Free](https://fontawesome.com/) 6.7.2 solid icons (`clock`, `arrows-rotate`), inlined as SVG paths: those icons are CC BY 4.0, Copyright Fonticons, Inc. No icon font or CDN stylesheet is fetched, so the page asks for nothing off-origin.
+The container image installs [Pillow](https://python-pillow.org/) (MIT-CMU) for the optional background resize. The marks in the header are [Font Awesome Free](https://fontawesome.com/) 7.3.1 solid icons (`arrows-rotate`, and `triangle-exclamation` / `circle-xmark` for the two degraded feed states), inlined as SVG paths: those icons are CC BY 4.0, Copyright Fonticons, Inc. No icon font or CDN stylesheet is fetched, so the page asks for nothing off-origin.
