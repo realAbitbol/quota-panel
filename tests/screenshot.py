@@ -374,8 +374,10 @@ def main():
     # would show the 404 the panel answers until the download lands, and the screenshot would be
     # of a state no user with a working URL ever sees.
     if ARTWORK:
-        import urllib.request
-
+        # No local `import urllib.request` here: a function-local import binds the name for the
+        # whole function, so with Pillow missing (CI installs it a step later) the CDP wait below
+        # raised UnboundLocalError, was swallowed by its own except, and the harness reported a
+        # 25-second "CDP page target timed out" for a bug that had nothing to do with the browser.
         deadline = time.time() + 15
         served = {}
         while time.time() < deadline:
@@ -402,6 +404,7 @@ def main():
 
     try:
         ws = None
+        last_error = None
         deadline = time.time() + 25
         while time.time() < deadline and ws is None:
             try:
@@ -411,10 +414,15 @@ def main():
                     if target.get("type") == "page" and target.get("webSocketDebuggerUrl"):
                         ws = target["webSocketDebuggerUrl"]
                         break
-            except Exception:
+            except Exception as exc:  # noqa: BLE001 - retried until the deadline
+                # Keep the reason: this loop used to swallow every failure and report a bare
+                # "timed out" after 25 seconds, which reads as a slow browser even when the
+                # cause is a bug in this file or a port the browser never got.
+                last_error = "%s: %s" % (type(exc).__name__, exc)
                 time.sleep(0.4)
         if not ws:
-            check("the browser exposes a CDP page target", False, "timed out")
+            check("the browser exposes a CDP page target", False,
+                  "timed out on port %d%s" % (cdp_port, " (%s)" % last_error if last_error else ""))
             return 1
         check("the browser exposes a CDP page target", True)
 
