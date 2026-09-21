@@ -2,7 +2,7 @@
   <img src="static/favicon.svg" width="84" alt="quota-panel">
 </p>
 
-<h1 align="center">quota-panel</h1>
+<h1 align="center">Quota Panel</h1>
 
 <p align="center">A small read-only dashboard that shows <b>how much of your AI coding subscription is left</b>, right now, for every account you have, with a live countdown to each reset.</p>
 
