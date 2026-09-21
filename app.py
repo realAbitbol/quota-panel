@@ -866,7 +866,7 @@ def _fmt(value):
 # mark falls back to _fallback.svg rather than rendering an empty box.
 PROVIDERS = {
     "commandcode": {
-        "kind": "window", "contract": "live", "logo": "commandcode.svg",
+        "kind": "window", "contract": "live", "logo": "commandcode.png",
         "label": "CommandCode",
         # "live" is the strongest word in this registry, so the claim names what backs it: this
         # adapter is exercised against the provider, from the maintainer's own account, daily.
@@ -886,7 +886,7 @@ PROVIDERS = {
         "label": "CheaperInference",
     },
     "deepseek": {
-        "kind": "balance", "contract": "documented", "logo": "deepseek.svg",
+        "kind": "balance", "contract": "documented", "logo": "deepseek.png",
         "label": "DeepSeek",
     },
     "kimi": {

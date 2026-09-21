@@ -25,19 +25,15 @@ renders as an error card and never takes the panel down.
 
 | | `provider` | Card | Reports |
 |---|---|---|---|
-| <img src="docs/logos/commandcode.png" height="22" alt="CommandCode"> | `commandcode` | window | 5 h / weekly / monthly percent |
-| <img src="docs/logos/opencode.svg" height="22" alt="OpenCode"> | `opencode_go` | window | rolling / weekly / monthly percent |
-| <img src="docs/logos/zai.svg" height="22" alt="z.ai"> | `zai` | window | session / weekly / web-search quota |
-| <img src="docs/logos/synthetic.svg" height="22" alt="Synthetic"> | `synthetic` | window | request allowance percent |
-| <img src="docs/logos/openrouter.svg" height="22" alt="OpenRouter"> | `openrouter` | balance | credit balance; percent only if the key has a spend limit |
-| <img src="docs/logos/cheaperinference.svg" height="22" alt="CheaperInference"> | `cheaperinference` | balance | wallet balance |
-| <img src="docs/logos/deepseek.svg" height="22" alt="DeepSeek"> | `deepseek` | balance | balance in CNY or USD |
-| <img src="docs/logos/kimi.svg" height="22" alt="Kimi"> | `kimi` | balance | available / voucher / cash balance |
+| <img src="static/logos/commandcode.png" height="22" alt="CommandCode"> | `commandcode` | window | 5 h / weekly / monthly percent |
+| <img src="static/logos/opencode_go.svg" height="22" alt="OpenCode"> | `opencode_go` | window | rolling / weekly / monthly percent |
+| <img src="static/logos/zai.svg" height="22" alt="z.ai"> | `zai` | window | session / weekly / web-search quota |
+| <img src="static/logos/synthetic.svg" height="22" alt="Synthetic"> | `synthetic` | window | request allowance percent |
+| <img src="static/logos/openrouter.svg" height="22" alt="OpenRouter"> | `openrouter` | balance | credit balance; percent only if the key has a spend limit |
+| <img src="static/logos/cheaperinference.svg" height="22" alt="CheaperInference"> | `cheaperinference` | balance | wallet balance |
+| <img src="static/logos/deepseek.png" height="22" alt="DeepSeek"> | `deepseek` | balance | balance in CNY or USD |
+| <img src="static/logos/kimi.svg" height="22" alt="Kimi"> | `kimi` | balance | available / voucher / cash balance |
 
-A subset of the adapters catalogued by
-[AIMeter](https://github.com/bugwz/AIMeter#supported-providers) — that page lists many more
-providers, with logos and their auth requirements, and is the place to check whether a provider
-this panel does not carry is reachable at all.
 
 ## Install
 
