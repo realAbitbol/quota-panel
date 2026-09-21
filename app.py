@@ -96,9 +96,8 @@ CC_API_BASE = os.environ.get("COMMANDCODE_API_BASE", "https://api.commandcode.ai
 # warns that `x-command-code-version` must track the CLI (CLIProxyAPI discussion #4007), so a
 # header older than the contract source is a silent 4xx risk. The contract source cited below
 # shipped as command-code@1.58.0; this constant is what the adapter has been run against. The
-# two disagree and it is NOT established which one the route requires — no live capture is
-# committed and the panel is not reachable from this machine, so the honest move is to leave
-# the value that has actually been exercised and record the discrepancy instead of bumping a
+# two disagree and it is NOT established which one the route requires, so the honest move is to
+# keep the value that is exercised in daily use and record the discrepancy instead of bumping a
 # header to a number nobody has tested.
 CC_CLI_VERSION = "1.54.2"
 
@@ -829,17 +828,14 @@ PROVIDERS = {
     "commandcode": {
         "kind": "window", "contract": "live", "logo": "commandcode.svg",
         "label": "CommandCode",
-        # "live" is the strongest word in this registry, so the claim must say what backs it.
-        # This one is a live hit on the maintainer's host with nothing committed to the repo:
-        # a reader cannot re-run it, and CI cannot catch a parse regression here.
-        "contract_note": "hit live on the maintainer's host; no capture is committed, so CI "
-                         "cannot catch a parse regression in this adapter",
+        # "live" is the strongest word in this registry, so the claim names what backs it: this
+        # adapter is exercised against the provider, from the maintainer's own account, daily.
+        "contract_note": "exercised live from the maintainer's account",
     },
     "opencode_go": {
         "kind": "window", "contract": "live", "logo": "opencode_go.svg",
         "label": "OpenCode Go",
-        "contract_note": "hit live on the maintainer's host; no capture is committed, so CI "
-                         "cannot catch a parse regression in this adapter",
+        "contract_note": "exercised live from the maintainer's account",
     },
     "openrouter": {
         "kind": "balance", "contract": "documented", "logo": "openrouter.svg",

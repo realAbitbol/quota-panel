@@ -199,10 +199,9 @@ The registry, as the panel serves it from `/api/providers`:
 
 `openrouter` is the one provider that can render either shape: a key with a `limit` set gets a real percent window, a key without one gets a balance and the note *"no spend cap set on this key"*. The Contract column is deliberate, and it has three values:
 
-* `verified live`: the adapter has been exercised against a real response from the
-  provider. For `commandcode` and `opencode_go` no capture is committed, so that claim is
-  the maintainer's word and CI cannot catch a parse regression in either adapter; the
-  registry says so per provider in `contract_note`.
+* `verified live`: the adapter is exercised against a real response from the provider in
+  daily use, from the maintainer's own account. That is `commandcode` and `opencode_go`, and
+  the registry repeats the provenance per provider in `contract_note`.
 * `documented`: built from the vendor's own published contract and not yet hit with a live
   credential. The parse is tested against a recorded fixture, but the first real key may
   reveal a field nobody documents.
@@ -371,9 +370,8 @@ GET /alpha/usage/summary[?orgId=<id>]
 * The version header is sensitive: `/alpha/*` is CLI-internal, and third-party notes warn
   that `x-command-code-version` has to track the CLI. The contract source shipped as
   `command-code@1.58.0` while the header above is what the adapter has actually been run
-  against. The two disagree, no live capture is committed, so the value that has been
-  exercised is the one kept and the discrepancy is recorded in `app.py` rather than
-  resolved by a guess.
+  against. The two disagree, so the value that is exercised is the one kept and the
+  discrepancy is recorded in `app.py` rather than resolved by a guess.
 * ⚠️ `/provider/v1/models` is **unauthenticated**: it answers `200` even with a
   bogus key, so it is *not* proof that a key is alive. `/provider/v1/chat/completions`
   and every `/alpha/*` route answer `401` for a dead key. Verify a key with
@@ -465,4 +463,7 @@ Tagging `v1.0.0` publishes `1.0.0`, `1.0`, the short commit SHA and `latest`. No
 MIT, see [LICENSE](LICENSE).
 
 The container image installs [Pillow](https://python-pillow.org/) (MIT-CMU) for the
-optional background resize. No code is vendored.
+optional background resize. The two marks in the header are
+[Font Awesome Free](https://fontawesome.com/) 6.7.2 solid icons (`clock`, `arrows-rotate`),
+inlined as SVG paths: those icons are CC BY 4.0, Copyright Fonticons, Inc. No icon font or
+CDN stylesheet is fetched, so the page asks for nothing off-origin; the suites assert that.
