@@ -90,15 +90,19 @@ def main():
 
     ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     ENV = app.BACKGROUND_URL_ENV
+    # One scratch directory for every case below, removed at the end: a mkdtemp per call left a
+    # trail of directories behind on every run, which is the kind of litter a test suite should
+    # not be the source of.
+    scratch = tempfile.mkdtemp(prefix="qp-artwork-")
+    cfg = os.path.join(scratch, "cfg.json")
 
     def resolve(doc, env=None):
-        path = os.path.join(tempfile.mkdtemp(prefix="qp-artwork-"), "cfg.json")
-        with open(path, "w", encoding="utf-8") as fh:
+        with open(cfg, "w", encoding="utf-8") as fh:
             json.dump(doc, fh)
         saved = os.environ.pop(ENV, None)
         os.environ.update(env or {})
         try:
-            return app.load_background_url(path)
+            return app.load_background_url(cfg)
         finally:
             os.environ.pop(ENV, None)
             if saved is not None:
@@ -134,6 +138,9 @@ def main():
         readme = fh.read()
     check("  -> and is the URL the README documents",
           app.BACKGROUND_URL_DEFAULT in readme, "README and app.py disagree on the artwork")
+
+    import shutil
+    shutil.rmtree(scratch, ignore_errors=True)
 
     print()
     if FAILURES:
