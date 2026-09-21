@@ -107,9 +107,10 @@ CONFIG = {
         {"id": "ds", "provider": "deepseek", "label": "DeepSeek", "token": "x"},
         {"id": "kimi", "provider": "kimi", "label": "Kimi", "token": "x"},
     ],
-    # The suites render offline: the app's shipped artwork default is a URL, so saying "none"
-    # here is what keeps this harness from fetching a wallpaper host. The bundled image is the
-    # artwork in the capture, which is also what a reader gets offline.
+    # The suites render offline: the app's shipped artwork default is a URL, so this starts as
+    # "none", which is what keeps the harness from fetching a wallpaper host if anything below
+    # fails to run. main() points it at the image this harness generates and serves, so the
+    # capture renders with real artwork without the repository carrying one.
     "background_url": "none",
 }
 
@@ -144,12 +145,51 @@ def free_port():
     return port
 
 
+def generated_artwork(size=(1600, 900)):
+    """The capture's backdrop, generated here instead of shipped in the repository.
+
+    The panel used to bundle a wallpaper and this harness leaned on it, which made that file look
+    like something the project maintained. Generating one keeps the harness hermetic — no
+    wallpaper host, no repo asset — while still exercising the real path: the app fetches this
+    over HTTP from the stub below and serves it from /background like any configured image.
+
+    None when Pillow is missing, in which case the capture renders with no artwork. That is what
+    the panel itself does without Pillow, so the harness stays honest either way.
+    """
+    try:
+        from PIL import Image, ImageDraw
+    except ImportError:
+        return None
+    top, bottom = (18, 20, 32), (58, 46, 74)
+    image = Image.new("RGB", size)
+    draw = ImageDraw.Draw(image)
+    for y in range(size[1]):
+        t = y / float(size[1] - 1)
+        draw.line([(0, y), (size[0], y)],
+                  fill=tuple(int(a + (b - a) * t) for a, b in zip(top, bottom)))
+    # Shapes, so the scrim in index.html has light and dark to sit on: a flat gradient would hide
+    # exactly the contrast problem the capture is there to show.
+    draw.ellipse([int(size[0] * 0.60), int(size[1] * 0.08),
+                  int(size[0] * 0.98), int(size[1] * 0.70)], fill=(128, 106, 154))
+    draw.rectangle([0, int(size[1] * 0.80), size[0], size[1]], fill=(12, 12, 20))
+    import io
+    buf = io.BytesIO()
+    image.save(buf, "PNG")
+    return buf.getvalue()
+
+
+ARTWORK = generated_artwork()
+
+
 class Stub(BaseHTTPRequestHandler):
     def do_GET(self):
         path = self.path.split("?")[0]
-        body = json.dumps(RESPONSES.get(path, {})).encode()
+        if path == "/artwork.png" and ARTWORK:
+            body, ctype = ARTWORK, "image/png"
+        else:
+            body, ctype = json.dumps(RESPONSES.get(path, {})).encode(), "application/json"
         self.send_response(200)
-        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -302,6 +342,11 @@ def main():
     stub_port = free_port()
     stub = ThreadingHTTPServer(("127.0.0.1", stub_port), Stub)
     threading.Thread(target=stub.serve_forever, daemon=True).start()
+    # The artwork the capture renders with, generated above and served by this same stub. If
+    # Pillow is missing there is none, and the config keeps "none": the capture then shows the
+    # panel the way an offline install sees it.
+    if ARTWORK:
+        CONFIG["background_url"] = "http://127.0.0.1:%d/artwork.png" % stub_port
 
     cfg_path = os.path.join(scratch, "config.json")
     with open(cfg_path, "w", encoding="utf-8") as fh:
@@ -324,6 +369,26 @@ def main():
     app = subprocess.Popen([sys.executable, os.path.join(ROOT, "app.py")], env=env,
                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     base = "http://127.0.0.1:%d" % app_port
+
+    # Wait for the artwork before the browser draws anything: a capture taken a moment too early
+    # would show the 404 the panel answers until the download lands, and the screenshot would be
+    # of a state no user with a working URL ever sees.
+    if ARTWORK:
+        import urllib.request
+
+        deadline = time.time() + 15
+        served = {}
+        while time.time() < deadline:
+            try:
+                with urllib.request.urlopen(base + "/api/health", timeout=5) as resp:
+                    served = json.loads(resp.read().decode()).get("background", {})
+            except Exception:  # noqa: BLE001 - the app may not be listening yet
+                served = {}
+            if served.get("served") == "remote":
+                break
+            time.sleep(0.3)
+        check("the capture renders with artwork fetched from this harness's own stub",
+              served.get("served") == "remote", str(served))
 
     # browser
     profile = os.path.join(scratch, "profile")

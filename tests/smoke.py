@@ -9,8 +9,8 @@ the process boots, the UI and static assets are served, every configured account
 *through the server's registry* (all ten used to be error cards either way, so the seam that makes
 six providers visible was untestable), the JSON endpoints keep their shape and their documented key
 contracts, no served body carries credential material, the static route refuses to escape its
-directory, a bad config is refused with one clean line, and the configurable artwork degrades to
-the bundled image when it cannot be had.
+directory, a bad config is refused with one clean line, and a configurable artwork that cannot be
+had costs the panel its image and nothing else.
 
 Runs in about half a minute and needs nothing but the standard library.
 """
@@ -31,7 +31,6 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CFG = os.path.join(ROOT, "accounts.example.json")
 PAGE = os.path.join(ROOT, "static", "index.html")
-BUNDLED = os.path.join(ROOT, "static", "background.webp")
 
 # Every base an adapter can be pointed at. Naming only the providers this file happens to
 # know about is how a suite silently starts talking to a real vendor the day a seventh
@@ -224,11 +223,11 @@ def main():
     expected_ids = [a["id"] for a in base_cfg["accounts"]]
 
     scratch = tempfile.mkdtemp(prefix="quota-panel-smoke-")
-    # Every config below starts from the example file with the artwork turned OFF. The app now
+    # Every config below starts from the example file with the artwork turned OFF. The app
     # ships a wallpaper URL as its default, so a config that says nothing about the artwork
     # would have this suite fetching a host that is not its stub — the example file says so in
-    # as many words, and "none" is the documented way to ask for the bundled image. The artwork
-    # tests set their own URL on top of it.
+    # as many words, and "none" is the documented way to ask for no artwork. The artwork tests
+    # set their own URL on top of it.
     base_cfg = dict(base_cfg, background_url="none")
     base_cfg_path = write_config(os.path.join(scratch, "base.json"), base_cfg)
     artwork = b"\x89PNG\r\n\x1a\n" + bytes(range(256)) * 2      # 520 bytes
@@ -450,18 +449,17 @@ def main():
         check("health counts exactly the healthy accounts",
               health.get("ok_accounts") == len(OK_IDS), str(health.get("ok_accounts")))
 
-        # ---- artwork: bundled by default ----
-        with open(BUNDLED, "rb") as fh:
-            bundled = fh.read()
+        # ---- artwork: "none" means there is no artwork ----
         status, ctype, body = get(base + "/background")
         # The shipped config says "none", so this is the off switch end to end: no fetch, and
-        # /api/health must report the bundled image rather than a failure.
-        check("GET /background serves the bundled artwork when the config says none",
-              status == 200 and ctype == "image/webp" and body == bundled,
-              "HTTP %s %s, %d bytes" % (status, ctype, len(body)))
+        # nothing to serve. The panel bundles no image, so the honest answer is 404 — and the
+        # page draws its own colour underneath, which is why that is survivable.
+        check("GET /background answers 404 when the config says none",
+              status == 404, "HTTP %s %s, %d bytes" % (status, ctype, len(body)))
         bg = json.loads(get(base + "/api/health")[2]).get("background", {})
-        check("health reports which artwork is live",
-              bg.get("configured") is False and bg.get("served") == "bundled", str(bg))
+        check("health reports that no artwork is served",
+              bg.get("configured") is False and bg.get("served") == "none" and not bg.get("error"),
+              str(bg))
 
         # ---- artwork: configured URL, fetched once at startup, served from tmpfs ----
         secret = "signature-that-must-not-leak"
@@ -476,13 +474,13 @@ def main():
             status, ctype, body = 0, "", b""
             while time.time() < deadline:
                 status, ctype, body = get(base2 + "/background")
-                if status == 200 and body != bundled:
+                if status == 200:
                     break
                 time.sleep(0.3)
             # With Pillow in the image the panel re-encodes the download as WebP, so the
             # bytes served are the panel's, not the source file's. Both are correct.
             check("a configured background_url is fetched and served",
-                  status == 200 and ctype in ("image/png", "image/webp") and body != bundled,
+                  status == 200 and ctype in ("image/png", "image/webp"),
                   "HTTP %s %s, %d bytes" % (status, ctype, len(body)))
             status, _, raw = get(base2 + "/api/health")
             bg = json.loads(raw).get("background", {})
@@ -491,8 +489,13 @@ def main():
                   and bg.get("bytes") == len(body), str(bg))
             check("the artwork URL is never echoed by the API", secret.encode() not in raw,
                   "signature found in /api/health")
-            check("the configured artwork is served as its own type, not the bundled one",
-                  body != bundled, "served the bundled image instead")
+            # The bytes have to be an image of the type claimed. Comparing against the file the
+            # panel used to ship proved nothing once that file left the repo: what matters is
+            # that a download landing on disk is served as an image, not as a JSON body, a 404
+            # page, or the panel's own error text.
+            magic = b"\x89PNG\r\n\x1a\n" if ctype == "image/png" else b"RIFF"
+            check("the artwork served is an image of the type it claims",
+                  body.startswith(magic), "served %d bytes starting %r" % (len(body), body[:8]))
         finally:
             stop(proc2, env2)
 
@@ -504,13 +507,12 @@ def main():
         proc3, base3, env3, _ = boot(dead, stub, scratch)
         try:
             status, ctype, body = get(base3 + "/background")
-            check("an unreachable background_url falls back to the bundled image",
-                  status == 200 and body == bundled,
-                  "HTTP %s %s, %d bytes" % (status, ctype, len(body)))
+            check("an unreachable background_url leaves nothing to serve, and no 500",
+                  status == 404, "HTTP %s %s, %d bytes" % (status, ctype, len(body)))
             raw = get(base3 + "/api/health")[2]
             bg = json.loads(raw).get("background", {})
             check("health names the artwork failure",
-                  bg.get("configured") is True and bg.get("served") == "bundled" and bg.get("error"),
+                  bg.get("configured") is True and bg.get("served") == "none" and bg.get("error"),
                   str(bg))
             status, _, _ = get(base3 + "/api/quota")
             check("the panel still serves quotas with a broken artwork URL",
@@ -519,8 +521,8 @@ def main():
             stop(proc3, env3)
 
         # ---- artwork: the refusal paths the README advertises ----
-        # "DNS, TLS, 404, wrong type, too large — is logged and the bundled image is served
-        # instead" was documented and never exercised: each of these is a
+        # "DNS, TLS, 404, wrong type, too large — is logged, and nothing is served instead"
+        # was documented and never exercised: each of these is a
         # serve-something-unservable path (a 9 MB wallpaper, a 30-byte error page saved as
         # .png, an HTML error body behind an image Content-Type).
         for label, route, reason in (
@@ -543,8 +545,8 @@ def main():
                     time.sleep(0.3)
                 check(label, reason in (bg.get("error") or ""), str(bg))
                 status, ctype, body = get(base4 + "/background")
-                check("  -> the bundled image is served instead",
-                      status == 200 and body == bundled and ctype == "image/webp",
+                check("  -> nothing is served, and not an image",
+                      status == 404 and not ctype.startswith("image/"),
                       "HTTP %s %s %d bytes" % (status, ctype, len(body)))
             finally:
                 stop(proc4, env4)
@@ -591,7 +593,7 @@ def main():
                     break
                 time.sleep(0.3)
             check("the config file's background_url wins over the env var",
-                  bg.get("configured") is True and bg.get("served") == "bundled" and bg.get("error"),
+                  bg.get("configured") is True and bg.get("served") == "none" and bg.get("error"),
                   str(bg))
         finally:
             stop(proc7, env7)

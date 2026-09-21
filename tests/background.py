@@ -80,10 +80,10 @@ def main():
     check("garbage is refused, not fatal", app.shrink_background(b"not an image at all", "image/png") is None)
 
     # ------------------------------------------------------ which artwork URL gets chosen
-    # The default is a URL now, so "no opinion" and "bundled, please" are different answers and
-    # the difference has to survive every path: unset falls through to the shipped wallpaper,
-    # while none/off selects the bundled image and stops the chain. Nothing here fetches —
-    # load_background_url opens a file and reads the environment.
+    # The default is a URL now, so "no opinion" and "please serve nothing" are different answers
+    # and the difference has to survive every path: unset falls through to the shipped wallpaper,
+    # while none/off stops the chain and leaves the panel with no artwork at all. Nothing here
+    # fetches — load_background_url opens a file and reads the environment.
     import json
     import tempfile
     from urllib.parse import urlparse
@@ -110,10 +110,10 @@ def main():
 
     check("with nothing configured, the shipped wallpaper is used",
           resolve({}) == app.BACKGROUND_URL_DEFAULT, repr(resolve({})))
-    check("an empty or null background_url is 'no opinion', not 'bundled'",
+    check("an empty or null background_url is 'no opinion', not 'no artwork'",
           resolve({"background_url": ""}) == app.BACKGROUND_URL_DEFAULT
           and resolve({"background_url": None}) == app.BACKGROUND_URL_DEFAULT)
-    check("'none' selects the bundled image", resolve({"background_url": "none"}) is None)
+    check("'none' means no artwork", resolve({"background_url": "none"}) is None)
     check("'off' does too, in any case", resolve({"background_url": "OFF"}) is None)
     check("the environment can say 'none' as well",
           resolve({}, {ENV: "none"}) is None)
@@ -127,8 +127,8 @@ def main():
     check("a control character in the value is refused, not logged",
           resolve({"background_url": "http://host/a\x01.png"}) == app.BACKGROUND_URL_DEFAULT)
 
-    # A shipped default that the panel would refuse to serve would be decoration: every install
-    # would fall back to the bundled image and the fetch would never happen.
+    # A shipped default the panel would refuse to serve would be decoration: every install would
+    # end up with no artwork and the fetch would never happen.
     suffix = os.path.splitext(urlparse(app.BACKGROUND_URL_DEFAULT).path)[1].lower()
     check("the shipped default is an https URL",
           app.BACKGROUND_URL_DEFAULT.startswith("https://"), app.BACKGROUND_URL_DEFAULT[:24])

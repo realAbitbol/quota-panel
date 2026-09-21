@@ -3,7 +3,7 @@
 
 Polls each provider's own usage API for every configured account and serves:
   GET /                dark card UI (progress bars + live reset countdowns)
-  GET /background      artwork: the configured background_url image, else the bundled one
+  GET /background      artwork: the configured background_url image, else 404
   GET /api/quota       normalized JSON (accounts -> windows)
   GET /api/homepage    flat widget list for a gethomepage customapi tile
   GET /api/health      liveness + poll age
@@ -61,25 +61,26 @@ MAX_RESPONSE_BYTES = 2 * 1024 * 1024
 
 # The panel's artwork comes from `background_url` (or the env var), and falls back to
 # BACKGROUND_URL_DEFAULT when neither says anything. It is fetched once at startup into the
-# container's non-persistent /tmp — a tmpfs in both compose files — and served from there; the
-# bundled image stays the fallback, so a dead
-# or slow image host costs the image and never the panel. The URL may be signed, so it is
-# never logged and never echoed by /api/health.
+# container's non-persistent /tmp — a tmpfs in both compose files — and served from there. The
+# image is the only thing that lives in the repository as a URL: a dead or slow host costs the
+# panel its artwork and never its function, /background answers 404, and the page keeps the
+# backdrop it draws itself. The URL may be signed, so it is never logged and never echoed by
+# /api/health.
 BACKGROUND_URL_ENV = "QUOTA_BACKGROUND_URL"
-# The artwork the panel ships with. It lives here as a URL rather than in the image as a copy:
-# the app fetches it through exactly the path a configured URL takes, so the repository carries
-# no third-party file and the bundled image below remains the offline fallback. Because this
-# default reaches the network, it needs a switch that is not "edit app.py": the suites, CI and
-# an offline install all have to be able to ask for the bundled image, and so does anyone who
-# does not want the panel calling a wallpaper host at all.
+# The artwork the panel points at out of the box, as a URL rather than as a copy in the image.
+# The app fetches it through exactly the path a configured URL takes, so the repository
+# redistributes nobody's file, and the default is as replaceable as any other setting. Because
+# this default reaches the network, it needs a switch that is not "edit app.py": the suites, CI
+# and an offline install all have to be able to say "no artwork at all", and so does anyone who
+# would rather the panel called nobody but their providers.
 BACKGROUND_URL_DEFAULT = (
     "https://r4.wallpaperflare.com/wallpaper/65/18/546/"
     "ai-art-city-street-lofi-japan-hd-wallpaper-d8618916d8ff4e5a70f17a71496ff810.jpg"
 )
-# Written in either the config file or the environment, these select the bundled image instead
-# of the default. "No opinion" and "bundled, please" are different answers and stay different.
+# Written in either the config file or the environment, these mean "no artwork": nothing is
+# fetched and /background has nothing to serve. "No opinion" and "nothing, please" are different
+# answers and stay different.
 BACKGROUND_URL_OFF = ("none", "off")
-BACKGROUND_BUNDLED = "background.webp"
 BACKGROUND_DIR = os.environ.get("QUOTA_BACKGROUND_DIR", "/tmp/quota-panel")
 BACKGROUND_TIMEOUT = int(os.environ.get("QUOTA_BACKGROUND_TIMEOUT", "20"))
 BACKGROUND_MAX_BYTES = 8 * 1024 * 1024
@@ -140,7 +141,7 @@ FIRST_POLL = threading.Event()
 # /api/health proves which image is live without ever echoing the URL.
 BACKGROUND = {
     "url": None, "path": None, "ctype": None, "bytes": 0,
-    "error": None, "attempted_at": 0.0, "served": "bundled",
+    "error": None, "attempted_at": 0.0, "served": "none",
 }
 BACKGROUND_LOCK = threading.Lock()
 
@@ -277,12 +278,13 @@ def declared_poll_seconds(path=CONFIG_PATH):
 
 
 def background_url_setting(raw, source):
-    """One artwork setting -> a URL, "" for the bundled image, or None when it says nothing.
+    """One artwork setting -> a URL, "" for no artwork, or None when it says nothing.
 
-    "Unset" and "bundled" are separate answers now that a URL ships as the default: an absent
+    "Unset" and "nothing" are separate answers now that a URL ships as the default: an absent
     key has to fall through to the environment and then to BACKGROUND_URL_DEFAULT, while an
-    explicit `none`/`off` has to stop that chain. Neither is an error, so neither raises; a
-    value that is neither a URL nor an off word is ignored, and logged, as it always was.
+    explicit `none`/`off` has to stop that chain and leave the panel with no artwork at all.
+    Neither is an error, so neither raises; a value that is neither a URL nor an off word is
+    ignored, and logged, as it always was.
     """
     if raw is None:
         return None
@@ -310,7 +312,7 @@ def load_background_url(path=CONFIG_PATH):
     """Which artwork to fetch: the shipped default, then the env var, then the config file wins.
 
     Same precedence as `poll_seconds`, so the two settings cannot behave in opposite ways.
-    `none`/`off` in either source picks the bundled image and stops the chain. An absent or
+    `none`/`off` in either source means no artwork at all and stops the chain. An absent or
     empty value means "no opinion" — the next source answers, and the shipped default answers
     last, so a config that never mentions the artwork still gets the wallpaper.
     """
@@ -331,7 +333,7 @@ def load_background_url(path=CONFIG_PATH):
 
 # ------------------------------------------------------------------ custom background
 # A configured background is usually a phone photo or a wallpaper straight out of a camera:
-# 12 to 48 megapixels, several megabytes, and no better looking than the bundled 4K artwork.
+# 12 to 48 megapixels, several megabytes, and no better looking at dashboard size.
 # Bring it down to 4K and re-encode as WebP. This is the only place the panel spends a
 # dependency (Pillow); without it the bytes are served untouched, exactly as before.
 BACKGROUND_MAX_EDGE = (3840, 2160)
@@ -407,9 +409,9 @@ def fetch_background(force=False):
             reason = reason.replace(fragment, "<the configured image URL>")
         with BACKGROUND_LOCK:
             BACKGROUND["path"] = None
-            BACKGROUND["served"] = "bundled"
+            BACKGROUND["served"] = "none"
             BACKGROUND["error"] = reason
-        log("background: %s — serving the bundled image" % reason)
+        log("background: %s — serving no artwork" % reason)
 
     try:
         request = urllib.request.Request(
@@ -1190,19 +1192,22 @@ class Handler(BaseHTTPRequestHandler):
         self._send(200, body, ctype)
 
     def _serve_background(self):
-        """Serve the configured artwork when it is there, the bundled one otherwise.
+        """Serve the artwork when there is one, and answer 404 when there is not.
 
         A request never waits for a download: if the startup fetch has not landed (or the
         container started before the network was ready) the retry is kicked off in the
-        background — cooldown-bounded by fetch_background — and the bundled image keeps
-        the page intact.
+        background — cooldown-bounded by fetch_background — and this answers 404 meanwhile.
+        The page asks for /background as a decorative layer over a colour it sets itself, so a
+        404 costs the artwork and leaves the panel exactly as readable. That is the point of
+        shipping no fallback image.
         """
         with BACKGROUND_LOCK:
             path, ctype, url = BACKGROUND["path"], BACKGROUND["ctype"], BACKGROUND["url"]
         if not path:
             if url:
                 threading.Thread(target=fetch_background, daemon=True).start()
-            path, ctype = os.path.join(STATIC_DIR, BACKGROUND_BUNDLED), "image/webp"
+            self._send(404, "no artwork", "text/plain; charset=utf-8")
+            return
         try:
             with open(path, "rb") as fh:
                 body = fh.read()
@@ -1360,7 +1365,7 @@ def main(argv):
         log("background: fetching the artwork URL off the startup path")
         threading.Thread(target=fetch_background, args=(True,), daemon=True).start()
     else:
-        log("background: serving the bundled image")
+        log("background: no artwork configured")
 
     stop_event = threading.Event()
     thread = threading.Thread(target=poller_loop, args=(accounts, stop_event), daemon=True)

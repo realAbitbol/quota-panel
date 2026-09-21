@@ -19,7 +19,7 @@
 
 ![quota-panel dashboard](docs/screenshot.png)
 
-*Screenshot uses synthetic data, and renders with the bundled artwork: the shipped wallpaper is fetched at runtime.*
+*Screenshot uses synthetic data. Its artwork is generated and served by the screenshot harness itself: the repository carries no image, and the shipped wallpaper URL is what a container fetches at runtime.*
 
 ## What you get
 
@@ -177,20 +177,20 @@ The page artwork. The panel ships with a wallpaper it fetches once at startup, a
 | Value | What `/background` serves |
 |---|---|
 | an `http(s)` URL | that image, fetched once at startup |
-| `"none"` or `"off"` | the bundled artwork, and no fetch at all |
+| `"none"` or `"off"` | nothing, and no fetch at all |
 | absent or `""` | the wallpaper the panel ships with |
 
 A config still needs at least one account, since the panel refuses to start with none; the artwork alone is not enough.
 
 The shipped wallpaper is
 `https://r4.wallpaperflare.com/wallpaper/65/18/546/ai-art-city-street-lofi-japan-hd-wallpaper-d8618916d8ff4e5a70f17a71496ff810.jpg`,
-fetched with the panel's own user agent (`200`, `image/jpeg`, 316 KB, 2912×1632 measured). It is **hotlinked, not redistributed**: the repository carries no copy, so the container asks that host for the image exactly as it would ask yours, and the bundled artwork covers the day the host stops answering. That host sits behind Cloudflare, which refuses some automated user agents with a `403` while the panel's own fetcher gets a `200` today; set `"none"` if you would rather the container talked to nobody but your providers, or you are on a metered link.
+fetched with the panel's own user agent (`200`, `image/jpeg`, 316 KB, 2912×1632 measured). It is **hotlinked, not redistributed**: the repository carries no copy, so the container asks that host for the image exactly as it would ask yours, and the repository redistributes nobody's file. The day that host stops answering, the panel has no artwork: `/background` answers `404` and the page keeps the colour it draws itself. That host sits behind Cloudflare, which refuses some automated user agents with a `403` while the panel's own fetcher gets a `200` today; set `"none"` if you would rather the container talked to nobody but your providers, or you are on a metered link.
 
-Whichever image is chosen, it is downloaded **once at container startup** and served from `/background` out of the container's non-persistent `/tmp` (a tmpfs in the compose files), so nothing about it survives a restart and the bundled image is what you get back the moment the URL stops working. Served types: `webp`, `png`, `jpeg`, `avif`, `gif`, up to 8 MB; the host's `Content-Type` decides, the URL extension is the fallback.
+Whichever image is chosen, it is downloaded **once at container startup** and served from `/background` out of the container's non-persistent `/tmp` (a tmpfs in the compose files), so nothing about it survives a restart, and a URL that stops working takes the artwork with it. Served types: `webp`, `png`, `jpeg`, `avif`, `gif`, up to 8 MB; the host's `Content-Type` decides, the URL extension is the fallback.
 
 The download is capped at 4K and re-encoded as WebP (an image already 4K-or-smaller WebP is served untouched, and a re-encode larger than the original is discarded). Without Pillow the bytes are served as-is. How much smaller the result is is a property of the image, not a promise: a smooth 6000×4000 wallpaper measured 497 KB in and 46 KB out, a noisy photo of the same size roughly 866 KB, so size your own tmpfs and memory limit for your own image.
 
-A fetch that fails is logged and the bundled image is served instead, retried in the background at most once every 5 minutes. The URL may be signed, so it is **never** logged and never returned by `/api/health`, which reports only whether one is configured, which image is served, and the last error. `QUOTA_BACKGROUND_DIR` and `QUOTA_BACKGROUND_TIMEOUT` tune where the copy lives and how long the fetch may take.
+A fetch that fails is logged, `/background` answers `404` for as long as it keeps failing, and the retry runs in the background at most once every 5 minutes. The URL may be signed, so it is **never** logged and never returned by `/api/health`, which reports only whether one is configured, which image is served, and the last error. `QUOTA_BACKGROUND_DIR` and `QUOTA_BACKGROUND_TIMEOUT` tune where the copy lives and how long the fetch may take.
 
 ### Environment variables
 
@@ -201,8 +201,8 @@ A fetch that fails is logged and the bundled image is served instead, retried in
 | `QUOTA_POLL_SECONDS` | `60` | Poll interval; the config file's `poll_seconds` wins. |
 | `QUOTA_HTTP_TIMEOUT` | `20` | Per-request timeout, in seconds. |
 | `QUOTA_CURRENCY` | `USD` | Which currency a multi-currency balance is reported in, since DeepSeek lists several. |
-| `QUOTA_BACKGROUND_URL` | the shipped wallpaper | Artwork URL, or `none`/`off` for the bundled image; the config file's `background_url` wins. |
-| `QUOTA_BACKGROUND_DIR` | `/tmp/quota-panel` | Where the fetched artwork is stored. Keep it on a writable path, or the panel silently falls back to the bundled image. |
+| `QUOTA_BACKGROUND_URL` | the shipped wallpaper | Artwork URL, or `none`/`off` for no artwork at all; the config file's `background_url` wins. |
+| `QUOTA_BACKGROUND_DIR` | `/tmp/quota-panel` | Where the fetched artwork is stored. Keep it on a writable path, or the panel silently serves no artwork. |
 | `QUOTA_BACKGROUND_TIMEOUT` | `20` | Fetch timeout for the artwork, in seconds. |
 
 Every provider also has a `*_API_BASE` override (`COMMANDCODE_API_BASE`, `DEEPSEEK_API_BASE`, `Z_AI_API_BASE`, `MOONSHOT_API_BASE` and the rest), so the test suite can point an adapter at a local stub and run with no provider call at all. Nothing in production needs them.
@@ -217,7 +217,7 @@ Every provider also has a `*_API_BASE` override (`COMMANDCODE_API_BASE`, `DEEPSE
 | `/api/homepage` | flat `items` map keyed `<account_id>_<window>`, for a gethomepage tile |
 | `/api/health` | `200` while the last poll is fresh, `503` when stale |
 | `/static/…` | the UI's own assets (image, favicon); path-traversal safe, allow-listed types |
-| `/background` | the page artwork: your URL or the shipped wallpaper, the bundled image when the URL is off or the fetch failed |
+| `/background` | the page artwork: your URL or the shipped wallpaper, `404` when the artwork is off or the fetch failed |
 
 ```bash
 curl -s localhost:8080/api/quota \
@@ -346,7 +346,7 @@ A release is a tag: `git tag v1.0.0 && git push origin v1.0.0` publishes `1.0.0`
 
 **Everything is red after moving host and the config looks right.** Check the mounted path inside the container rather than on the host, and check permissions: the process runs as uid 10001 and cannot read a `600` file owned by someone else.
 
-**The wallpaper never appears.** The artwork fetch fails quietly and the bundled image is served instead; `/api/health` reports `background.served` and the last error.
+**The wallpaper never appears.** The artwork fetch fails quietly, `/background` answers `404` and the page keeps its own colour; `/api/health` reports `background.served: none` and the last error.
 
 ## Limits
 

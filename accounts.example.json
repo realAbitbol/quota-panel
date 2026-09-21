@@ -17,12 +17,12 @@
   "_background_note": [
     "Page artwork, as an http(s) URL. The panel downloads it once at container startup and",
     "serves it from /background out of the container's non-persistent /tmp (a tmpfs in the",
-    "compose files). A fetch that fails, or an image in a type the panel does not serve,",
-    "leaves the bundled image in place: the artwork is never a reason for the panel to fail.",
-    "Absent or empty means the wallpaper the panel ships with; its URL is in the README under",
-    "background_url, and in app.py as BACKGROUND_URL_DEFAULT. 'none' or 'off' means the",
-    "bundled image instead, with no fetch at all, which is what the test suites and an",
-    "offline install want."
+    "compose files). The panel bundles no image of its own: a fetch that fails, or an image in",
+    "a type it cannot serve, leaves /background answering 404, and the page keeps the colour it",
+    "draws itself. The artwork is never a reason for the panel to fail.",
+    "Absent or empty means the wallpaper the panel points at by default; its URL is in the README",
+    "under background_url, and in app.py as BACKGROUND_URL_DEFAULT. 'none' or 'off' means no",
+    "artwork at all, with no fetch, which is what the test suites and an offline install want."
   ],
   "accounts": [
     {
