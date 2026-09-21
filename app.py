@@ -92,6 +92,14 @@ BROWSER_UA = (
 # provider API key. Contract cross-checked against the official CLI bundle
 # (command-code@1.58.0), Jovan1666/dsh-commandcode-quota and nanvon/cc-bar.
 CC_API_BASE = os.environ.get("COMMANDCODE_API_BASE", "https://api.commandcode.ai")
+# The header is version-sensitive: /alpha/* is CLI-internal, and a third-party integration note
+# warns that `x-command-code-version` must track the CLI (CLIProxyAPI discussion #4007), so a
+# header older than the contract source is a silent 4xx risk. The contract source cited below
+# shipped as command-code@1.58.0; this constant is what the adapter has been run against. The
+# two disagree and it is NOT established which one the route requires — no live capture is
+# committed and the panel is not reachable from this machine, so the honest move is to leave
+# the value that has actually been exercised and record the discrepancy instead of bumping a
+# header to a number nobody has tested.
 CC_CLI_VERSION = "1.54.2"
 
 # planId -> (display name, nominal monthly credits)
@@ -546,8 +554,11 @@ def fetch_commandcode(account):
                                           "revoked, or belongs to another account. Verify it in the "
                                           "CommandCode studio.", status=status)
     if err_w and status == 404:
-        return _fail(account, "no_access", "CommandCode /alpha/whoami returned 404 — "
-                                           "this plan may not include API access.", status=404)
+        return _fail(account, "no_access", "CommandCode /alpha/whoami returned 404 — the route "
+                                           "was not found. A 404 cannot say which of these it "
+                                           "is: a plan without API access, a moved or renamed "
+                                           "route, or a base URL that is not this API "
+                                           "(COMMANDCODE_API_BASE).", status=404)
     if err_w and whoami is None and status is None:
         return _fail(account, "network_error", err_w)
 
@@ -773,6 +784,7 @@ def _fail(account, state, message, *, status=None) -> dict:
         "label": account["label"],
         "kind": provider_kind(account["provider"]),
         "contract": PROVIDERS.get(account["provider"], {}).get("contract"),
+        "contract_note": PROVIDERS.get(account["provider"], {}).get("contract_note"),
         "logo": account.get("logo") or provider_logo(account["provider"]),
         "state": state,
         # `status` is the provider's own HTTP code, kept separate from `state`: a card
@@ -805,6 +817,11 @@ def _fmt(value):
 # /api/providers so the public UI can never imply more than was measured:
 #   live        -- exercised against a real response from the provider
 #   documented  -- built from the vendor's own published contract, not yet hit live
+#   third-party -- the vendor publishes no contract for this route; the shape comes from
+#                  independent implementations, and contract_note names them rather than
+#                  letting "documented" imply a vendor promise nobody made.
+# `contract_note` carries the caveat a reader needs to audit the value (which implementation,
+# or that the live hit left no committed artifact for CI to re-check).
 # `logo` is a file under static/logos/. The UI draws every mark white (an <img> cannot inherit
 # `currentColor`, so a `color:` rule on it does nothing — see static/index.html). A provider with no
 # mark falls back to _fallback.svg rather than rendering an empty box.
@@ -812,10 +829,17 @@ PROVIDERS = {
     "commandcode": {
         "kind": "window", "contract": "live", "logo": "commandcode.svg",
         "label": "CommandCode",
+        # "live" is the strongest word in this registry, so the claim must say what backs it.
+        # This one is a live hit on the maintainer's host with nothing committed to the repo:
+        # a reader cannot re-run it, and CI cannot catch a parse regression here.
+        "contract_note": "hit live on the maintainer's host; no capture is committed, so CI "
+                         "cannot catch a parse regression in this adapter",
     },
     "opencode_go": {
         "kind": "window", "contract": "live", "logo": "opencode_go.svg",
         "label": "OpenCode Go",
+        "contract_note": "hit live on the maintainer's host; no capture is committed, so CI "
+                         "cannot catch a parse regression in this adapter",
     },
     "openrouter": {
         "kind": "balance", "contract": "documented", "logo": "openrouter.svg",
@@ -834,8 +858,15 @@ PROVIDERS = {
         "label": "Kimi / Moonshot",
     },
     "zai": {
-        "kind": "window", "contract": "documented", "logo": "zai.svg",
+        # Not "documented": z.ai publishes no API reference for this route. Its own page
+        # (docs.z.ai/devpack/notice/usage-revision) documents plan and quota POLICY, and
+        # CodexBar's write-up tells readers to open DevTools and watch
+        # api/monitor/usage/quota/limit. The shape below comes from two independent
+        # implementations agreeing field by field — corroborated, but not a vendor promise.
+        "kind": "window", "contract": "third-party", "logo": "zai.svg",
         "label": "z.ai GLM Coding Plan",
+        "contract_note": "no vendor API reference for this route; shaped from two independent "
+                         "implementations (steipete/CodexBar, bugwz/AIMeter)",
     },
     "synthetic": {
         "kind": "window", "contract": "documented", "logo": "synthetic.svg",
@@ -886,6 +917,7 @@ def _annotate(account, result) -> dict:
     """Stamp the registry facts every card needs, on the success path too."""
     result["kind"] = provider_kind(account["provider"])
     result["contract"] = PROVIDERS.get(account["provider"], {}).get("contract")
+    result["contract_note"] = PROVIDERS.get(account["provider"], {}).get("contract_note")
     result["logo"] = account.get("logo") or provider_logo(account["provider"])
     # The account-level `kind` must describe what was actually rendered. OpenRouter is
     # registered as a balance provider but emits a real percent window when the key has
@@ -1207,6 +1239,7 @@ class Handler(BaseHTTPRequestHandler):
                             "label": info["label"],
                             "kind": info["kind"],
                             "contract": info["contract"],
+                            "contract_note": info.get("contract_note"),
                             "logo": "/static/logos/" + info["logo"],
                         }
                         for key, info in sorted(PROVIDERS.items())

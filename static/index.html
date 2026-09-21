@@ -281,15 +281,20 @@ function cardHtml(acc){
   // neutral glyph — a missing logo file must never render a broken-image box.
   const mark = acc.logo || '_fallback.svg';
   // A green "live" pill has to mean what the server means by it: `contract` records whether the
-  // adapter was exercised against a real response ('live') or built from the vendor's published
-  // contract ('documented'). The server serves that field so the UI "can never imply more than
-  // was measured" — and the card used to badge every healthy account the same.
-  const documented = acc.contract !== 'live';
-  const pill = ok ? (documented ? 'documented' : 'live') : acc.state;
+  // adapter was exercised against a real response ('live'), built from the vendor's published
+  // contract ('documented'), or shaped from independent implementations because the vendor
+  // publishes nothing for that route ('third-party'). The server serves that field so the UI
+  // "can never imply more than was measured" — and the card used to badge every healthy
+  // account the same. The pill now carries the server's own word instead of re-deriving one
+  // from two values: z.ai registered as "third-party" was rendering "documented", a promise
+  // the adapter could not support.
+  const contract = acc.contract || 'documented';
+  const documented = contract !== 'live';
+  const pill = ok ? contract : acc.state;
   const pillTitle = ok
-    ? (documented
+    ? (acc.contract_note || (documented
         ? 'built from the vendor’s published contract — not yet exercised against a real response'
-        : 'exercised against a real provider response')
+        : 'exercised against a real provider response'))
     : (acc.error || acc.state);
   let html = `<div class="card-head">
       <div class="card-id">

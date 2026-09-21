@@ -354,9 +354,20 @@ def main():
               all(os.path.exists(os.path.join(ROOT, p["logo"].lstrip("/"))) for p in registered),
               str([p["logo"] for p in registered]))
         check("every provider declares its kind and its contract",
-              all(p["kind"] in ("window", "balance") and p["contract"] in ("live", "documented")
+              all(p["kind"] in ("window", "balance") and p["contract"] in ("live", "documented", "third-party")
                   for p in registered),
               str([(p["id"], p.get("kind"), p.get("contract")) for p in registered]))
+
+        # `third-party` exists because z.ai publishes no contract for its route: the registry
+        # must not call that "documented", and the claim a reader cannot re-run must be said
+        # out loud (the live providers carry that caveat).
+        third = [p["id"] for p in registered if p["contract"] == "third-party"]
+        check("z.ai is registered as third-party, not documented", third == ["zai"], str(third))
+        note_less = [p["id"] for p in registered if p["contract"] == "live" and not p["contract_note"]]
+        check("every `live` claim says what backs it", not note_less, str(note_less))
+        check("`third-party` names its sources",
+              all(p.get("contract_note") for p in registered if p["contract"] == "third-party"),
+              str([(p["id"], p.get("contract_note")) for p in registered if p["contract"] == "third-party"]))
 
         status, _, home_body = get(base + "/api/homepage")
         home = json.loads(home_body)

@@ -121,7 +121,7 @@ Two card shapes, because the providers report two different things:
 |---|---|---|---|
 | `commandcode` | window | 5 h / weekly / monthly percent | verified live |
 | `opencode_go` | window | rolling / weekly / monthly percent | verified live |
-| `zai` | window | quota windows (session / weekly / web searches) | documented |
+| `zai` | window | quota windows (session / weekly / web searches) | third-party |
 | `synthetic` | window | request allowance percent | documented |
 | `openrouter` | balance | credit balance; **percent only if the key has a spend limit** | documented |
 | `cheaperinference` | balance | wallet balance, incl. money reserved in flight | documented |
@@ -137,12 +137,22 @@ Two card shapes, because the providers report two different things:
 real percent window; a key without one gets a balance and the note *"no spend cap set on
 this key"*.
 
-The **Contract** column is deliberate. `verified live` means the adapter has been
-exercised against a real response from the provider. `documented` means it was built from
-the vendor's own published contract and not yet hit with a live credential — the parse is
-tested against a recorded fixture, but the first real key may reveal a field nobody
-documents. Each fixture carries its provenance in `tests/fixtures/providers/`. Ask the
-panel directly:
+The **Contract** column is deliberate, and it has three values:
+
+* `verified live` — the adapter has been exercised against a real response from the
+  provider. For `commandcode` and `opencode_go` no capture is committed, so that claim is
+  the maintainer's word and CI cannot catch a parse regression in either adapter; the
+  registry says so per provider in `contract_note`.
+* `documented` — built from the vendor's own published contract and not yet hit with a live
+  credential. The parse is tested against a recorded fixture, but the first real key may
+  reveal a field nobody documents.
+* `third-party` — the vendor publishes no contract for that route at all, and the shape
+  comes from independent implementations. This is `zai`: its own page documents quota
+  *policy*, not the monitor API, and the fields come from two projects that reverse
+  engineered it and agree (`contract_note` names them). Calling that "documented" claimed a
+  vendor promise that does not exist.
+
+Each fixture carries its provenance in `tests/fixtures/providers/`. Ask the panel directly:
 
 ```sh
 curl -s localhost:8080/api/providers | jq

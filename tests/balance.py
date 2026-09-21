@@ -158,11 +158,17 @@ def main():
     pb.MOONSHOT_BASE = base
     pb.SYNTHETIC_BASE = base
     pb.ZAI_BASE = base
-    # A base that is pointed anywhere else is a call to a real vendor: after the six
-    # assignments above, every `*_BASE` the module exposes must be the stub.
+    app.CC_API_BASE = base
+    # A base that is pointed anywhere else is a call to a real vendor: after the assignments
+    # above, every `*_BASE` either module exposes must be the stub. `app` is checked too — its
+    # CommandCode base was left pointing at the live API, so a test that reached a window
+    # adapter would have polled the real vendor with the stub's fake token.
     strays = sorted(k for k in dir(pb) if k.endswith("_BASE") and getattr(pb, k) != base)
-    check("no provider base still points at a real host", not strays,
+    check("no balance-provider base still points at a real host", not strays,
           "%s -> %s" % (strays, [getattr(pb, k) for k in strays]))
+    app_strays = sorted(k for k in dir(app) if k.endswith("_BASE") and getattr(app, k) != base)
+    check("no app-level provider base still points at a real host", not app_strays,
+          "%s -> %s" % (app_strays, [getattr(app, k) for k in app_strays]))
 
     try:
         # ---- registry + logos -------------------------------------------------
@@ -241,6 +247,35 @@ def main():
         check("OpenRouter: a human key label is still displayed",
               res["plan"] == "my laptop key", "plan=%r" % res["plan"])
 
+        # The guard is a heuristic, so both directions stay pinned. The audit's probe measured
+        # the old rule dropping a dated human label while keeping a UUID-shaped token: wrong
+        # both ways. A label reads as words; a key does not.
+        dated = dict(load("openrouter_key.json"))
+        dated["data"] = dict(dated["data"], label="personal-laptop-key-20260101")
+        res = run("openrouter", {"/v1/credits": load("openrouter_credits.json"),
+                                 "/v1/key": dated}, base)
+        check("OpenRouter: a dated human label survives the credential guard",
+              res["plan"] == "personal-laptop-key-20260101", "plan=%r" % res["plan"])
+
+        for label, is_secret in (("my laptop key", False),
+                                 ("personal-laptop-key-20260101", False),
+                                 ("Production-Workspace-2024", False),
+                                 ("team-prod-2026-01-02", False),
+                                 ("prod-20260101", False),
+                                 ("123e4567-e89b-12d3-a456-426614174000", True),
+                                 ("aB3xK9mQ7pR2tV5wY8zL1nH4", True),
+                                 ("sk-or-v1-9f2c", True)):
+            check("credential guard reads %r as a %s" % (label, "secret" if is_secret else "name"),
+                  pb._looks_like_credential(label) is is_secret,
+                  "dropped=%s" % pb._looks_like_credential(label))
+
+        uuidish = dict(load("openrouter_key.json"))
+        uuidish["data"] = dict(uuidish["data"], label="123e4567-e89b-12d3-a456-426614174000")
+        res = run("openrouter", {"/v1/credits": load("openrouter_credits.json"),
+                                 "/v1/key": uuidish}, base)
+        check("OpenRouter: a UUID-shaped label never becomes the plan line",
+              res["plan"] != "123e4567-e89b-12d3-a456-426614174000", "plan=%r" % res["plan"])
+
         # ---- CheaperInference: reserved money must be visible -----------------
         res = run("cheaperinference", {"/v1/account/balance": CI_SETTLED}, base)
         check("CheaperInference settled: ok", res["state"] == "ok", res.get("error") or "")
@@ -262,6 +297,20 @@ def main():
               bal is not None and "auto-recharge" in (bal.get("note") or ""))
         check("CheaperInference reserved: keeps the raw fields",
               bal is not None and (bal.get("extra") or {}).get("available_usd") == 37.5)
+        # `label` is a name in every other window ("Week", "5 h"): a consumer printing the
+        # label must not get a currency, and the UI formats the amount from `currency`.
+        check("a balance window is labelled with a name, not a currency",
+              bal is not None and bal["label"] == "Balance",
+              "label=%r currency=%r" % ((bal or {}).get("label"), (bal or {}).get("currency")))
+
+        # ---- a 404 is a route that was not found, not a guessed cause ---------
+        res = run("cheaperinference", {"/v1/account/balance": (404, {"error": "not found"})}, base)
+        check("CheaperInference 404: state is no_access", res["state"] == "no_access",
+              str(res.get("state")))
+        err = res.get("error") or ""
+        check("CheaperInference 404: names every cause it cannot tell apart",
+              "route was not found" in err and "base URL" in err and "moved or renamed" in err
+              and "plan" in err, err)
 
         # ---- DeepSeek: strings, an array, and a deterministic currency --------
         res = run("deepseek", {"/user/balance": load("deepseek_balance_cny.json")}, base)
@@ -281,6 +330,22 @@ def main():
               str((bal or {}).get("extra")))
         check("DeepSeek dual-currency: the unavailable note names the account, not the currency",
               bal is not None and "account flagged unavailable" in (bal.get("note") or ""),
+              (bal or {}).get("note") or "")
+
+        # `is_available` is required by the schema, so its absence means shape drift — and
+        # drift is where a fabricated `false` is worst: "unknown" published as a confident
+        # "this account is flagged unavailable".
+        absent = load("deepseek_balance_usd_dual.json")
+        absent.pop("is_available", None)
+        res = run("deepseek", {"/user/balance": absent}, base)
+        bal = window(res, "balance")
+        check("DeepSeek without is_available still reads the balance",
+              bal is not None and bal["amount"] == 12.34, "amount=%s" % (bal or {}).get("amount"))
+        check("DeepSeek without is_available publishes no verdict on the account",
+              bal is not None and "is_available" not in (bal.get("extra") or {}),
+              str((bal or {}).get("extra")))
+        check("DeepSeek without is_available does not claim the account is unavailable",
+              bal is not None and "unavailable" not in (bal.get("note") or ""),
               (bal or {}).get("note") or "")
 
         # ---- Kimi: success gate on status/code --------------------------------
@@ -396,6 +461,14 @@ def main():
               KEY not in json.dumps(res), json.dumps(res)[:200])
         check("a key-shaped echo is redacted too",
               not app.CREDENTIAL_SHAPE.search(json.dumps(res)), json.dumps(res)[:200])
+
+        # ---- a 404 is not a diagnosis the adapter is entitled to make ---------
+        res = run("commandcode", {"/alpha/whoami": (404, {"error": "not found"})}, base)
+        check("CommandCode 404: state is no_access", res["state"] == "no_access",
+              str(res.get("state")))
+        err = res.get("error") or ""
+        check("CommandCode 404: does not assert a plan cause from a 404",
+              "route was not found" in err and "plan" in err and "moved or renamed" in err, err)
 
         # ---- the guard that matters: never fabricate a zero -------------------
         for provider, path, junk, expect in (

@@ -50,9 +50,11 @@ MOONSHOT_BASE = os.environ.get(
     "MOONSHOT_API_BASE", "https://api.moonshot.ai"
 ).rstrip("/")
 
-# Which currency a multi-currency balance is reported in when the provider lists
-# several. DeepSeek returns an array of {currency, total_balance}; the first entry is
-# the account's own billing currency, so it wins unless config says otherwise.
+# Which currency a multi-currency balance is reported in when the provider lists several.
+# DeepSeek returns an array of {currency, total_balance} and the FIRST entry is the account's
+# own billing currency — but the search below looks for this value first and only falls back
+# to infos[0], so an account billing in CNY that also holds USD is reported in USD. The test
+# asserts that order ("picks USD deterministically"); this comment used to claim the reverse.
 DEFAULT_CURRENCY = os.environ.get("QUOTA_CURRENCY", "USD").upper()
 
 
@@ -66,7 +68,11 @@ def _balance(account, *, amount, currency, note=None, secondary=None, resets_at=
     entry = {
         "kind": "balance",
         "key": "balance",
-        "label": currency or "Balance",
+        # `label` is a human name, as it is for every window ("Week", "5 h"). Putting the
+        # currency here made /api/quota read `label: "USD"` for balances and `label: "Week"`
+        # for windows, so any consumer printing the label printed a currency where a name
+        # belongs. The currency stays in `currency`, which is what the UI formats with.
+        "label": "Balance",
         "percent": None,
         "used": None,
         "cap": None,
@@ -114,9 +120,10 @@ def fetch_cheaperinference(account):
         return _fail(
             account,
             "no_access",
-            "CheaperInference /v1/account/balance returned 404 — the base URL is wrong "
-            "for this account (api.cheaperinference.com and api.cheapestinference.com "
-            "are different vendors).",
+            "CheaperInference /v1/account/balance returned 404 — the route was not found. "
+            "A 404 cannot say which of these it is: a base URL pointing at the other vendor "
+            "(api.cheaperinference.com and api.cheapestinference.com are different vendors), "
+            "a moved or renamed route, or a plan that does not include this endpoint.",
              status=status,
          )
     if body is None:
@@ -420,7 +427,12 @@ def fetch_deepseek(account):
         note = (note + " · " if note else "") + ", ".join(bits)
 
     extra = {}
-    extra["is_available"] = bool(is_available)
+    # Only when the provider actually said so. `bool(None)` published `"is_available": false`
+    # out of a missing field — a confident "this account is flagged unavailable" derived from
+    # nothing. The schema requires the field, so this only bites a shape drift, which is
+    # exactly when a fabricated negative is worst.
+    if is_available is not None:
+        extra["is_available"] = bool(is_available)
     if granted is not None:
         extra["granted_balance"] = granted
     if topped is not None:
@@ -825,7 +837,14 @@ def _looks_like_credential(value):
     # a human typed reads as words ("production-workspace-2024", longest run 11), a key does
     # not. The word-only rule alone was measured dropping legitimate labels.
     if len(text) >= 24 and " " not in text and any(c.isdigit() for c in text):
-        return max(len(part) for part in re.split(r"[-_./]", text)) >= 16
+        parts = [part for part in re.split(r"[-_./]", text) if part]
+        if max(len(part) for part in parts) >= 16:
+            return True
+        # Separators alone do not make a name: a UUID is a key shape that has four of them, and
+        # every one of its segments is hex. A segment made of words is not, so this cannot
+        # re-break "personal-laptop-key-20260101".
+        if len(parts) >= 4 and all(all(c in "0123456789abcdefABCDEF" for c in p) for p in parts):
+            return True
     return False
 
 

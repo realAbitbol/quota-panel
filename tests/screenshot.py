@@ -430,12 +430,27 @@ def main():
         """, returnByValue=True).get("result", {}).get("value") or []
         check("no card renders an error in the screenshot", not errors, ", ".join(errors))
 
+        # The pill must be the registry's own word, per card. Membership in a set is not enough:
+        # a UI that flattened every healthy card to one word would still pass it — and that is
+        # exactly how z.ai, registered `third-party` because no vendor publishes its route,
+        # rendered as "documented". /api/quota carries the contract the server decided on, so
+        # the rendered pill is compared against the served value for each card.
         pills = cdp.call("Runtime.evaluate", expression="""
-          Array.from(document.querySelectorAll('.pill')).map(p => p.textContent.trim())
+          Array.from(document.querySelectorAll('.card')).map(c => ({
+            label: c.querySelector('.label').textContent,
+            pill: c.querySelector('.pill').textContent.trim()
+          }))
         """, returnByValue=True).get("result", {}).get("value") or []
-        check("every card is live",
-              all(p in ("live", "documented") for p in pills),
-              ", ".join(sorted(set(pills))))
+        with urllib.request.urlopen(base + "/api/quota", timeout=5) as resp:
+            served = json.loads(resp.read().decode())
+        expected = {a["label"]: a["contract"] for a in served["accounts"]}
+        wrong = [(c["label"], c["pill"], expected.get(c["label"])) for c in pills
+                 if expected.get(c["label"]) != c["pill"]]
+        check("every card's pill is the contract the API published", not wrong, str(wrong))
+        words = sorted({c["pill"] for c in pills})
+        check("the page does not flatten the contract vocabulary to one word",
+              len(words) > 1, str(words))
+        check("a third-party contract renders as third-party", "third-party" in words, str(words))
 
         # freeze animations/transitions so the capture is deterministic
         cdp.call("Runtime.evaluate", expression="""
