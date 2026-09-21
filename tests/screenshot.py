@@ -456,25 +456,36 @@ def main():
               len(words) > 1, str(words))
         check("a third-party contract renders as third-party", "third-party" in words, str(words))
 
-        # The header states when the numbers refresh. That number has to be the cadence the data
-        # follows, not the client's own fetch interval: printing the half cadence promised a
-        # refresh the page could not deliver — at the default poll_seconds of 60 the header said
-        # "every 30s" while the numbers visibly moved once a minute.
-        feed = cdp.call("Runtime.evaluate",
-                        expression="document.getElementById('feed').textContent",
-                        returnByValue=True).get("result", {}).get("value") or ""
-        m = re.search(r"auto-refresh every (\d+)s(?:, checked every (\d+)s)?", feed)
-        check("the header states its refresh cadence in one readable phrase", bool(m), feed)
+        # The header's one number is the countdown to the next update, and it must count the
+        # server's cadence: the page used to print its own fetch interval beside the server's,
+        # which described a timer nobody asked about.
+        def feed_text():
+            return cdp.call("Runtime.evaluate",
+                            expression="document.getElementById('feed').textContent",
+                            returnByValue=True).get("result", {}).get("value") or ""
+
+        pattern = r"^(?:⟳\s*)?(updating|retrying) in (\d+) seconds?$"
+        feed = feed_text()
+        deadline = time.time() + 6
+        while time.time() < deadline and not re.match(pattern, feed.strip()):
+            time.sleep(0.4)
+            feed = feed_text()
+        m = re.match(pattern, feed.strip())
+        check("the header counts down to the next update in plain words", bool(m), repr(feed))
         if m:
-            check("the stated cadence is the server's publication cadence",
-                  int(m.group(1)) == served["poll_seconds"],
-                  "label says %ss, /api/quota publishes every %ss"
-                  % (m.group(1), served["poll_seconds"]))
-            if m.group(2):
-                client = min(60, max(15, served["poll_seconds"] // 2))
-                check("the interval stated beside it is the client's own, clamped",
-                      int(m.group(2)) == client,
-                      "label says %ss, the client uses %ss" % (m.group(2), client))
+            # The countdown runs to the next attempt, which the page schedules one cadence after
+            # the publication stamp plus a moment for the server's own poll to finish, so it
+            # legitimately reads poll_seconds + 1 at the top of a cycle.
+            check("  -> inside one publication cadence (plus the grace)",
+                  0 < int(m.group(2)) <= served["poll_seconds"] + 2,
+                  "countdown says %ss, /api/quota publishes every %ss"
+                  % (m.group(2), served["poll_seconds"]))
+            time.sleep(2.4)
+            after = feed_text()
+            m2 = re.match(pattern, after.strip())
+            check("  -> and it actually ticks down",
+                  bool(m2) and int(m2.group(2)) < int(m.group(2)),
+                  "%r then %r" % (feed, after))
 
         # The marks are inline SVG, so they render with the page's own colour and with no icon
         # font to fetch: a CDN <link> would be a fourth-party request the panel promises not to
