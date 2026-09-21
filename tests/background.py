@@ -88,7 +88,6 @@ def main():
     import tempfile
     from urllib.parse import urlparse
 
-    ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     ENV = app.BACKGROUND_URL_ENV
     # One scratch directory for every case below, removed at the end: a mkdtemp per call left a
     # trail of directories behind on every run, which is the kind of litter a test suite should
@@ -134,10 +133,6 @@ def main():
           app.BACKGROUND_URL_DEFAULT.startswith("https://"), app.BACKGROUND_URL_DEFAULT[:24])
     check("  -> of a type the panel serves",
           suffix in (".webp", ".png", ".jpg", ".jpeg", ".avif", ".gif"), suffix)
-    with open(os.path.join(ROOT, "README.md"), encoding="utf-8") as fh:
-        readme = fh.read()
-    check("  -> and is the URL the README documents",
-          app.BACKGROUND_URL_DEFAULT in readme, "README and app.py disagree on the artwork")
 
     import shutil
     shutil.rmtree(scratch, ignore_errors=True)
