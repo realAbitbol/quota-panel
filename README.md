@@ -7,7 +7,10 @@
 <p align="center">A small read-only dashboard that shows <b>how much of your AI coding subscription is left</b>, right now, for every account you have, with a live countdown to each reset.</p>
 
 <p align="center">
-  [![ci](https://github.com/realAbitbol/quota-panel/actions/workflows/ci.yml/badge.svg)](https://github.com/realAbitbol/quota-panel/actions/workflows/ci.yml) [![image](https://img.shields.io/badge/ghcr.io-quota--panel-2496ED?logo=docker&logoColor=white)](https://github.com/realAbitbol/quota-panel/pkgs/container/quota-panel) [![license](https://img.shields.io/badge/license-MIT-blue)](LICENSE) [![python](https://img.shields.io/badge/python-3.12-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+  <a href="https://github.com/realAbitbol/quota-panel/actions/workflows/ci.yml"><img alt="ci: passing" src="https://github.com/realAbitbol/quota-panel/actions/workflows/ci.yml/badge.svg"></a>
+  <a href="https://github.com/realAbitbol/quota-panel/pkgs/container/quota-panel"><img alt="ghcr.io/quota-panel" src="https://img.shields.io/badge/ghcr.io-quota--panel-2496ED?logo=docker&amp;logoColor=white"></a>
+  <a href="LICENSE"><img alt="license: MIT" src="https://img.shields.io/badge/license-MIT-blue"></a>
+  <a href="https://www.python.org/"><img alt="python: 3.12" src="https://img.shields.io/badge/python-3.12-3776AB?logo=python&amp;logoColor=white"></a>
 </p>
 
 <p align="center">

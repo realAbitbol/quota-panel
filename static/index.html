@@ -90,11 +90,6 @@
   #feed{font-variant-numeric:tabular-nums}
   #feed.stale{color:var(--warn)}
   #feed.down{color:var(--hot)}
-  /* The footer sat directly on the scrim, where the weakest part of the gradient left it at
-     1.42:1 over a bright photo — invisible on exactly the setup a custom wallpaper creates.
-     The card surface measures 5.41:1 at the same spot. */
-  footer{margin-top:18px;background:rgba(var(--card),var(--card-alpha));border:1px solid var(--line);
-       border-radius:12px;padding:10px 13px}
   </style>
 </head>
 <body>
@@ -115,8 +110,6 @@
   <div class="card waiting">This panel paints its data with JavaScript. The raw payload is at
     <a href="/api/quota">/api/quota</a>.</div>
 </noscript>
-
-<footer class="muted">Read-only. Credentials stay on the host; nothing is sent anywhere else.</footer>
 
 <script>
 'use strict';
