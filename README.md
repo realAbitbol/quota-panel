@@ -23,16 +23,16 @@ renders as an error card and never takes the panel down.
 
 ### Supported providers
 
-| | `provider` | Card | Reports | Contract |
-|---|---|---|---|---|
-| <img src="static/logos/commandcode.svg" width="18"> | `commandcode` | window | 5 h / weekly / monthly percent | verified live |
-| <img src="static/logos/opencode_go.svg" width="18"> | `opencode_go` | window | rolling / weekly / monthly percent | verified live |
-| <img src="static/logos/zai.svg" width="18"> | `zai` | window | session / weekly / web-search quota | third-party |
-| <img src="static/logos/synthetic.svg" width="18"> | `synthetic` | window | request allowance percent | documented |
-| <img src="static/logos/openrouter.svg" width="18"> | `openrouter` | balance | credit balance; **percent only if the key has a spend limit** | documented |
-| <img src="static/logos/cheaperinference.svg" width="18"> | `cheaperinference` | balance | wallet balance | documented |
-| <img src="static/logos/deepseek.svg" width="18"> | `deepseek` | balance | balance in CNY or USD | documented |
-| <img src="static/logos/kimi.svg" width="18"> | `kimi` | balance | available / voucher / cash balance | documented |
+| | `provider` | Card | Reports |
+|---|---|---|---|
+| <img src="docs/logos/commandcode.png" height="22" alt="CommandCode"> | `commandcode` | window | 5 h / weekly / monthly percent |
+| <img src="docs/logos/opencode.svg" height="22" alt="OpenCode"> | `opencode_go` | window | rolling / weekly / monthly percent |
+| <img src="docs/logos/zai.svg" height="22" alt="z.ai"> | `zai` | window | session / weekly / web-search quota |
+| <img src="docs/logos/synthetic.svg" height="22" alt="Synthetic"> | `synthetic` | window | request allowance percent |
+| <img src="docs/logos/openrouter.svg" height="22" alt="OpenRouter"> | `openrouter` | balance | credit balance; percent only if the key has a spend limit |
+| <img src="docs/logos/cheaperinference.svg" height="22" alt="CheaperInference"> | `cheaperinference` | balance | wallet balance |
+| <img src="docs/logos/deepseek.svg" height="22" alt="DeepSeek"> | `deepseek` | balance | balance in CNY or USD |
+| <img src="docs/logos/kimi.svg" height="22" alt="Kimi"> | `kimi` | balance | available / voucher / cash balance |
 
 A subset of the adapters catalogued by
 [AIMeter](https://github.com/bugwz/AIMeter#supported-providers) — that page lists many more
@@ -146,14 +146,6 @@ docker run -d -p 127.0.0.1:8080:8080 \
 Any number of accounts, any mix of providers. An account whose credential is missing or refused renders as an error card and never takes the panel down.
 
 > **Trap:** putting the key *into* `token_env` parses, loads and renders — and every lookup returns `""`, because the field holds the *name* of a variable, not the value. The key goes in `token`.
-
-### Provider contracts
-
-`Contract` is the provenance of the parse, served verbatim by `/api/providers`: `verified live` was
-exercised against a real response in daily use; `documented` was built from the vendor's published
-contract and tested against a recorded fixture; `third-party` means the vendor publishes nothing for
-that route and the shape comes from independent implementations. A first real key may still reveal
-an undocumented field.
 
 ### Environment variables
 
