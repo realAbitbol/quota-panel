@@ -91,9 +91,6 @@ services:
 
 </details>
 
-The shipped wallpaper is
-`https://r4.wallpaperflare.com/wallpaper/65/18/546/ai-art-city-street-lofi-japan-hd-wallpaper-d8618916d8ff4e5a70f17a71496ff810.jpg`.
-Set `"background_url": "none"` if you would rather the container talked to nobody but your providers.
 
 <details>
 <summary>Build from source</summary>
