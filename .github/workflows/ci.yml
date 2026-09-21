@@ -55,6 +55,11 @@ jobs:
       - name: Balance providers, registry and icons
         run: python tests/balance.py
 
+      - name: Screenshot harness compiles
+        # The capture itself needs a Chromium and is run manually (see tests/screenshot.py);
+        # CI only guarantees the committed harness still parses, so it cannot rot silently.
+        run: python -m py_compile tests/screenshot.py
+
       - name: Background image shrink (Pillow)
         run: |
           pip install --quiet pillow
