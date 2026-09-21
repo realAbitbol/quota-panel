@@ -52,9 +52,13 @@ services:
         max-file: "3"
 
     healthcheck:
-      # Mirrors the image's HEALTHCHECK; compose wins when both are present.
-      test: ["CMD", "python3", "-c", "import urllib.request,sys\ntry:\n    sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/api/health', timeout=4).status==200 else 1)\nexcept Exception:\n    sys.exit(1)"]
+      # Mirrors the image's HEALTHCHECK; compose wins when both are present. Keep the two strings
+      # identical when either changes. No `.status==200` test: urlopen returns only for 2xx and
+      # raises otherwise, so that branch could never run.
+      test: ["CMD", "python3", "-c", "import urllib.request,sys\ntry:\n    urllib.request.urlopen('http://127.0.0.1:8080/api/health', timeout=4)\n    sys.exit(0)\nexcept Exception:\n    sys.exit(1)"]
       interval: 60s
       timeout: 5s
       retries: 3
-      start_period: 20s
+      # 60s, not 20s: /api/health answers 503 until the first refresh_all finishes, and that first
+      # poll runs sequentially over every account at up to QUOTA_HTTP_TIMEOUT each.
+      start_period: 60s

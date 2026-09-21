@@ -1,10 +1,20 @@
+# Everything the image does not need. The Dockerfile's COPY list is explicit, so this file is the
+# guard for the day somebody writes `COPY . .`.
 .git
 .github
 docs
 tests
-accounts.json
-accounts.local.json
 *.md
 *.db
 __pycache__
 .gitignore
+
+# Credential SHAPES, not the two names someone happened to think of — `accounts.local.json` was
+# listed while `my-accounts.json` and `accounts.json.bak` were not, and this is a public repo.
+# accounts.example.json is the one accounts file meant to be public.
+accounts*.json
+!accounts.example.json
+.env*
+*.env
+*.pem
+*.key
