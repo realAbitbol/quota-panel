@@ -29,7 +29,7 @@
 
 ![quota-panel dashboard](docs/screenshot.png)
 
-*Screenshot uses synthetic data. Nothing in it came from a real account.*
+*Screenshot uses synthetic data. Nothing in it came from a real account, and it renders with the bundled artwork: the shipped wallpaper is fetched at runtime, so an offline capture cannot show it.*
 
 ## Why
 
@@ -237,7 +237,7 @@ enough. Overridable per container with `QUOTA_POLL_SECONDS`.
 
 ### `background_url`
 
-The page artwork is bundled and can be replaced with your own image. A config still needs at least one account, since the panel refuses to start with none:
+The panel ships with a wallpaper, and any image of yours can replace it. A config still needs at least one account, since the panel refuses to start with none:
 
 ```json
 {
@@ -249,7 +249,22 @@ The page artwork is bundled and can be replaced with your own image. A config st
 }
 ```
 
-When set, the panel downloads that image **once at container startup** and serves it
+| Value | What `/background` serves |
+|---|---|
+| an `http(s)` URL | that image, fetched once at startup |
+| `"none"` or `"off"` | the bundled artwork, and no fetch at all |
+| absent or `""` | the wallpaper the panel ships with |
+
+The shipped wallpaper is
+`https://r4.wallpaperflare.com/wallpaper/65/18/546/ai-art-city-street-lofi-japan-hd-wallpaper-d8618916d8ff4e5a70f17a71496ff810.jpg`,
+fetched with the panel's own user agent (measured: `200`, `image/jpeg`, 316 KB, 2912×1632). It is
+**hotlinked, not redistributed**: the repository carries no copy of it, so the container asks that
+host for the image exactly as it would ask yours, and the bundled artwork covers the day the host
+stops answering. That host sits behind Cloudflare, which refuses some automated user agents with a
+`403` while the panel's own fetcher gets a `200` today; if you would rather the container talked to
+nobody but your providers, or you are on a metered link, set `"none"`.
+
+Whichever image is chosen, the panel downloads it **once at container startup** and serves it
 from `/background` out of the container's non-persistent `/tmp` (a tmpfs in the
 compose files), so nothing about it survives a restart and the bundled image is what
 you get back the moment the URL stops working. Served types: `webp`, `png`, `jpeg`,
@@ -279,7 +294,7 @@ How much smaller is a property of the image, not a promise. Measured on a smooth
 | `/api/homepage` | flat `items` map keyed `<account_id>_<window>`, for a gethomepage tile |
 | `/api/health` | `200` while the last poll is fresh, `503` when stale |
 | `/static/…` | the UI's own assets (image, favicon); path-traversal safe, allow-listed types |
-| `/background` | the page artwork: the configured image when there is one, the bundled one otherwise |
+| `/background` | the page artwork: your URL or the shipped wallpaper, the bundled image when the URL is off or the fetch failed |
 
 ```bash
 curl -s localhost:8080/api/quota \
@@ -295,7 +310,7 @@ curl -s localhost:8080/api/quota \
 | `QUOTA_POLL_SECONDS` | `60` | Poll interval; the config file's `poll_seconds` wins. |
 | `QUOTA_HTTP_TIMEOUT` | `20` | Per-request timeout, in seconds. |
 | `QUOTA_CURRENCY` | `USD` | Which currency a multi-currency balance is reported in, since DeepSeek lists several. |
-| `QUOTA_BACKGROUND_URL` | — | Artwork URL; the config file's `background_url` wins. |
+| `QUOTA_BACKGROUND_URL` | the shipped wallpaper | Artwork URL, or `none`/`off` for the bundled image; the config file's `background_url` wins. |
 | `QUOTA_BACKGROUND_DIR` | `/tmp/quota-panel` | Where the fetched artwork is stored. Keep it on a writable path, or the panel silently falls back to the bundled image. |
 | `QUOTA_BACKGROUND_TIMEOUT` | `20` | Fetch timeout for the artwork, in seconds. |
 
@@ -394,7 +409,7 @@ Accept: application/json
 
 ## Security
 
-* Read-only, outbound only. The app issues `GET`s to one host per configured provider, up to eight hosts for the eight providers it supports, plus the artwork URL when `background_url` is set. That fetch is retried while it keeps failing, at most once every 5 minutes, rather than only at startup. There is no write path and no upstream state change.
+* Read-only, outbound only. The app issues `GET`s to one host per configured provider, up to eight hosts for the eight providers it supports, plus one artwork fetch at startup — the shipped wallpaper, or your own URL, or nothing at all when you set `none`. That fetch is retried while it keeps failing, at most once every 5 minutes, rather than only at startup. There is no write path and no upstream state change.
 * Credentials stay in the config. They are read at startup, held in memory, and never logged, never returned by any endpoint, never sent anywhere but the provider that owns them. Redaction is applied to the whole result in one place rather than field by field, and the suite proves it end to end: the test stub echoes the `Authorization` header it received back inside its response body, and no served body (the page, `/api/quota`, `/api/homepage`, `/api/health`) may contain it.
 * There is no built-in login. Run it behind something that authenticates, a reverse proxy with SSO in front, and keep the published port on loopback.
 * Config file permissions matter. With inline `token`s, keep `accounts.json` mode `600`/`640`, owned by the container user.

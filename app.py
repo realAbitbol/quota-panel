@@ -59,12 +59,26 @@ PORT = _env_int("PORT", 8080)
 # too: a host that streams forever must not be able to grow this process without bound.
 MAX_RESPONSE_BYTES = 2 * 1024 * 1024
 
-# The panel's own artwork can be replaced by a URL (`background_url`, or the env var).
-# It is fetched once at startup into the container's non-persistent /tmp — a tmpfs in both
-# compose files — and served from there; the bundled image stays the fallback, so a dead
+# The panel's artwork comes from `background_url` (or the env var), and falls back to
+# BACKGROUND_URL_DEFAULT when neither says anything. It is fetched once at startup into the
+# container's non-persistent /tmp — a tmpfs in both compose files — and served from there; the
+# bundled image stays the fallback, so a dead
 # or slow image host costs the image and never the panel. The URL may be signed, so it is
 # never logged and never echoed by /api/health.
 BACKGROUND_URL_ENV = "QUOTA_BACKGROUND_URL"
+# The artwork the panel ships with. It lives here as a URL rather than in the image as a copy:
+# the app fetches it through exactly the path a configured URL takes, so the repository carries
+# no third-party file and the bundled image below remains the offline fallback. Because this
+# default reaches the network, it needs a switch that is not "edit app.py": the suites, CI and
+# an offline install all have to be able to ask for the bundled image, and so does anyone who
+# does not want the panel calling a wallpaper host at all.
+BACKGROUND_URL_DEFAULT = (
+    "https://r4.wallpaperflare.com/wallpaper/65/18/546/"
+    "ai-art-city-street-lofi-japan-hd-wallpaper-d8618916d8ff4e5a70f17a71496ff810.jpg"
+)
+# Written in either the config file or the environment, these select the bundled image instead
+# of the default. "No opinion" and "bundled, please" are different answers and stay different.
+BACKGROUND_URL_OFF = ("none", "off")
 BACKGROUND_BUNDLED = "background.webp"
 BACKGROUND_DIR = os.environ.get("QUOTA_BACKGROUND_DIR", "/tmp/quota-panel")
 BACKGROUND_TIMEOUT = int(os.environ.get("QUOTA_BACKGROUND_TIMEOUT", "20"))
@@ -262,33 +276,57 @@ def declared_poll_seconds(path=CONFIG_PATH):
     return value
 
 
-def load_background_url(path=CONFIG_PATH):
-    """Optional `background_url`: none by default, env var, then the config file wins.
+def background_url_setting(raw, source):
+    """One artwork setting -> a URL, "" for the bundled image, or None when it says nothing.
 
-    Same precedence as `poll_seconds`, so the two settings cannot
-    behave in opposite ways.
+    "Unset" and "bundled" are separate answers now that a URL ships as the default: an absent
+    key has to fall through to the environment and then to BACKGROUND_URL_DEFAULT, while an
+    explicit `none`/`off` has to stop that chain. Neither is an error, so neither raises; a
+    value that is neither a URL nor an off word is ignored, and logged, as it always was.
     """
-    url = os.environ.get(BACKGROUND_URL_ENV) or None
+    if raw is None:
+        return None
+    if not isinstance(raw, str):
+        log("config: %s must be an http(s) URL, or none/off — ignored" % source)
+        return None
+    text = raw.strip()
+    if not text:
+        return None
+    if text.lower() in BACKGROUND_URL_OFF:
+        return ""
+    if not text.lower().startswith(("http://", "https://")):
+        log("config: %s must be an http(s) URL — ignored" % source)
+        return None
+    # An interior control character survives strip(). It used to ride into the log through the
+    # parser's own exception text ("URL can't contain control characters"), on a value this file
+    # otherwise never logs because it may be signed. Refuse the value; do not log it.
+    if any(ch < " " or ch == "\x7f" for ch in text):
+        log("config: %s contains control characters — ignored" % source)
+        return None
+    return text
+
+
+def load_background_url(path=CONFIG_PATH):
+    """Which artwork to fetch: the shipped default, then the env var, then the config file wins.
+
+    Same precedence as `poll_seconds`, so the two settings cannot behave in opposite ways.
+    `none`/`off` in either source picks the bundled image and stops the chain. An absent or
+    empty value means "no opinion" — the next source answers, and the shipped default answers
+    last, so a config that never mentions the artwork still gets the wallpaper.
+    """
+    chosen = background_url_setting(os.environ.get(BACKGROUND_URL_ENV), BACKGROUND_URL_ENV)
     try:
         with open(path, "r", encoding="utf-8") as fh:
             doc = json.load(fh)
     except (OSError, ValueError):
         doc = None
-    if isinstance(doc, dict) and doc.get("background_url") not in (None, ""):
-        url = doc["background_url"]
-    if url in (None, ""):
-        return None
-    if not isinstance(url, str) or not url.strip().lower().startswith(("http://", "https://")):
-        log("config: background_url must be an http(s) URL — ignored")
-        return None
-    url = url.strip()
-    # An interior control character survives strip(). It used to ride into the log through the
-    # parser's own exception text ("URL can't contain control characters"), on a value this file
-    # otherwise never logs because it may be signed. Refuse the value; do not log it.
-    if any(ch < " " or ch == "\x7f" for ch in url):
-        log("config: background_url contains control characters — ignored")
-        return None
-    return url
+    if isinstance(doc, dict):
+        declared = background_url_setting(doc.get("background_url"), "background_url")
+        if declared is not None:
+            chosen = declared
+    if chosen is None:
+        chosen = BACKGROUND_URL_DEFAULT
+    return chosen or None
 
 
 # ------------------------------------------------------------------ custom background
@@ -1319,7 +1357,7 @@ def main(argv):
     # Deliberately after the --check early return: a probe must not fetch anything.
     BACKGROUND["url"] = load_background_url()
     if BACKGROUND["url"]:
-        log("background: a custom image URL is configured — fetching it off the startup path")
+        log("background: fetching the artwork URL off the startup path")
         threading.Thread(target=fetch_background, args=(True,), daemon=True).start()
     else:
         log("background: serving the bundled image")

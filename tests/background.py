@@ -79,6 +79,62 @@ def main():
 
     check("garbage is refused, not fatal", app.shrink_background(b"not an image at all", "image/png") is None)
 
+    # ------------------------------------------------------ which artwork URL gets chosen
+    # The default is a URL now, so "no opinion" and "bundled, please" are different answers and
+    # the difference has to survive every path: unset falls through to the shipped wallpaper,
+    # while none/off selects the bundled image and stops the chain. Nothing here fetches —
+    # load_background_url opens a file and reads the environment.
+    import json
+    import tempfile
+    from urllib.parse import urlparse
+
+    ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    ENV = app.BACKGROUND_URL_ENV
+
+    def resolve(doc, env=None):
+        path = os.path.join(tempfile.mkdtemp(prefix="qp-artwork-"), "cfg.json")
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(doc, fh)
+        saved = os.environ.pop(ENV, None)
+        os.environ.update(env or {})
+        try:
+            return app.load_background_url(path)
+        finally:
+            os.environ.pop(ENV, None)
+            if saved is not None:
+                os.environ[ENV] = saved
+
+    check("with nothing configured, the shipped wallpaper is used",
+          resolve({}) == app.BACKGROUND_URL_DEFAULT, repr(resolve({})))
+    check("an empty or null background_url is 'no opinion', not 'bundled'",
+          resolve({"background_url": ""}) == app.BACKGROUND_URL_DEFAULT
+          and resolve({"background_url": None}) == app.BACKGROUND_URL_DEFAULT)
+    check("'none' selects the bundled image", resolve({"background_url": "none"}) is None)
+    check("'off' does too, in any case", resolve({"background_url": "OFF"}) is None)
+    check("the environment can say 'none' as well",
+          resolve({}, {ENV: "none"}) is None)
+    check("the environment can still name a URL",
+          resolve({}, {ENV: "http://127.0.0.1:9/a.png"}) == "http://127.0.0.1:9/a.png")
+    check("the config file beats the environment, against 'none' too",
+          resolve({"background_url": "http://127.0.0.1:9/file.png"}, {ENV: "none"})
+          == "http://127.0.0.1:9/file.png")
+    check("an unusable value is ignored, and the default answers",
+          resolve({"background_url": "ftp://host/a.png"}) == app.BACKGROUND_URL_DEFAULT)
+    check("a control character in the value is refused, not logged",
+          resolve({"background_url": "http://host/a\x01.png"}) == app.BACKGROUND_URL_DEFAULT)
+
+    # A shipped default that the panel would refuse to serve would be decoration: every install
+    # would fall back to the bundled image and the fetch would never happen.
+    suffix = os.path.splitext(urlparse(app.BACKGROUND_URL_DEFAULT).path)[1].lower()
+    check("the shipped default is an https URL",
+          app.BACKGROUND_URL_DEFAULT.startswith("https://"), app.BACKGROUND_URL_DEFAULT[:24])
+    check("  -> of a type the panel serves",
+          suffix in (".webp", ".png", ".jpg", ".jpeg", ".avif", ".gif"), suffix)
+    with open(os.path.join(ROOT, "README.md"), encoding="utf-8") as fh:
+        readme = fh.read()
+    check("  -> and is the URL the README documents",
+          app.BACKGROUND_URL_DEFAULT in readme, "README and app.py disagree on the artwork")
+
     print()
     if FAILURES:
         print("%d check(s) FAILED: %s" % (len(FAILURES), ", ".join(FAILURES)))

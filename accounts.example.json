@@ -15,12 +15,14 @@
   "poll_seconds": 60,
   "background_url": "",
   "_background_note": [
-    "Optional page artwork, as an http(s) URL. When set, the panel downloads it once at",
-    "container startup and serves it from /background out of the container's",
-    "non-persistent /tmp (a tmpfs in the compose files), instead of the bundled image.",
-    "A fetch that fails, or an image in a type the panel does not serve, leaves the",
-    "bundled image in place: the artwork is never a reason for the panel to fail.",
-    "Empty or absent means the bundled image."
+    "Page artwork, as an http(s) URL. The panel downloads it once at container startup and",
+    "serves it from /background out of the container's non-persistent /tmp (a tmpfs in the",
+    "compose files). A fetch that fails, or an image in a type the panel does not serve,",
+    "leaves the bundled image in place: the artwork is never a reason for the panel to fail.",
+    "Absent or empty means the wallpaper the panel ships with; its URL is in the README under",
+    "background_url, and in app.py as BACKGROUND_URL_DEFAULT. 'none' or 'off' means the",
+    "bundled image instead, with no fetch at all, which is what the test suites and an",
+    "offline install want."
   ],
   "accounts": [
     {

@@ -224,6 +224,13 @@ def main():
     expected_ids = [a["id"] for a in base_cfg["accounts"]]
 
     scratch = tempfile.mkdtemp(prefix="quota-panel-smoke-")
+    # Every config below starts from the example file with the artwork turned OFF. The app now
+    # ships a wallpaper URL as its default, so a config that says nothing about the artwork
+    # would have this suite fetching a host that is not its stub — the example file says so in
+    # as many words, and "none" is the documented way to ask for the bundled image. The artwork
+    # tests set their own URL on top of it.
+    base_cfg = dict(base_cfg, background_url="none")
+    base_cfg_path = write_config(os.path.join(scratch, "base.json"), base_cfg)
     artwork = b"\x89PNG\r\n\x1a\n" + bytes(range(256)) * 2      # 520 bytes
     # Two recorded success shapes, so the suite sees a healthy card as well as failing ones:
     # every account in an error state meant the whole ok path (windows, balance money,
@@ -271,7 +278,7 @@ def main():
     srv, stub_port = serve(routes)
     stub = stub_env(stub_port)
 
-    proc, base, env, booted = boot(CFG, stub, scratch)
+    proc, base, env, booted = boot(base_cfg_path, stub, scratch)
     # A credential must not appear in any served body. The original check asserted a key
     # NAME (`not any("token" in a ...)`), so a credential echoed under any other name passed
     # — it could not detect the leak it was named after. These are the values the config
@@ -447,7 +454,9 @@ def main():
         with open(BUNDLED, "rb") as fh:
             bundled = fh.read()
         status, ctype, body = get(base + "/background")
-        check("GET /background serves the bundled artwork by default",
+        # The shipped config says "none", so this is the off switch end to end: no fetch, and
+        # /api/health must report the bundled image rather than a failure.
+        check("GET /background serves the bundled artwork when the config says none",
               status == 200 and ctype == "image/webp" and body == bundled,
               "HTTP %s %s, %d bytes" % (status, ctype, len(body)))
         bg = json.loads(get(base + "/api/health")[2]).get("background", {})

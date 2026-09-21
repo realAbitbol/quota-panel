@@ -107,7 +107,10 @@ CONFIG = {
         {"id": "ds", "provider": "deepseek", "label": "DeepSeek", "token": "x"},
         {"id": "kimi", "provider": "kimi", "label": "Kimi", "token": "x"},
     ],
-    "background_url": "",
+    # The suites render offline: the app's shipped artwork default is a URL, so saying "none"
+    # here is what keeps this harness from fetching a wallpaper host. The bundled image is the
+    # artwork in the capture, which is also what a reader gets offline.
+    "background_url": "none",
 }
 
 # Point every adapter at the stub. The commandcode base in app.py is a module constant, so
