@@ -5,3 +5,6 @@ accounts*.json
 .env.test
 data/
 __pycache__/
+docs/plans/
+docs/superpowers/
+.cortexkit/
