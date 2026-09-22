@@ -6,14 +6,19 @@
 <!-- Served at /history. While the layer is off the page still loads and says so, because a link
      that 404s teaches nothing.
      Hand-rolled SVG, no chart library: the panel vendors no third-party code.
-     This page is a deliberate subset of AIMeter's Usage History, and it is meant to be read next
-     to it:
+     This page is a close reading of AIMeter's Usage History, and it is meant to be read next to
+     it:
        * three controls, the same three: an account, a range, an interval. No window selector — a
          subscription publishes several windows, but only one of them measures consumption of the
          plan, and it is picked by the period the window's own label names. Asking the reader to
          choose a window as well asks them to answer the question the page exists to answer.
        * the trend is drawn against real percents (0-100) with the cap on the axis, filled under
-         each line the way AIMeter fills it, with a clickable legend that isolates a line.
+         each line the way AIMeter fills it, with a clickable legend that isolates a line. An
+         alert threshold is drawn and named, resets are marked, and the range's own slope projects
+         the cap date — the one forward-looking number the data supports.
+       * the rest of the grid is here too: weekly bars, a share donut, an intensity/volatility
+         scatter, a radar matrix, and one insight card per account. A money balance is kept as
+         money rather than turned into a percentage it never had.
        * the intensity map is one row per account, one column per day, and one hue for every row:
          the shade means "how much", so cells can be compared down a column. A colour per account
          would make the shade mean "which account" instead. -->
@@ -94,6 +99,45 @@
   .stale{margin-top:12px;font-size:12.5px;color:var(--warn);background:#241f10;border:1px solid #4a3a17;
        border-radius:9px;padding:10px 12px}
   code{background:var(--card-2);border:1px solid var(--line);border-radius:5px;padding:1px 5px;font-size:12px}
+  /* AIMeter-style multi-panel grid: two chart panels per row where there is room. */
+  .grid-2{display:grid;grid-template-columns:1fr;gap:16px}
+  @media (min-width:980px){ .grid-2{grid-template-columns:1fr 1fr} }
+  .panel-head{display:flex;align-items:center;gap:8px}
+  .panel-head .bar{width:3px;height:15px;border-radius:2px;background:var(--accent);flex:0 0 auto}
+  .panel-head h2{font-size:13.5px}
+  .skel{position:relative;overflow:hidden;background:rgba(255,255,255,.06);border-radius:8px}
+  .skel::after{content:"";position:absolute;inset:0;transform:translateX(-100%);
+       background:linear-gradient(90deg,transparent,rgba(255,255,255,.09),transparent);
+       animation:shimmer 1.3s infinite}
+  @keyframes shimmer{100%{transform:translateX(100%)}}
+  .skel-chart{height:210px;margin:10px 0}
+  .badge{display:inline-flex;align-items:center;gap:6px;min-width:0}
+  .badge img{width:14px;height:14px;border-radius:3px;flex:0 0 auto}
+  .badge .nm{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .insight-grid{display:grid;grid-template-columns:1fr;gap:12px}
+  @media (min-width:700px){ .insight-grid{grid-template-columns:1fr 1fr} }
+  @media (min-width:1200px){ .insight-grid{grid-template-columns:1fr 1fr 1fr} }
+  .insight{border:1px solid var(--line);border-radius:11px;padding:12px;background:var(--card-2)}
+  .insight .top{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:9px}
+  .insight .tiles{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:9px}
+  .insight .tile{background:rgba(0,0,0,.18);border-radius:8px;padding:6px 8px;display:flex;
+       align-items:baseline;justify-content:space-between;gap:6px;min-width:0}
+  .insight .tile .k{font-size:11px;color:var(--muted);white-space:nowrap}
+  .insight .tile .v{font-size:15px;font-weight:600;font-variant-numeric:tabular-nums}
+  .insight .pill{font-size:10.5px;padding:2px 8px;border-radius:999px;white-space:nowrap}
+  .insight .spark{height:44px;margin-top:2px}
+  .axis{font-size:10px;fill:var(--muted)}
+  /* The support link: fixed, small, and out of the reading column. It is an anchor, not a
+     resource load, so it stays same-origin for the page's own requests. */
+  .kofi{position:fixed;right:16px;bottom:16px;z-index:60;display:inline-flex;align-items:center;
+       gap:7px;padding:7px 12px;border-radius:999px;text-decoration:none;font-size:12.5px;
+       color:var(--fg);background:rgba(var(--card),.8);border:1px solid var(--line);
+       backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);box-shadow:0 4px 16px rgba(0,0,0,.35)}
+  .kofi:hover{color:#fff;border-color:var(--accent)}
+  .kofi svg{width:15px;height:15px;fill:#ff5e5b;flex:0 0 auto}
+  .kofi span{font-weight:600}
+  @media (prefers-reduced-motion:no-preference){ .kofi{transition:color .15s,border-color .15s} }
+  @media (prefers-reduced-motion:reduce){ .skel::after{animation:none} }
 </style>
 </head>
 <body>
@@ -117,6 +161,7 @@
         <select id="bucket-select"></select>
       </label>
     </div>
+    <div class="sub" id="store-line"></div>
     <div class="stats" id="stats"></div>
     <h2 id="trend-title">Usage trend</h2>
     <div class="sub" id="trend-sub"></div>
@@ -126,13 +171,55 @@
     <div class="note" id="trend-note"></div>
   </section>
 
+  <section class="panel" id="breakdown-panel" hidden>
+    <div class="panel-head"><span class="bar"></span><h2>Window breakdown</h2></div>
+    <div class="sub" id="breakdown-sub"></div>
+    <div class="insight-grid" id="breakdown"></div>
+  </section>
+
+  <div class="grid-2">
+    <section class="panel" id="weekly-panel">
+      <div class="panel-head"><span class="bar"></span><h2>Weekly comparison</h2></div>
+      <div class="sub" id="weekly-sub">Weekly aggregation to reveal stage-by-stage usage shifts.</div>
+      <div class="chart-wrap" id="weekly"><div class="skel skel-chart"></div></div>
+      <div class="legend" id="weekly-legend"></div>
+    </section>
+    <section class="panel" id="donut-panel">
+      <div class="panel-head"><span class="bar"></span><h2>Share of consumption</h2></div>
+      <div class="sub">Average consumption share to identify dominant accounts.</div>
+      <div class="chart-wrap" id="donut"><div class="skel skel-chart"></div></div>
+      <div class="legend" id="donut-legend"></div>
+    </section>
+  </div>
+
+  <div class="grid-2">
+    <section class="panel" id="scatter-panel">
+      <div class="panel-head"><span class="bar"></span><h2>Intensity vs volatility</h2></div>
+      <div class="sub">X = average usage, Y = volatility, bubble size = active days.</div>
+      <div class="chart-wrap" id="scatter"><div class="skel skel-chart"></div></div>
+      <div class="legend" id="scatter-legend"></div>
+    </section>
+    <section class="panel" id="radar-panel">
+      <div class="panel-head"><span class="bar"></span><h2>Radar matrix</h2></div>
+      <div class="sub">Average load, latest snapshot, peak pressure, volatility, cost burn.</div>
+      <div class="chart-wrap" id="radar"><div class="skel skel-chart"></div></div>
+      <div class="note" id="radar-note"></div>
+    </section>
+  </div>
+
   <section class="panel" id="heat-panel">
-    <h2>Daily intensity</h2>
-    <div class="sub">Rows: accounts, columns: days, darker = higher usage.</div>
+    <div class="panel-head"><span class="bar"></span><h2>Daily intensity</h2></div>
+    <div class="sub">Rows: accounts, columns: days, darker = higher usage. One hue, so a shade means the same on every row.</div>
     <div class="heat-scroll"><div class="heat" id="heat"><div class="empty">Loading…</div></div></div>
     <div class="heat-legend" id="heat-legend">
       <span>Less</span><span class="row" id="heat-legend-row"></span><span>More</span>
     </div>
+  </section>
+
+  <section class="panel" id="insights-panel">
+    <div class="panel-head"><span class="bar"></span><h2>Account insights</h2></div>
+    <div class="sub">Avg, peak, latest, volatility and balance per account.</div>
+    <div class="insight-grid" id="insights"></div>
   </section>
 
   <section class="panel" id="status-panel" hidden>
@@ -145,7 +232,7 @@
 // Escaping discipline, same as the live panel: every value that originates outside this file —
 // account and window labels from the config or a provider, series keys, error text — is passed
 // through esc() at the point of interpolation, and the only unescaped interpolations are
-// numbers from fmtPercent(), positions computed here, and colours from the fixed PALETTE.
+// numbers from fmtPercent(), positions computed here, and colours from the fixed provider map.
 // That is what makes the innerHTML below safe rather than merely convenient.
 //
 // The controls are AIMeter's, in AIMeter's words: an account, a range, an interval. There is no
@@ -167,11 +254,125 @@ const REFRESH_MS = 60000;
 // number in both. Provider colours are for the trend, where identity is what a line has to carry.
 const HEAT_HUE = [0x5b, 0x8d, 0xff];     // the mix's own channels; --card-2 is what it mixes into
 const HEAT_CARD = [27, 33, 48];
-const PALETTE = ['#5b8dff','#33d69f','#f5c451','#ff6b6b','#c084fc','#38bdf8','#fb923c','#a3e635',
-                 '#f472b6','#22d3ee'];
 
 const state = {hours:24, bucket:0, account:'', catalogue:null, primary:{}, data:null,
-               isolate:null, stale:null, clipped:null};
+               daily:null, isolate:null, stale:null, clipped:null, requestId:0,
+               panels:{weekly:null, donut:null, scatter:null, radar:null}};
+
+// ------------------------------------------------------------------ identity + palette
+// One hue per provider, the way the page this is modelled on assigns them: an account's colour
+// says which provider it belongs to, and a second account of the same provider is a variant of
+// that hue, so two rows of one provider stay distinguishable without leaving the family.
+const PROVIDER_COLORS = {
+  commandcode:'#f5a524', opencode_go:'#22c55e', openrouter:'#635bff',
+  cheaperinference:'#38bdf8', deepseek:'#4d6bfe', kimi:'#3b5bdb',
+  zai:'#e11d48', synthetic:'#c084fc', moonshot:'#3b5bdb',
+};
+const PROVIDER_LOGOS = {
+  commandcode:'commandcode.png', opencode_go:'opencode_go.svg', openrouter:'openrouter.svg',
+  cheaperinference:'cheaperinference.svg', deepseek:'deepseek.png', kimi:'kimi.svg',
+  zai:'zai.svg', synthetic:'synthetic.svg', moonshot:'kimi.svg',
+};
+const FALLBACK_COLOR = '#5b8dff';
+
+function hashString(text){
+  let hash = 2166136261;
+  for(let i = 0; i < text.length; i += 1){
+    hash ^= text.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return Math.abs(hash >>> 0);
+}
+function hexToHsl(hex){
+  const value = String(hex).replace('#','');
+  const full = value.length === 3 ? value.split('').map(c => c + c).join('') : value;
+  const r = parseInt(full.slice(0,2),16)/255, g = parseInt(full.slice(2,4),16)/255,
+        b = parseInt(full.slice(4,6),16)/255;
+  const max = Math.max(r,g,b), min = Math.min(r,g,b), l = (max+min)/2;
+  if(max === min) return {h:0, s:0, l:l*100};
+  const d = max-min, sat = l > .5 ? d/(2-max-min) : d/(max+min);
+  let h;
+  if(max === r) h = (g-b)/d + (g < b ? 6 : 0);
+  else if(max === g) h = (b-r)/d + 2;
+  else h = (r-g)/d + 4;
+  return {h:h*60, s:sat*100, l:l*100};
+}
+function hslToHex(h, sat, l){
+  h = ((h % 360) + 360) % 360;
+  sat = Math.max(0, Math.min(100, sat))/100;
+  l = Math.max(0, Math.min(100, l))/100;
+  const c = (1 - Math.abs(2*l-1))*sat, x = c*(1 - Math.abs((h/60)%2 - 1)), m = l - c/2;
+  let r=0,g=0,b=0;
+  if(h<60){r=c;g=x;} else if(h<120){r=x;g=c;} else if(h<180){g=c;b=x;}
+  else if(h<240){g=x;b=c;} else if(h<300){r=x;b=c;} else {r=c;b=x;}
+  const to = v => Math.round((v+m)*255).toString(16).padStart(2,'0');
+  return '#' + to(r) + to(g) + to(b);
+}
+function providerBase(provider){
+  return PROVIDER_COLORS[String(provider||'').toLowerCase()] || FALLBACK_COLOR;
+}
+function providerLogo(provider){
+  return '/static/logos/' + (PROVIDER_LOGOS[String(provider||'').toLowerCase()] || '_fallback.svg');
+}
+function entryFor(key){
+  return (state.catalogue || []).find(s => s.key === key)
+    || ((state.data && state.data.series) || []).find(s => s.key === key) || null;
+}
+// The same provider's accounts get hue/sat variants, handed out in a stable order, so an account
+// keeps its colour between ranges and between visits.
+function seriesColor(key){
+  const entry = entryFor(key);
+  const provider = entry ? entry.provider : '';
+  const base = providerBase(provider);
+  const family = (state.catalogue || []).filter(s => s.provider === provider).map(s => s.key).sort();
+  const index = Math.max(0, family.indexOf(key));
+  if(index === 0) return base;
+  const hsl = hexToHsl(base);
+  const shift = index * 17 + (hashString(key) % 23) - 11;
+  return hslToHex(hsl.h + shift,
+    Math.max(45, Math.min(88, hsl.s + (index % 2 ? -5 : 7))),
+    Math.max(32, Math.min(70, hsl.l + (index % 3 === 0 ? 6 : index % 3 === 1 ? -6 : 2))));
+}
+function isWindow(entry){ return (entry.kind || 'window') !== 'balance'; }
+
+function balanceOnlyStore(){
+  // A store that holds money but no percentage: the percent panels have nothing to draw, and
+  // telling the reader to look for a sampling problem would send them after the wrong cause.
+  const series = (state.data && state.data.series) || [];
+  return series.length > 0 && !series.some(isWindow) && series.some(s => s.kind === 'balance');
+}
+function noPercentMessage(){
+  return balanceOnlyStore()
+    ? 'This account reports a money balance, not a percentage — see the account insights and radar panels.'
+    : 'No samples in this range yet. History starts with the first successful poll after the layer was enabled.';
+}
+function dailyEmpty(){
+  return balanceOnlyStore()
+    ? 'This account reports a money balance, not a percentage — see the account insights and radar panels.'
+    : 'No daily data yet.';
+}
+function badgeHtml(provider, label){
+  return '<span class="badge"><img src="' + esc(providerLogo(provider)) + '" alt="" '
+    + 'onerror="this.style.display=&quot;none&quot;"><span class="nm">' + esc(label) + '</span></span>';
+}
+function std(values){
+  if(values.length <= 1) return 0;
+  const mean = values.reduce((a,b) => a + b, 0) / values.length;
+  return Math.sqrt(values.reduce((a,b) => a + (b-mean)*(b-mean), 0) / values.length);
+}
+function labelInk(hex){
+  // Dark text on a light slice, white on a dark one: a fixed ink was unreadable on the deep
+  // provider colours.
+  const value = String(hex).replace('#', '');
+  const full = value.length === 3 ? value.split('').map(c => c + c).join('') : value;
+  const r = parseInt(full.slice(0, 2), 16), g = parseInt(full.slice(2, 4), 16), b = parseInt(full.slice(4, 6), 16);
+  return (0.299 * r + 0.587 * g + 0.114 * b) > 150 ? '#0b0d12' : '#ffffff';
+}
+function fmtMoney(amount, currency){
+  if(amount === null || amount === undefined || !isFinite(amount)) return '—';
+  const symbol = currency === 'USD' ? '$' : (currency ? currency + ' ' : '');
+  return symbol + amount.toFixed(2);
+}
 
 function esc(s){ return String(s === null || s === undefined ? '' : s)
   .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
@@ -200,10 +401,9 @@ function fmtInterval(seconds){
 }
 
 function lineColor(key){
-  // Colour identifies a line, and it is handed out in a stable order — the store's own series order —
-  // so the same account keeps the same colour between ranges and between visits.
-  const keys = state.catalogue ? state.catalogue.map(s => s.key).sort() : [];
-  return PALETTE[Math.max(0, keys.indexOf(key)) % PALETTE.length];
+  // Colour identifies an account, and it is handed out by provider and held stable, so the same
+  // account keeps the same colour between ranges and between visits.
+  return seriesColor(key);
 }
 
 function seriesLabel(entry){
@@ -241,6 +441,7 @@ function windowSeconds(label){
 function choosePrimary(series){
   const ranked = {};
   for(const entry of series){
+    if(entry.kind === 'balance') continue;   // a balance names no period, so it cannot stand for an account
     const seconds = windowSeconds(entry.window_label);
     const position = seconds === null ? Infinity : seconds;
     if(!ranked[entry.account_id] || position > ranked[entry.account_id].position){
@@ -265,20 +466,47 @@ function primaryLabel(){
 // reached without a third control: the account and the range are the whole choice.
 function trendKeys(){
   if(!state.catalogue) return [];
-  if(state.isolate) return [state.isolate];
-  if(state.account) return state.catalogue.filter(s => s.account_id === state.account).map(s => s.key);
-  return state.catalogue.filter(s => s.window_key === state.primary[s.account_id]).map(s => s.key);
+  const windows = state.catalogue.filter(isWindow);
+  if(state.account) return windows.filter(s => s.account_id === state.account).map(s => s.key);
+  return windows.filter(s => s.window_key === state.primary[s.account_id]).map(s => s.key);
+}
+
+// What the server is asked for: the trend's windows AND the viewed accounts' money balances,
+// because the radar and the insight cards read balances from the same payload. Isolating a line
+// is a draw-time filter, not a new request, so a legend click re-renders instead of re-fetching.
+function requestKeys(){
+  // The accounts in view, seeded from the selection itself first: a balance-only account has no
+  // window in trendKeys(), so seeding from those keys alone would drop it and the request would
+  // come back with nothing to draw. With no account selected, every account is in view.
+  const keys = trendKeys().slice();
+  const accounts = {};
+  if(state.account) accounts[state.account] = true;
+  keys.forEach(key => { const entry = entryFor(key); if(entry) accounts[entry.account_id] = true; });
+  if(!state.account) (state.catalogue || []).forEach(entry => { accounts[entry.account_id] = true; });
+  (state.catalogue || []).forEach(entry => {
+    if(entry.kind === 'balance' && accounts[entry.account_id] && keys.indexOf(entry.key) === -1){
+      keys.push(entry.key);
+    }
+  });
+  return keys;
 }
 
 // The map keeps one row per account whatever the trend is showing: a day is a day, and the row that
 // stands for an account is its standing window.
 function heatKeys(){
-  if(!state.catalogue) return [];
-  return state.catalogue.filter(s => s.window_key === state.primary[s.account_id]
-    && (!state.account || s.account_id === state.account)).map(s => s.key);
+  // The daily grid is the trend's own selection: one standing window per account, or every
+  // window of the one account that was asked for. Sharing it keeps every panel on one story.
+  return trendKeys();
 }
 
 function paramsFor(keys, extra){
+  // The very first request has no catalogue to choose from, so it omits `series=` on purpose:
+  // no filter is how the page discovers the store's series. Once the catalogue is known, an
+  // empty selection must ask for nothing rather than everything, or a balance-only account would
+  // draw every account under a one-account heading.
+  if(!keys || !keys.length){
+    return (extra || []).concat(state.catalogue ? ['series=__none__'] : []).join('&');
+  }
   return (extra || []).concat(keys.map(key => 'series=' + encodeURIComponent(key))).join('&');
 }
 
@@ -290,6 +518,20 @@ function minInterval(hours){
   return INTERVALS[INTERVALS.length - 1];
 }
 
+function rangeParams(hours){
+  // A day-or-longer range is snapped to whole calendar days, the way the page this is modelled on
+  // does it: "Last 1 day" is today, not the trailing 24 hours, so a daily bar lines up with a day.
+  // Sub-day ranges stay rolling, where a calendar day has no meaning.
+  if(hours < 24) return ['hours=' + hours];
+  const days = Math.max(1, Math.round(hours / 24));
+  const now = new Date();
+  const start = new Date(now);
+  start.setHours(0, 0, 0, 0);
+  start.setDate(start.getDate() - (days - 1));
+  const iso = date => date.toISOString().replace(/\.\d{3}Z$/, 'Z');
+  return ['since=' + encodeURIComponent(iso(start)), 'until=' + encodeURIComponent(iso(now))];
+}
+
 function trendQuery(){
   // "Auto" means as fine as the range allows and never finer than the store's own cadence: asking
   // the server for 60-second buckets over a day whose samples arrive every 300 s pads the grid with
@@ -297,12 +539,21 @@ function trendQuery(){
   const span = state.hours * 3600;
   const floor = Math.max(sampleSeconds(), Math.ceil(span / MAX_POINTS));
   const points = Math.max(10, Math.min(MAX_POINTS, Math.floor(span / floor)));
-  const params = ['hours=' + state.hours, 'max_points=' + points];
+  const params = rangeParams(state.hours).concat(['max_points=' + points]);
   // An explicit interval is only named when it keeps the point count under the cap; otherwise the
   // ladder's own floor applies, which is the same rule the Interval list is built from.
   const bucket = Math.max(state.bucket, minInterval(state.hours));
   if(state.bucket && span / bucket <= MAX_POINTS) params.push('bucket_seconds=' + bucket);
-  return paramsFor(trendKeys(), params);
+  return paramsFor(requestKeys(), params);
+}
+
+async function loadDaily(token){
+  // A second request at a daily bucket: the mean of a day is then computed once, by the code the
+  // suite covers, and every daily panel reads the same grid.
+  const params = rangeParams(state.hours).concat(['bucket_seconds=86400', 'max_points=' + MAX_POINTS]);
+  const {status, body} = await fetchJson('/api/history?' + paramsFor(requestKeys(), params));
+  if(token !== undefined && token !== state.requestId) return;
+  state.daily = (status === 200 && body && body.series) ? body : null;
 }
 
 // ------------------------------------------------------------------ fetching
@@ -335,7 +586,11 @@ async function fetchJson(url, attempt){
 }
 
 async function load(){
+  // A monotonic token: a response from a superseded request must not overwrite the readings the
+  // controls now describe (rapid account+range changes, or a refresh racing a manual change).
+  const token = ++state.requestId;
   const {status, body} = await fetchJson('/api/history?' + trendQuery());
+  if(token !== state.requestId) return;
   if(status !== 200){
     if(state.data){
       // A control that stops answering must not erase the readings already on screen: name the
@@ -358,21 +613,34 @@ async function load(){
   state.data = body;
   state.stale = null;
   document.getElementById('status-panel').hidden = true;
-  document.getElementById('trend-panel').hidden = false;
-  document.getElementById('heat-panel').hidden = false;
+  for(const id of ['trend-panel', 'heat-panel', 'insights-panel', 'weekly-panel',
+                   'donut-panel', 'scatter-panel', 'radar-panel']){
+    document.getElementById(id).hidden = false;
+  }
   renderControls();
+  await loadDaily(token);
+  if(token !== state.requestId) return;
   renderStats();
+  renderStore();
   renderChart();
   renderReadout(null);
   renderHeatmap();
+  renderWeekly();
+  renderDonut();
+  renderScatter();
+  renderRadar();
+  renderInsights();
+  renderBreakdown();
   document.getElementById('feed').textContent = 'sampled every ' + sampleSeconds() + 's';
 }
 
 function sampleSeconds(){ return (window.HISTORY_INFO && window.HISTORY_INFO.sample_seconds) || 300; }
 
 function showOffOrBroken(status, body){
-  document.getElementById('trend-panel').hidden = true;
-  document.getElementById('heat-panel').hidden = true;
+  for(const id of ['trend-panel', 'heat-panel', 'insights-panel', 'weekly-panel',
+                   'donut-panel', 'scatter-panel', 'radar-panel', 'breakdown-panel']){
+    document.getElementById(id).hidden = true;
+  }
   const panel = document.getElementById('status-panel');
   panel.hidden = false;
   const note = document.getElementById('status-note');
@@ -412,23 +680,144 @@ function renderControls(){
 
 // ------------------------------------------------------------------ stats
 
+// One row per account, from the window that stands for it (its widest label-named period). This
+// is the shape the page this is modelled on summarises: average, peak, latest and volatility.
+function primaryBalanceFor(accountId){
+  return ((state.data && state.data.series) || []).find(s => s.kind === 'balance'
+    && s.account_id === accountId) || null;
+}
+
+function balanceBurn(accountId){
+  // Money burn: how much of the range's own peak balance has been spent. A pure balance has no
+  // cap to divide by, so the observed peak is the only honest denominator — a spend relative to
+  // the most the account held while it was being watched.
+  const bal = primaryBalanceFor(accountId);
+  if(!bal) return null;
+  const values = (bal.avg || []).filter(v => v !== null && v !== undefined);
+  if(!values.length) return null;
+  const peak = Math.max.apply(null, values);
+  if(!(peak > 0)) return null;
+  const latest = bal.latest ? bal.latest.percent : values[values.length - 1];
+  return Math.max(0, Math.min(100, (peak - latest) / peak * 100));
+}
+
+function accountMetrics(){
+  const daily = (state.daily && state.daily.series) || [];
+  const byKey = {};
+  daily.forEach(s => { byKey[s.key] = s; });
+  const all = ((state.data && state.data.series) || []).filter(isWindow);
+  const primary = all.filter(s => s.window_key === state.primary[s.account_id]
+    && (!state.account || s.account_id === state.account));
+  return primary.map(s => {
+    const values = (s.avg || []).filter(v => v !== null && v !== undefined);
+    const daySeries = byKey[s.key];
+    const activeDays = daySeries ? (daySeries.n || []).filter(n => n > 0).length : 0;
+    return {
+      key: s.key, account_id: s.account_id, provider: s.provider,
+      label: s.account_label, window: s.window_label || s.window_key,
+      mean: s.mean, peak: s.peak,
+      latest: s.latest ? s.latest.percent : null,
+      volatility: std(values), records: s.samples || 0, activeDays: activeDays,
+      costBurn: balanceBurn(s.account_id), color: seriesColor(s.key),
+    };
+  }).sort((a, b) => a.label.localeCompare(b.label));
+}
+
 function renderStats(){
   const series = (state.data && state.data.series) || [];
-  const summary = (state.data && state.data.summary) || {};
   const accounts = new Set(series.map(s => s.account_id));
+  const samples = series.reduce((sum, s) => sum + (s.samples || 0), 0);
+  const metrics = accountMetrics();
+  const withMean = metrics.filter(m => m.mean !== null && m.mean !== undefined);
+  const average = withMean.length
+    ? withMean.reduce((sum, m) => sum + m.mean, 0) / withMean.length : null;
+  const peak = metrics.slice().sort((a, b) => (b.peak || 0) - (a.peak || 0))[0];
+  const pressure = metrics.slice().sort((a, b) => (b.latest || 0) - (a.latest || 0))[0];
+  const volatility = metrics.length
+    ? metrics.reduce((sum, m) => sum + (m.volatility || 0), 0) / metrics.length : 0;
   const stats = [
-    {k:'Accounts in view', v:String(accounts.size),
-     s:(summary.samples || 0) + ' samples'},
-    {k:'Average consumption', v:fmtPercent(summary.mean_percent),
-     s:'across the selected range'},
-    {k:'Peak', v:summary.peak ? fmtPercent(summary.peak.percent) : '—',
-     s:summary.peak ? summary.peak.label : 'no data in range'},
-    {k:'Latest', v:summary.latest ? fmtPercent(summary.latest.percent) : '—',
-     s:summary.latest ? summary.latest.label : 'no data in range'},
+    {k:'Accounts in view', v:String(accounts.size), s:samples + ' samples'},
+    {k:'Average consumption', v:fmtPercent(average), s:'across the selected range'},
+    {k:'Peak account', v:peak ? fmtPercent(peak.peak) : '—',
+     s:peak ? peak.label + ' · ' + peak.window : 'no data in range'},
+    {k:'Current pressure', v:pressure ? fmtPercent(pressure.latest) : '—',
+     s:pressure ? pressure.label + ' · volatility ' + fmtPercent(volatility) : 'no data in range'},
   ];
   document.getElementById('stats').innerHTML = stats.map(s =>
     '<div class="stat"><div class="k">' + esc(s.k) + '</div><div class="v">' + esc(s.v)
     + '</div><div class="s">' + esc(s.s) + '</div></div>').join('');
+}
+
+// ------------------------------------------------------------------ store + breakdown
+
+function renderStore(){
+  // What the store keeps and what this range is made of: the two facts a reader needs to know
+  // whether a flat line is the plan or the retention policy.
+  const node = document.getElementById('store-line');
+  if(!node) return;
+  const info = window.HISTORY_INFO || {};
+  const parts = [];
+  if(info.enabled){
+    if(info.sample_seconds) parts.push('sampled every ' + info.sample_seconds + 's');
+    if(info.raw_days) parts.push('raw ' + info.raw_days + 'd');
+    if(info.rollup_seconds && info.rollup_days){
+      parts.push(fmtInterval(info.rollup_seconds) + ' rollups kept ' + info.rollup_days + 'd');
+    }
+  }
+  const sources = state.data && state.data.sources;
+  if(sources){
+    const rows = (sources.raw_rows || 0) + (sources.rollup_rows || 0)
+               + (sources.balance_rows || 0) + (sources.balance_rollup_rows || 0);
+    parts.push('this range: ' + sources.resolution + ' · ' + rows + ' row' + (rows === 1 ? '' : 's'));
+  }
+  node.textContent = parts.join(' · ');
+}
+
+function renderBreakdown(){
+  // The one account's own windows, side by side: the trend draws them as lines, and this says what
+  // each one reads. Shown only when an account is chosen — with all accounts it would repeat the
+  // insight cards.
+  const panel = document.getElementById('breakdown-panel');
+  const host = document.getElementById('breakdown');
+  if(!panel || !host) return;
+  if(!state.account){ panel.hidden = true; host.innerHTML = ''; return; }
+  const windows = ((state.data && state.data.series) || []).filter(isWindow)
+    .filter(s => s.account_id === state.account);
+  panel.hidden = false;
+  if(!windows.length){
+    document.getElementById('breakdown-sub').textContent = '';
+    host.innerHTML = '<div class="empty">No windows published in this range.</div>';
+    return;
+  }
+  const dailyByKey = {};
+  ((state.daily && state.daily.series) || []).forEach(s => { dailyByKey[s.key] = s; });
+  const nowEpoch = state.data && state.data.now
+    ? Math.floor(new Date(state.data.now).getTime() / 1000) : Math.floor(Date.now() / 1000);
+  const resets = (state.data && state.data.resets) || [];
+  document.getElementById('breakdown-sub').textContent =
+    windows[0].account_label + ' · ' + windows.length + ' window' + (windows.length === 1 ? '' : 's');
+  host.innerHTML = windows.map(s => {
+    const color = seriesColor(s.key);
+    const values = (s.avg || []).filter(v => v !== null && v !== undefined);
+    const next = resets.filter(r => r.key === s.key).map(r => r.at)
+      .filter(at => at > nowEpoch).sort((a, b) => a - b)[0];
+    const daySeries = dailyByKey[s.key] || s;
+    const tiles = [
+      ['Latest', fmtPercent(s.latest ? s.latest.percent : null)],
+      ['Average', fmtPercent(s.mean)],
+      ['Peak', fmtPercent(s.peak)],
+      ['Volatility', fmtPercent(std(values))],
+    ];
+    return '<div class="insight"><div class="top">'
+      + badgeHtml(s.provider, s.window_label || s.window_key)
+      + '<span class="pill" style="background:' + color + '22;color:' + color + '">'
+      + (s.samples || 0) + ' samples</span></div>'
+      + '<div class="tiles">' + tiles.map(t => '<div class="tile"><span class="k">' + esc(t[0])
+        + '</span><span class="v">' + esc(t[1]) + '</span></div>').join('') + '</div>'
+      + sparkline(daySeries.avg || [], color)
+      + (next ? '<div class="note" style="margin-top:6px">Next reset ' + esc(fmtStamp(next, true)) + '</div>' : '')
+      + '</div>';
+  }).join('');
 }
 
 // ------------------------------------------------------------------ chart
@@ -460,6 +849,27 @@ function seriesSegments(s, span){
   return segments;
 }
 
+function projection(entry, bucket, nowEpoch){
+  // Least-squares slope over the buckets that carry a value; the cap date is where that line
+  // reaches 100. A falling or flat line has no date, and neither has one already at the cap.
+  const points = [];
+  (entry.avg || []).forEach((value, index) => {
+    if(value !== null && value !== undefined) points.push([index, value]);
+  });
+  if(points.length < 3 || !bucket) return null;
+  const n = points.length;
+  const sx = points.reduce((a, p) => a + p[0], 0), sy = points.reduce((a, p) => a + p[1], 0);
+  const sxx = points.reduce((a, p) => a + p[0] * p[0], 0), sxy = points.reduce((a, p) => a + p[0] * p[1], 0);
+  const denom = n * sxx - sx * sx;
+  if(!denom) return null;
+  const slope = (n * sxy - sx * sy) / denom;
+  const latest = points[points.length - 1][1];
+  if(slope <= 0 || latest >= 100) return null;
+  const seconds = ((100 - latest) / slope) * bucket;
+  if(!(seconds > 0) || seconds > 366 * 86400) return null;
+  return new Date((nowEpoch + seconds) * 1000);
+}
+
 function renderNote(){
   const note = document.getElementById('trend-note');
   if(!note) return;
@@ -469,13 +879,25 @@ function renderNote(){
   if(state.stale) parts.push('Not refreshed: ' + state.stale + '.');
   if(clipped && grid.length) parts.push('The range starts before this store does: drawn from '
     + fmtStamp(grid[clipped.first], true) + '.');
+  // Burn rate: the soonest cap crossing among the drawn windows, named with its date. It is a
+  // straight-line projection of the range's own slope, and it says so.
+  const nowEpoch = state.data && state.data.now
+    ? Math.floor(new Date(state.data.now).getTime() / 1000) : Math.floor(Date.now() / 1000);
+  const soonest = ((state.data && state.data.series) || []).filter(isWindow)
+    .filter(s => !state.isolate || s.key === state.isolate)
+    .map(entry => ({entry: entry, at: projection(entry, state.data ? state.data.bucket_seconds : 0, nowEpoch)}))
+    .filter(item => item.at)
+    .sort((a, b) => a.at - b.at)[0];
+  if(soonest) parts.push('On pace for the cap: ' + seriesLabel(soonest.entry) + ' by '
+    + soonest.at.toLocaleDateString([], {month: 'short', day: 'numeric'}) + '.');
   note.className = state.stale ? 'stale' : 'note';
   note.textContent = parts.join(' ');
 }
 
 function renderChart(){
   const host = document.getElementById('chart');
-  const series = (state.data && state.data.series) || [];
+  const series = ((state.data && state.data.series) || []).filter(isWindow)
+    .filter(s => !state.isolate || s.key === state.isolate);
   const grid = (state.data && state.data.t) || [];
   const bucket = state.data ? state.data.bucket_seconds : 0;
   document.getElementById('trend-title').textContent = 'Usage trend';
@@ -483,8 +905,7 @@ function renderChart(){
     ? (state.account ? 'Every window this account publishes' : primaryLabel() + ' window')
       + (bucket ? ' · ' + fmtInterval(bucket) + ' buckets' : '')
     : '';
-  const empty = '<div class="empty">No samples in this range yet. History starts with the first '
-    + 'successful poll after the layer was enabled.</div>';
+  const empty = '<div class="empty">' + noPercentMessage() + '</div>';
   const span = series.length && grid.length ? drawnSpan(series, grid) : {first:null, last:null};
   if(!series.length || !grid.length || span.first === null){
     host.innerHTML = empty;
@@ -510,7 +931,7 @@ function renderChart(){
   // line needs two of them and a lone sample drawn as a path is an invisible nothing.
   const sparse = count <= 40;
 
-  const fillId = key => 'fill-' + key.replace(/[^A-Za-z0-9_-]/g, '_');
+  const fillId = key => 'fill-' + key.replace(/[^A-Za-z0-9_-]/g, '_') + '-' + hashString(key);
   let svg = '<svg viewBox="0 0 ' + width + ' ' + height + '" preserveAspectRatio="none" role="img" '
     + 'aria-label="Usage over time, ' + esc(state.hours + ' hours') + '">';
   // AIMeter fills under each line with a vertical gradient of the line's own colour, so a line reads
@@ -529,6 +950,15 @@ function renderChart(){
       + 'stroke-width="1"' + (cap ? ' stroke-dasharray="4 3"' : '') + '/>';
     svg += '<text x="' + (pad.left - 8) + '" y="' + (pad.top + value + 3.5) + '" text-anchor="end" '
       + 'font-size="10" fill="#b7c2d6">' + percent + '%' + (cap ? ' cap' : '') + '</text>';
+  }
+  // The alert threshold, drawn and named: the 100% cap is already above, and a crossing of the
+  // configured line is the thing this page exists to make visible.
+  const alert = state.data ? state.data.alert_percent : null;
+  if(alert && alert > 0 && alert < 100){
+    svg += '<line x1="' + pad.left + '" y1="' + y(alert) + '" x2="' + (pad.left + plotW)
+      + '" y2="' + y(alert) + '" stroke="#f5c451" stroke-width="1" stroke-dasharray="5 4"/>';
+    svg += '<text x="' + (pad.left + plotW) + '" y="' + (y(alert) - 4) + '" text-anchor="end" '
+      + 'font-size="10" fill="#f5c451">' + esc(alert) + '% alert</text>';
   }
   const ticks = Math.min(6, count);
   for(let t = 0; t < ticks; t++){
@@ -570,6 +1000,23 @@ function renderChart(){
       }
     }
   }
+  // Reset markers: a vertical tick wherever a window reset in the range, so the sawtooth every
+  // quota window draws reads as a reset instead of as a fall.
+  const drawnKeys = {};
+  series.forEach(s => { drawnKeys[s.key] = true; });
+  const resetIndexes = {};
+  if(bucket){
+    ((state.data && state.data.resets) || []).forEach(reset => {
+      if(!drawnKeys[reset.key]) return;
+      const index = grid.indexOf(Math.floor(reset.at / bucket) * bucket);
+      if(index >= span.first && index <= span.last) resetIndexes[index] = true;
+    });
+  }
+  Object.keys(resetIndexes).forEach(index => {
+    svg += '<line x1="' + x(Number(index)) + '" y1="' + pad.top + '" x2="' + x(Number(index))
+      + '" y2="' + (pad.top + plotH) + '" stroke="#7aa2ff" stroke-width="1" '
+      + 'stroke-dasharray="2 4" opacity="0.55"/>';
+  });
   svg += '<line id="cursor" x1="0" y1="' + pad.top + '" x2="0" y2="' + (pad.top + plotH)
     + '" stroke="#5b8dff" stroke-width="1" stroke-dasharray="3 3" opacity="0"/>';
   svg += '<rect id="hit" x="' + pad.left + '" y="' + pad.top + '" width="' + plotW + '" height="'
@@ -580,6 +1027,7 @@ function renderChart(){
   document.getElementById('legend').innerHTML = series.map(s =>
     '<button type="button" data-key="' + esc(s.key) + '" class="'
     + (state.isolate && state.isolate !== s.key ? 'off' : '')
+    + '" aria-pressed="' + (state.isolate === s.key ? 'true' : 'false')
     + '" title="Click to show this one alone">'
     + '<span class="dot" style="background:' + lineColor(s.key) + '"></span>'
     + esc(seriesLabel(s)) + ' <span class="muted">'
@@ -589,7 +1037,9 @@ function renderChart(){
     node.addEventListener('click', () => {
       const key = node.getAttribute('data-key');
       state.isolate = state.isolate === key ? null : key;
-      load();
+      // Re-render from the payload already in hand: the request set did not change.
+      renderChart();
+      renderReadout(null);
     });
   }
   renderNote();
@@ -620,6 +1070,21 @@ function bindHover(pad, plotW, plotH, x, grid, span, count){
     cursor.setAttribute('opacity', '0');
     renderReadout(null);
   });
+  // The readout is the chart's data; a keyboard user has to reach it too.
+  hit.setAttribute('tabindex', '0');
+  hit.setAttribute('role', 'slider');
+  hit.setAttribute('aria-label', 'Time cursor: use the arrow keys to read a value');
+  let current = span.first;
+  hit.addEventListener('keydown', event => {
+    if(event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+    event.preventDefault();
+    current = Math.max(span.first, Math.min(span.last,
+      current + (event.key === 'ArrowRight' ? 1 : -1)));
+    cursor.setAttribute('x1', x(current));
+    cursor.setAttribute('x2', x(current));
+    cursor.setAttribute('opacity', '1');
+    renderReadout(current);
+  });
 }
 
 function renderReadout(index){
@@ -629,12 +1094,13 @@ function renderReadout(index){
     return;
   }
   const grid = state.data.t || [];
-  const series = state.data.series || [];
+  const series = (state.data.series || []).filter(isWindow)
+    .filter(s => !state.isolate || s.key === state.isolate);
   const parts = series.map(s => {
     const value = s.avg[index];
     return '<b style="color:' + lineColor(s.key) + '">' + esc(seriesLabel(s))
-      + '</b> ' + esc(fmtPercent(value)) + (s.n[index] ? ' <span class="muted">(' + s.n[index]
-      + ' sample' + (s.n[index] === 1 ? '' : 's') + ')</span>' : '');
+      + '</b> ' + esc(fmtPercent(value)) + (s.n[index] ? ' <span class="muted">(' + Number(s.n[index])
+      + ' sample' + (Number(s.n[index]) === 1 ? '' : 's') + ')</span>' : '');
   }).filter(Boolean);
   node.innerHTML = '<span class="muted">' + esc(fmtStamp(grid[index], true)) + '</span> · '
     + (parts.length ? parts.join(' · ') : 'no series in view');
@@ -653,20 +1119,18 @@ function heatPaint(value){
 }
 
 async function renderHeatmap(){
-  // A second request at a daily bucket instead of averaging the trend buckets here: the mean of a
-  // day is then computed once, by the code the suite covers, not by the page.
-  const days = Math.max(1, Math.round(state.hours / 24));
-  const params = ['days=' + days, 'bucket_seconds=86400', 'max_points=' + MAX_POINTS];
-  const {status, body} = await fetchJson('/api/history?' + paramsFor(heatKeys(), params));
+  // The daily means come from the daily fetch already in hand, computed once by the code the
+  // suite covers, not by averaging trend buckets here.
   const host = document.getElementById('heat');
-  if(status !== 200 || !body.series || !body.series.length){
-    host.innerHTML = '<div class="empty">No daily data yet.</div>';
+  const body = state.daily;
+  if(!body || !body.series || !body.series.length){
+    host.innerHTML = '<div class="empty">' + dailyEmpty() + '</div>';
     return;
   }
-  const series = body.series.filter(s => (s.n || []).some(count => count));
+  const series = body.series.filter(s => isWindow(s) && (s.n || []).some(count => count));
   const grid = body.t || [];
   if(!series.length){
-    host.innerHTML = '<div class="empty">No daily data yet.</div>';
+    host.innerHTML = '<div class="empty">' + dailyEmpty() + '</div>';
     return;
   }
   const column = 18;                       // px, the min width of a day: one day reads as a square
@@ -698,6 +1162,322 @@ async function renderHeatmap(){
     .map(percent => '<span class="sw" style="background:' + heatPaint(percent) + '"></span>').join('');
 }
 
+// ------------------------------------------------------------------ multi charts
+// Modelled on AIMeter's MultiCharts: a weekly bar comparison, a share-of-consumption donut, an
+// intensity/volatility scatter, a radar of per-account dimensions, and one insight card per
+// account. Hand-rolled SVG, like the trend above — this page vendors no chart library.
+
+function weekStart(epoch){
+  const d = new Date(epoch * 1000);
+  d.setHours(0, 0, 0, 0);
+  d.setDate(d.getDate() - d.getDay());
+  return Math.floor(d.getTime() / 1000);
+}
+
+function legendHtml(entries, panel){
+  const active = state.panels[panel];
+  return entries.map(e =>
+    '<button type="button" data-key="' + esc(e.key) + '" class="'
+    + (active && active !== e.key ? 'off' : '')
+    + '" aria-pressed="' + (active === e.key ? 'true' : 'false')
+    + '" title="Click to show this one alone">'
+    + '<span class="dot" style="background:' + e.color + '"></span>'
+    + badgeHtml(e.provider, e.label) + '</button>').join('');
+}
+
+function bindLegend(panel, rerender){
+  const host = document.getElementById(panel + '-legend');
+  if(!host) return;
+  for(const node of host.querySelectorAll('button')){
+    node.addEventListener('click', () => {
+      const key = node.getAttribute('data-key');
+      state.panels[panel] = state.panels[panel] === key ? null : key;
+      rerender();
+    });
+  }
+}
+
+function visibleMetrics(panel){
+  const metrics = accountMetrics();
+  const active = state.panels[panel];
+  return active ? metrics.filter(m => m.key === active) : metrics;
+}
+
+function radarMetrics(){
+  // One polygon per account. A money-only account has no percentage to plot, so it rides the
+  // radar on its Cost burn alone (0 elsewhere) rather than being dropped from the page.
+  const metrics = accountMetrics();
+  const seen = {};
+  metrics.forEach(m => { seen[m.account_id] = true; });
+  ((state.data && state.data.series) || []).filter(s => s.kind === 'balance').forEach(b => {
+    if(seen[b.account_id]) return;
+    if(state.account && b.account_id !== state.account) return;
+    seen[b.account_id] = true;
+    metrics.push({
+      key: b.key, account_id: b.account_id, provider: b.provider, label: b.account_label,
+      window: b.window_label || b.window_key, mean: null, peak: null, latest: null,
+      volatility: null, records: b.samples || 0, activeDays: 0,
+      costBurn: balanceBurn(b.account_id), balanceOnly: true, color: seriesColor(b.key),
+    });
+  });
+  return metrics.sort((a, b) => a.label.localeCompare(b.label));
+}
+
+function weeklyAggregate(){
+  const body = state.daily;
+  const metrics = visibleMetrics('weekly');
+  if(!body || !body.t || !body.t.length || !metrics.length) return {weeks: [], metrics: metrics};
+  const seriesByKey = {};
+  (body.series || []).forEach(s => { seriesByKey[s.key] = s; });
+  const weeks = new Map();
+  body.t.forEach((epoch, i) => {
+    const wk = weekStart(epoch);
+    if(!weeks.has(wk)) weeks.set(wk, {});
+    const cell = weeks.get(wk);
+    metrics.forEach(m => {
+      const source = seriesByKey[m.key];
+      if(!source) return;
+      const value = source.avg[i];
+      if(value === null || value === undefined) return;
+      const acc = cell[m.key] || (cell[m.key] = {sum: 0, count: 0});
+      acc.sum += value;
+      acc.count += 1;
+    });
+  });
+  return {weeks: [...weeks.keys()].sort((a, b) => a - b).map(wk => ({week: wk, cells: weeks.get(wk)})), metrics: metrics};
+}
+
+function renderWeekly(){
+  const host = document.getElementById('weekly');
+  const legend = document.getElementById('weekly-legend');
+  const {weeks, metrics} = weeklyAggregate();
+  if(!weeks.length){
+    host.innerHTML = '<div class="empty">' + dailyEmpty() + '</div>';
+    legend.innerHTML = '';
+    return;
+  }
+  const width = Math.max(360, host.clientWidth || 520), height = 210;
+  const pad = {left: 40, right: 8, top: 10, bottom: 22};
+  const plotW = width - pad.left - pad.right, plotH = height - pad.top - pad.bottom;
+  const groupW = plotW / weeks.length;
+  const barW = Math.max(0.5, Math.min(18, (groupW - 6) / Math.max(1, metrics.length)));
+  const y = value => pad.top + plotH - (Math.max(0, Math.min(value, 100)) / 100) * plotH;
+  let svg = '<svg viewBox="0 0 ' + width + ' ' + height + '" preserveAspectRatio="none" role="img" aria-label="Weekly comparison">';
+  for(let step = 0; step <= 4; step++){
+    const offset = plotH * step / 4, percent = 100 - step * 25;
+    svg += '<line x1="' + pad.left + '" y1="' + (pad.top + offset) + '" x2="' + (pad.left + plotW) + '" y2="' + (pad.top + offset) + '" stroke="#252c3b"/>';
+    svg += '<text class="axis" x="' + (pad.left - 6) + '" y="' + (pad.top + offset + 3) + '" text-anchor="end">' + percent + '%</text>';
+  }
+  weeks.forEach((entry, wi) => {
+    metrics.forEach((m, mi) => {
+      const acc = entry.cells[m.key];
+      if(!acc || !acc.count) return;
+      const value = acc.sum / acc.count, top = y(value);
+      const x = pad.left + wi * groupW + 3 + mi * barW;
+      svg += '<rect x="' + x.toFixed(1) + '" y="' + top.toFixed(1) + '" width="' + Math.max(1, barW - 1).toFixed(1)
+        + '" height="' + (pad.top + plotH - top).toFixed(1) + '" rx="2" fill="' + m.color + '"><title>'
+        + esc(m.label + ' · week of ' + fmtDay(entry.week) + ': ' + fmtPercent(value)) + '</title></rect>';
+    });
+    svg += '<text class="axis" x="' + (pad.left + wi * groupW + groupW / 2).toFixed(1) + '" y="'
+      + (height - 7) + '" text-anchor="middle">' + esc(fmtDay(entry.week)) + '</text>';
+  });
+  svg += '</svg>';
+  host.innerHTML = svg;
+  legend.innerHTML = legendHtml(metrics, 'weekly');
+  bindLegend('weekly', renderWeekly);
+}
+
+function renderDonut(){
+  const host = document.getElementById('donut');
+  const legend = document.getElementById('donut-legend');
+  const metrics = visibleMetrics('donut').filter(m => (m.mean || 0) > 0);
+  if(!metrics.length){
+    host.innerHTML = '<div class="empty">' + (balanceOnlyStore()
+      ? 'This account reports a money balance, not a percentage — see the account insights and radar panels.'
+      : 'No percentage data yet.') + '</div>';
+    legend.innerHTML = '';
+    return;
+  }
+  const width = Math.max(280, host.clientWidth || 420), height = 210;
+  const cx = width / 2, cy = height / 2;
+  const outer = Math.min(width, height) * 0.42, inner = outer * 0.62;
+  const R = (outer + inner) / 2, W = outer - inner, C = 2 * Math.PI * R;
+  const total = metrics.reduce((sum, m) => sum + Math.max(0, m.mean || 0), 0) || 1;
+  let offset = 0;
+  let svg = '<svg viewBox="0 0 ' + width + ' ' + height + '" role="img" aria-label="Share of consumption">';
+  metrics.forEach(m => {
+    const frac = Math.max(0, m.mean || 0) / total, len = frac * C;
+    svg += '<circle cx="' + cx + '" cy="' + cy + '" r="' + R.toFixed(1) + '" fill="none" stroke="'
+      + m.color + '" stroke-width="' + W.toFixed(1) + '" stroke-dasharray="' + len.toFixed(1) + ' '
+      + (C - len).toFixed(1) + '" stroke-dashoffset="' + (-offset).toFixed(1)
+      + '" transform="rotate(-90 ' + cx + ' ' + cy + ')"><title>'
+      + esc(m.label + ': ' + fmtPercent(m.mean) + ' (' + (frac * 100).toFixed(0) + '%)') + '</title></circle>';
+    offset += len;
+  });
+  let angle = -90;
+  metrics.forEach(m => {
+    const frac = Math.max(0, m.mean || 0) / total;
+    if(frac >= 0.06){
+      const mid = (angle + frac * 180) * Math.PI / 180;
+      svg += '<text x="' + (cx + Math.cos(mid) * R).toFixed(1) + '" y="' + (cy + Math.sin(mid) * R + 3).toFixed(1)
+        + '" text-anchor="middle" font-size="10" font-weight="600" fill="' + labelInk(m.color) + '">' + (frac * 100).toFixed(0) + '%</text>';
+    }
+    angle += frac * 360;
+  });
+  svg += '</svg>';
+  host.innerHTML = svg;
+  legend.innerHTML = legendHtml(metrics, 'donut');
+  bindLegend('donut', renderDonut);
+}
+
+function renderScatter(){
+  const host = document.getElementById('scatter');
+  const legend = document.getElementById('scatter-legend');
+  const metrics = visibleMetrics('scatter').filter(m => m.mean !== null && m.mean !== undefined);
+  if(!metrics.length){
+    host.innerHTML = '<div class="empty">' + (balanceOnlyStore()
+      ? 'This account reports a money balance, not a percentage — see the account insights and radar panels.'
+      : 'No data yet.') + '</div>';
+    if(legend) legend.innerHTML = '';
+    return;
+  }
+  const width = Math.max(320, host.clientWidth || 460), height = 210;
+  const pad = {left: 38, right: 12, top: 10, bottom: 24};
+  const plotW = width - pad.left - pad.right, plotH = height - pad.top - pad.bottom;
+  const x = value => pad.left + (Math.max(0, Math.min(value, 100)) / 100) * plotW;
+  const y = value => pad.top + plotH - (Math.max(0, Math.min(value, 100)) / 100) * plotH;
+  let svg = '<svg viewBox="0 0 ' + width + ' ' + height + '" role="img" aria-label="Intensity versus volatility">';
+  for(let step = 0; step <= 4; step++){
+    const gx = pad.left + plotW * step / 4, gy = pad.top + plotH * step / 4;
+    svg += '<line x1="' + gx + '" y1="' + pad.top + '" x2="' + gx + '" y2="' + (pad.top + plotH) + '" stroke="#252c3b"/>';
+    svg += '<line x1="' + pad.left + '" y1="' + gy + '" x2="' + (pad.left + plotW) + '" y2="' + gy + '" stroke="#252c3b"/>';
+    svg += '<text class="axis" x="' + gx + '" y="' + (height - 8) + '" text-anchor="middle">' + (step * 25) + '%</text>';
+    svg += '<text class="axis" x="' + (pad.left - 5) + '" y="' + (gy + 3) + '" text-anchor="end">' + (100 - step * 25) + '%</text>';
+  }
+  metrics.forEach(m => {
+    const radius = 4 + Math.min(12, m.activeDays || 0);
+    svg += '<circle cx="' + x(m.mean).toFixed(1) + '" cy="' + y(m.volatility || 0).toFixed(1) + '" r="' + radius
+      + '" fill="' + m.color + '" fill-opacity="0.75" stroke="' + m.color + '"><title>'
+      + esc(m.label + ' — average ' + fmtPercent(m.mean) + ', volatility ' + fmtPercent(m.volatility || 0)
+            + ', ' + (m.activeDays || 0) + ' active days') + '</title></circle>';
+  });
+  svg += '</svg>';
+  host.innerHTML = svg;
+  if(legend){
+    legend.innerHTML = legendHtml(metrics, 'scatter');
+    bindLegend('scatter', renderScatter);
+  }
+}
+
+function renderRadar(){
+  const host = document.getElementById('radar');
+  const note = document.getElementById('radar-note');
+  const all = radarMetrics();
+  const active = state.panels.radar;
+  const metrics = active ? all.filter(m => m.key === active) : all;
+  if(!metrics.length){
+    host.innerHTML = '<div class="empty">No data yet.</div>';
+    note.textContent = '';
+    return;
+  }
+  const width = Math.max(300, host.clientWidth || 420), height = 210;
+  const cx = width / 2, cy = height / 2, R = Math.min(width, height) * 0.36;
+  const dims = [
+    {label: 'Average', value: m => m.mean || 0},
+    {label: 'Latest', value: m => m.latest || 0},
+    {label: 'Peak', value: m => m.peak || 0},
+    {label: 'Volatility', value: m => m.volatility || 0},
+    {label: 'Cost burn', value: m => m.costBurn || 0},
+  ];
+  const angle = i => (-90 + i * 360 / dims.length) * Math.PI / 180;
+  let svg = '<svg viewBox="0 0 ' + width + ' ' + height + '" role="img" aria-label="Radar matrix">';
+  for(let ring = 1; ring <= 4; ring++){
+    const rr = R * ring / 4;
+    const pts = dims.map((d, i) => (cx + Math.cos(angle(i)) * rr).toFixed(1) + ',' + (cy + Math.sin(angle(i)) * rr).toFixed(1)).join(' ');
+    svg += '<polygon points="' + pts + '" fill="none" stroke="#252c3b"/>';
+  }
+  dims.forEach((d, i) => {
+    const ex = cx + Math.cos(angle(i)) * R, ey = cy + Math.sin(angle(i)) * R;
+    svg += '<line x1="' + cx + '" y1="' + cy + '" x2="' + ex.toFixed(1) + '" y2="' + ey.toFixed(1) + '" stroke="#252c3b"/>';
+    const lx = cx + Math.cos(angle(i)) * (R + 16), ly = cy + Math.sin(angle(i)) * (R + 16);
+    svg += '<text class="axis" x="' + lx.toFixed(1) + '" y="' + (ly + 3).toFixed(1) + '" text-anchor="middle">' + esc(d.label) + '</text>';
+  });
+  metrics.forEach(m => {
+    const pts = dims.map((d, i) => {
+      const value = Math.max(0, Math.min(100, d.value(m)));
+      return (cx + Math.cos(angle(i)) * R * value / 100).toFixed(1) + ',' + (cy + Math.sin(angle(i)) * R * value / 100).toFixed(1);
+    }).join(' ');
+    svg += '<polygon points="' + pts + '" fill="' + m.color + '" fill-opacity="0.16" stroke="' + m.color
+      + '" stroke-width="1.4"><title>' + esc(m.label) + '</title></polygon>';
+  });
+  svg += '</svg>';
+  host.innerHTML = svg;
+  const hasBalance = metrics.some(m => m.costBurn !== null && m.costBurn !== undefined);
+  note.textContent = hasBalance
+    ? 'Cost burn is the drawdown from each account’s own peak balance in range; an account with no balance record shows 0.'
+    : 'Cost burn needs a recorded balance — none in this range yet.';
+}
+
+function sparkline(values, color){
+  const points = [];
+  values.forEach((value, index) => { if(value !== null && value !== undefined) points.push([index, value]); });
+  if(points.length < 2) return '<div class="empty" style="font-size:11px;padding:8px 0">not enough data</div>';
+  const w = 260, h = 44;
+  const max = Math.max.apply(null, points.map(p => p[1])), min = Math.min.apply(null, points.map(p => p[1]));
+  const span = (max - min) || 1;
+  const x = index => (index / Math.max(1, values.length - 1)) * w;
+  const y = value => h - 4 - ((value - min) / span) * (h - 8);
+  // A gap breaks the path, the way the trend breaks its own: a straight segment across missing
+  // days would draw data that was never recorded.
+  let d = '';
+  let previous = null;
+  points.forEach(p => {
+    d += (!previous || p[0] !== previous + 1 ? 'M' : 'L') + x(p[0]).toFixed(1) + ' ' + y(p[1]).toFixed(1);
+    previous = p[0];
+  });
+  return '<svg class="spark" viewBox="0 0 ' + w + ' ' + h + '" preserveAspectRatio="none"><path d="' + d
+    + '" fill="none" stroke="' + color + '" stroke-width="1.8"/></svg>';
+}
+
+function renderInsights(){
+  const host = document.getElementById('insights');
+  const metrics = radarMetrics();
+  if(!metrics.length){
+    host.innerHTML = '<div class="empty">No data yet.</div>';
+    return;
+  }
+  const dailyByKey = {};
+  ((state.daily && state.daily.series) || []).forEach(s => { dailyByKey[s.key] = s; });
+  host.innerHTML = metrics.map(m => {
+    let tiles, spark;
+    if(m.balanceOnly){
+      const bal = primaryBalanceFor(m.account_id);
+      tiles = [
+        ['Balance', bal && bal.latest ? fmtMoney(bal.latest.percent, bal.currency) : '—'],
+        ['Burn', m.costBurn === null || m.costBurn === undefined ? '—' : fmtPercent(m.costBurn)],
+        ['Days', String(m.activeDays || 0)],
+        ['Records', String(m.records || 0)],
+      ];
+      spark = sparkline(bal ? (bal.avg || []) : [], m.color);
+    }else{
+      tiles = [
+        ['Average', fmtPercent(m.mean)],
+        ['Latest', fmtPercent(m.latest)],
+        ['Peak', fmtPercent(m.peak)],
+        ['Volatility', fmtPercent(m.volatility)],
+      ];
+      const daySeries = dailyByKey[m.key] || entryFor(m.key) || {};
+      spark = sparkline(daySeries.avg || [], m.color);
+    }
+    return '<div class="insight"><div class="top">' + badgeHtml(m.provider, m.label)
+      + '<span class="pill" style="background:' + m.color + '22;color:' + m.color + '">'
+      + (m.records || 0) + ' records</span></div>'
+      + '<div class="tiles">' + tiles.map(t => '<div class="tile"><span class="k">' + esc(t[0])
+        + '</span><span class="v">' + esc(t[1]) + '</span></div>').join('') + '</div>'
+      + spark + '</div>';
+  }).join('');
+}
+
 // ------------------------------------------------------------------ wiring
 
 document.getElementById('account-select').addEventListener('change', e => {
@@ -716,7 +1496,14 @@ document.getElementById('bucket-select').addEventListener('change', e => {
 let resizeTimer = null;
 window.addEventListener('resize', () => {
   clearTimeout(resizeTimer);
-  resizeTimer = setTimeout(() => { if(state.data) renderChart(); }, 180);
+  resizeTimer = setTimeout(() => {
+    if(!state.data) return;
+    renderChart();
+    renderWeekly();
+    renderDonut();
+    renderScatter();
+    renderRadar();
+  }, 180);
 });
 
 // The live panel's history block tells the page what it is looking at before the first fetch:
@@ -735,5 +1522,9 @@ window.addEventListener('resize', () => {
   setInterval(load, REFRESH_MS);
 })();
 </script>
+<a class="kofi" href="https://ko-fi.com/realAbitbol" target="_blank" rel="noopener noreferrer" aria-label="Support this project on Ko-fi">
+  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>
+  <span>Support</span>
+</a>
 </body>
 </html>

@@ -35,6 +35,7 @@ panel from serving.
 import json
 import os
 import sqlite3
+import urllib.parse
 from datetime import datetime, timezone
 
 TS_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
@@ -47,6 +48,14 @@ DEFAULTS = {
     "raw_days": 90,
     "rollup_days": 365,
     "rollup_seconds": 900,
+    # A crossing alert: post once when a window's percent crosses `alert_percent` from below.
+    # `alert_url` empty means no webhook, which is the default — the layer stays self-contained.
+    "alert_percent": 80,
+    "alert_url": "",
+    # Delivery is retried `alert_retries` times with an exponential backoff that starts at
+    # `alert_backoff_seconds`. A webhook that is down costs a log line, never a poll.
+    "alert_retries": 3,
+    "alert_backoff_seconds": 1,
 }
 # sample_seconds bottoms out at 5 rather than 60 so the suite can exercise the sampling
 # gate on a real boot in seconds; a value that low is a choice, not a mistake to block.
@@ -55,6 +64,9 @@ BOUNDS = {
     "raw_days": (1, 3650),
     "rollup_days": (1, 3650),
     "rollup_seconds": (60, 86400),
+    "alert_percent": (1, 100),
+    "alert_retries": (0, 10),
+    "alert_backoff_seconds": (1, 60),
 }
 ENV = {
     "enabled": "QUOTA_HISTORY_ENABLED",
@@ -63,6 +75,10 @@ ENV = {
     "raw_days": "QUOTA_RETENTION_RAW_DAYS",
     "rollup_days": "QUOTA_RETENTION_ROLLUP_DAYS",
     "rollup_seconds": "QUOTA_ROLLUP_SECONDS",
+    "alert_percent": "QUOTA_HISTORY_ALERT_PERCENT",
+    "alert_url": "QUOTA_HISTORY_ALERT_URL",
+    "alert_retries": "QUOTA_HISTORY_ALERT_RETRIES",
+    "alert_backoff_seconds": "QUOTA_HISTORY_ALERT_BACKOFF_SECONDS",
 }
 TRUTHY = ("1", "true", "yes", "on")
 FALSY = ("0", "false", "no", "off", "")
@@ -105,10 +121,55 @@ CREATE TABLE IF NOT EXISTS series (
   account_label TEXT,
   provider TEXT,
   window_label TEXT,
+  kind TEXT,                 -- 'window' (a percentage) or 'balance' (a money amount)
   first_ts TEXT,
   last_ts TEXT,
   PRIMARY KEY (account_id, window_key)
 );
+
+-- Money balances are their own record: `snapshots.percent` is NOT NULL and a balance has no
+-- cap to divide by, so folding it in would mean either inventing a percentage or rebuilding
+-- the table. A balance is stored as the provider reported it — an amount in a currency.
+CREATE TABLE IF NOT EXISTS balances (
+  ts TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  provider TEXT NOT NULL,
+  window_key TEXT NOT NULL,
+  amount REAL NOT NULL,
+  currency TEXT,
+  resets_at TEXT
+);
+CREATE INDEX IF NOT EXISTS balances_ts ON balances(ts);
+CREATE INDEX IF NOT EXISTS balances_series ON balances(account_id, window_key, ts);
+
+CREATE TABLE IF NOT EXISTS balance_rollups (
+  bucket_ts TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  window_key TEXT NOT NULL,
+  n INTEGER NOT NULL,
+  amt_sum REAL NOT NULL,
+  amt_min REAL NOT NULL,
+  amt_max REAL NOT NULL,
+  currency TEXT,
+  PRIMARY KEY (bucket_ts, account_id, window_key)
+);
+CREATE INDEX IF NOT EXISTS balance_rollups_bucket ON balance_rollups(bucket_ts);
+
+CREATE TABLE IF NOT EXISTS alerts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  at TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  window_key TEXT NOT NULL,
+  label TEXT,
+  previous REAL,
+  percent REAL,
+  threshold INTEGER,
+  status TEXT NOT NULL,          -- pending | delivered | failed | logged
+  attempts INTEGER NOT NULL DEFAULT 0,
+  delivered_at TEXT,
+  last_error TEXT
+);
+CREATE INDEX IF NOT EXISTS alerts_status ON alerts(status);
 
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 """
@@ -184,6 +245,11 @@ def load_config(config_path=None, env=None):
                 parsed = value if isinstance(value, str) and value.strip() else None
                 if parsed is None:
                     notes.append("%s.path must be a non-empty string — ignored" % source)
+            elif key == "alert_url":
+                # An empty URL is how the webhook is turned off, so "" is a value, not a typo.
+                parsed = value.strip() if isinstance(value, str) else None
+                if parsed is None:
+                    notes.append("%s.alert_url must be a string — ignored" % source)
             else:
                 parsed = as_int(value, key, "%s.%s" % (source, key))
             if parsed is not None:
@@ -250,7 +316,13 @@ def _journal_room(path):
     directory = os.path.dirname(os.path.abspath(path)) or "."
     probe = os.path.join(directory, ".quota-history-journal-probe")
     try:
+        os.unlink(probe)              # a probe left by a crash is not evidence of anything
+    except OSError:
+        pass
+    try:
         handle = os.open(probe, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    except FileExistsError:
+        return ""                     # racing another writer's probe means the directory is writable
     except OSError as exc:
         return (" — a write test in %s failed (%s), so sqlite cannot create its journal beside the "
                 "database: mount a directory there rather than a single file, and let the "
@@ -271,7 +343,8 @@ def connect(path, read_only=False):
     sqlite3 connection is not shareable across threads by default.
     """
     directory = os.path.dirname(os.path.abspath(path))
-    if any(directory.startswith(prefix) for prefix in NETWORK_MOUNT_PREFIXES):
+    if any(directory == prefix.rstrip("/") or directory.startswith(prefix)
+           for prefix in NETWORK_MOUNT_PREFIXES):
         raise HistoryError(
             "history path %s sits under a network mount, where sqlite cannot lock safely "
             "(CIFS/NFS) — keep the database on a local volume" % path
@@ -284,17 +357,47 @@ def connect(path, read_only=False):
         except OSError as exc:
             raise HistoryError("cannot create the history directory %s (%s)" % (directory, exc))
     try:
-        conn = sqlite3.connect(path, timeout=5.0)
+        if read_only:
+            # A true read-only handle where the filesystem allows it. A WAL database needs a
+            # writable -shm beside it, so this can legitimately fail; the fallback keeps the read
+            # working and `query_only` keeps that fallback write-proof too.
+            conn = sqlite3.connect("file:%s?mode=ro" % urllib.parse.quote(os.path.abspath(path)),
+                                   uri=True, timeout=5.0)
+        else:
+            conn = sqlite3.connect(path, timeout=5.0)
     except sqlite3.Error as exc:
-        raise HistoryError("cannot open the history database at %s (%s)%s"
-                           % (path, exc, _journal_room(path)))
+        if not read_only:
+            raise HistoryError("cannot open the history database at %s (%s)%s"
+                               % (path, exc, _journal_room(path)))
+        try:
+            conn = sqlite3.connect(path, timeout=5.0)
+        except sqlite3.Error as exc2:
+            raise HistoryError("cannot open the history database at %s (%s)%s"
+                               % (path, exc2, _journal_room(path)))
     conn.row_factory = sqlite3.Row
+    if read_only:
+        # `read_only=True` used to mean only "skip schema creation" — the connection could still
+        # write. `mode=ro` above is the real thing when it opens; `query_only` makes the fallback
+        # write-proof as well.
+        try:
+            conn.execute("PRAGMA query_only=ON")
+        except sqlite3.Error:
+            pass
     if not read_only:
         try:
             # WAL keeps a reader asking for a range off the writer's back.
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA synchronous=NORMAL")
             conn.executescript(SCHEMA)
+            # A store created before `kind` existed keeps its old `series` shape: CREATE TABLE
+            # IF NOT EXISTS never alters one. Add the column in place so an upgrade needs no
+            # rebuild; a missing value reads as 'window'.
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(series)")}
+            if "kind" not in columns:
+                conn.execute("ALTER TABLE series ADD COLUMN kind TEXT")
+            balance_columns = {row[1] for row in conn.execute("PRAGMA table_info(balance_rollups)")}
+            if "currency" not in balance_columns:
+                conn.execute("ALTER TABLE balance_rollups ADD COLUMN currency TEXT")
             conn.commit()
         except sqlite3.Error as exc:
             conn.close()
@@ -343,8 +446,16 @@ _LAST_SAMPLE = {}
 def _last_sample_epoch(conn, path, account_id):
     key = (path, account_id)
     if key not in _LAST_SAMPLE:
-        row = conn.execute("SELECT MAX(ts) FROM snapshots WHERE account_id = ?", (account_id,)).fetchone()
-        _LAST_SAMPLE[key] = iso_to_epoch(row[0]) if row and row[0] else None
+        # A balance-only account has no snapshots; reading the gate from snapshots alone would
+        # re-sample it on every restart.
+        newest = None
+        for table in ("snapshots", "balances"):
+            row = conn.execute("SELECT MAX(ts) FROM %s WHERE account_id = ?" % table,
+                               (account_id,)).fetchone()
+            epoch = iso_to_epoch(row[0]) if row and row[0] else None
+            if epoch is not None and (newest is None or epoch > newest):
+                newest = epoch
+        _LAST_SAMPLE[key] = newest
     return _LAST_SAMPLE[key]
 
 
@@ -352,13 +463,20 @@ def record(results, config, now_ts=None):
     """Store one sample per account whose poll succeeded, then maintain the store.
 
     `results` is app.py's account list. Only `state == "ok"` accounts are stored, so an
-    outage reads as a gap in the series instead of as a zero.
+    outage reads as a gap in the series instead of as a zero. A `window` is stored as a
+    percentage; a `balance` is stored as the money amount the provider reported, in its own
+    table, because a balance has no cap to divide by.
+
+    A crossing of `alert_percent` (previous below, current at or above) is reported under
+    `alerts`. Posting it is the caller's job, so this module never touches the network.
     """
     if not config.get("enabled"):
         return {"written": 0, "skipped": 0, "reason": "history is disabled"}
     now_ts = now_epoch() if now_ts is None else int(now_ts)
     path = config["path"]
+    threshold = config.get("alert_percent")
     written = skipped = 0
+    alerts = []
     conn = connect(path)
     try:
         for account in results:
@@ -372,36 +490,74 @@ def record(results, config, now_ts=None):
                 continue
             stamp = epoch_to_iso(now_ts)
             rows = []
+            balance_rows = []
             for window in account.get("windows") or []:
-                if (window.get("kind") or "window") != "window":
-                    continue                      # a balance has no percentage to trend
+                window_key = window.get("key") or "window"
+                if (window.get("kind") or "window") == "balance":
+                    amount = _number(window.get("amount"))
+                    if amount is None:
+                        continue                      # unreadable is not zero
+                    balance_rows.append(
+                        (stamp, account_id, account.get("provider") or "", window_key, amount,
+                         window.get("currency"), window.get("resets_at"))
+                    )
+                    continue
                 percent = _number(window.get("percent"))
                 if percent is None:
-                    continue                      # unreadable is not zero
+                    continue                          # unreadable is not zero
+                if threshold is not None:
+                    previous = _previous_percent(conn, account_id, window_key)
+                    if previous is not None and previous < threshold <= percent:
+                        label = "%s · %s" % (account.get("label") or account_id,
+                                             window.get("label") or window_key)
+                        cursor = conn.execute(
+                            "INSERT INTO alerts (at, account_id, window_key, label, previous, "
+                            "percent, threshold, status) VALUES (?,?,?,?,?,?,?, 'pending')",
+                            (stamp, account_id, window_key, label, round(previous, 2),
+                             round(percent, 2), threshold),
+                        )
+                        alerts.append({
+                            "id": cursor.lastrowid,
+                            "account_id": account_id,
+                            "window_key": window_key,
+                            "label": label,
+                            "previous": round(previous, 2),
+                            "percent": round(percent, 2),
+                            "threshold": threshold,
+                            "at": stamp,
+                        })
                 rows.append(
                     (
                         stamp,
                         account_id,
                         account.get("provider") or "",
-                        window.get("key") or "window",
+                        window_key,
                         percent,
                         _number(window.get("used")),
                         _number(window.get("cap")),
                         window.get("resets_at"),
                     )
                 )
-            if not rows:
+            if not rows and not balance_rows:
                 skipped += 1
                 continue
-            conn.executemany(
-                "INSERT INTO snapshots (ts, account_id, provider, window_key, percent, used, cap, "
-                "resets_at) VALUES (?,?,?,?,?,?,?,?)",
-                rows,
-            )
-            for row in rows:
+            if rows:
+                conn.executemany(
+                    "INSERT INTO snapshots (ts, account_id, provider, window_key, percent, used, cap, "
+                    "resets_at) VALUES (?,?,?,?,?,?,?,?)",
+                    rows,
+                )
+            if balance_rows:
+                conn.executemany(
+                    "INSERT INTO balances (ts, account_id, provider, window_key, amount, currency, "
+                    "resets_at) VALUES (?,?,?,?,?,?,?)",
+                    balance_rows,
+                )
+            tracked = [(row, "window") for row in rows] + [(row, "balance") for row in balance_rows]
+            for row, kind in tracked:
                 conn.execute(
                     "INSERT OR REPLACE INTO series (account_id, window_key, account_label, provider, "
-                    "window_label, first_ts, last_ts) VALUES (?,?,?,?,?,"
+                    "window_label, kind, first_ts, last_ts) VALUES (?,?,?,?,?,?,"
                     "COALESCE((SELECT first_ts FROM series WHERE account_id = ? AND window_key = ?), ?), ?)",
                     (
                         account_id,
@@ -409,6 +565,7 @@ def record(results, config, now_ts=None):
                         account.get("label"),
                         account.get("provider"),
                         _window_label(account, row[3]),
+                        kind,
                         account_id,
                         row[3],
                         row[0],
@@ -421,8 +578,31 @@ def record(results, config, now_ts=None):
         report = maintain(conn, config, now_ts=now_ts)
     finally:
         conn.close()
-    report.update({"written": written, "skipped": skipped})
+    report.update({"written": written, "skipped": skipped, "alerts": alerts})
     return report
+
+
+def _previous_percent(conn, account_id, window_key):
+    """The newest stored percent for a series, or None when it has no history yet.
+
+    A crossing is detected against the last reading, and the last reading is not always a raw
+    row: once `raw_days` passes, only the rollup survives. Its bucket peak is the strongest
+    stand-in — a peak already at or above the threshold means the crossing happened, and a peak
+    below it is a last value below it.
+    """
+    row = conn.execute(
+        "SELECT percent FROM snapshots WHERE account_id = ? AND window_key = ? "
+        "ORDER BY ts DESC LIMIT 1",
+        (account_id, window_key),
+    ).fetchone()
+    if row is not None:
+        return row[0]
+    row = conn.execute(
+        "SELECT pct_max FROM rollups WHERE account_id = ? AND window_key = ? "
+        "ORDER BY bucket_ts DESC LIMIT 1",
+        (account_id, window_key),
+    ).fetchone()
+    return row[0] if row else None
 
 
 def _window_label(account, window_key):
@@ -436,16 +616,34 @@ def maintain(conn, config, now_ts=None):
     """Roll complete buckets up, prune what the rollups cover, then report.
 
     Ordered so no raw row is ever deleted before its bucket exists: the rollup pass runs
-    first, and the prune only touches rows whose (account, window, bucket) is present.
+    first, and the prune only touches rows whose (account, window, bucket) is present. Money
+    balances roll up the same way into their own tables, so a balance outlives the raw window.
     """
     now_ts = now_epoch() if now_ts is None else int(now_ts)
     rollup_seconds = config["rollup_seconds"]
-    report = {"rollup_rows": 0, "raw_deleted": 0, "rollup_deleted": 0, "raw_kept_unrolled": 0}
+    report = {
+        "rollup_rows": 0,
+        "raw_deleted": 0,
+        "rollup_deleted": 0,
+        "raw_kept_unrolled": 0,
+        "balance_rollup_rows": 0,
+        "balance_raw_deleted": 0,
+        "balance_rollup_deleted": 0,
+        "malformed": 0,
+        "balance_kept_unrolled": 0,
+        "alerts_deleted": 0,
+    }
 
     frontier = iso_to_epoch(_meta_get(conn, "rollup_frontier"))
     if frontier is None:
-        oldest = conn.execute("SELECT MIN(ts) FROM snapshots").fetchone()
-        frontier = iso_to_epoch(oldest[0]) if oldest and oldest[0] else None
+        # The oldest row in either table: an install with only money balances has no snapshots,
+        # and a frontier read from snapshots alone would never roll its balances up.
+        oldest = []
+        for table in ("snapshots", "balances"):
+            row = conn.execute("SELECT MIN(ts) FROM %s" % table).fetchone()
+            if row and row[0]:
+                oldest.append(row[0])
+        frontier = min(iso_to_epoch(stamp) for stamp in oldest) if oldest else None
     complete = bucket_of(now_ts, rollup_seconds)     # buckets strictly before this are closed
     if frontier is not None and frontier < complete:
         buckets = {}
@@ -455,7 +653,7 @@ def maintain(conn, config, now_ts=None):
         ):
             epoch = iso_to_epoch(row["ts"])
             if epoch is None:
-                report["raw_kept_unrolled"] += 1     # a malformed stamp is not rolled up
+                report["malformed"] += 1             # a malformed stamp is not rolled up
                 continue
             key = (bucket_of(epoch, rollup_seconds), row["account_id"], row["window_key"])
             entry = buckets.setdefault(key, [0, 0.0, None, None])
@@ -470,11 +668,42 @@ def maintain(conn, config, now_ts=None):
                 (epoch_to_iso(bucket), account_id, window_key, n, total, low, high),
             )
         report["rollup_rows"] = len(buckets)
+
+        balance_buckets = {}
+        for row in conn.execute(
+            "SELECT ts, account_id, window_key, amount, currency FROM balances "
+            "WHERE ts >= ? AND ts < ?",
+            (epoch_to_iso(frontier), epoch_to_iso(complete)),
+        ):
+            epoch = iso_to_epoch(row["ts"])
+            if epoch is None:
+                report["malformed"] += 1
+                continue
+            key = (bucket_of(epoch, rollup_seconds), row["account_id"], row["window_key"])
+            entry = balance_buckets.setdefault(key, [0, 0.0, None, None, None])
+            entry[0] += 1
+            entry[1] += row["amount"]
+            entry[2] = row["amount"] if entry[2] is None else min(entry[2], row["amount"])
+            entry[3] = row["amount"] if entry[3] is None else max(entry[3], row["amount"])
+            if row["currency"]:
+                entry[4] = row["currency"]
+        for (bucket, account_id, window_key), (n, total, low, high, currency) in balance_buckets.items():
+            conn.execute(
+                "INSERT OR REPLACE INTO balance_rollups (bucket_ts, account_id, window_key, n, "
+                "amt_sum, amt_min, amt_max, currency) VALUES (?,?,?,?,?,?,?,?)",
+                (epoch_to_iso(bucket), account_id, window_key, n, total, low, high, currency),
+            )
+        report["balance_rollup_rows"] = len(balance_buckets)
+
         _meta_set(conn, "rollup_frontier", epoch_to_iso(complete))
         conn.commit()
 
-    # Pruning walks old rows, so it runs at the rollup cadence at most. The cutoff is the
-    # raw window; the guard is whether the row's bucket exists in `rollups`.
+    # Pruning walks old rows, so it runs at the rollup cadence at most. The cutoff is the raw
+    # window, but the unit of deletion is the ROLLUP BUCKET, not the row: a bucket that straddles
+    # the cutoff must lose every raw row at once, or the survivors would shadow the bucket's
+    # complete rollup in payload and the cell would undercount. The scan reaches one bucket past
+    # the cutoff so it can see a straddling bucket's post-cutoff rows; the guard keeps rows in
+    # buckets that have no rollup.
     last_prune = iso_to_epoch(_meta_get(conn, "pruned_at"))
     if last_prune is None or now_ts - last_prune >= rollup_seconds:
         cutoff = now_ts - int(config["raw_days"]) * 86400
@@ -488,7 +717,7 @@ def maintain(conn, config, now_ts=None):
         doomed, kept = [], 0
         for row in conn.execute(
             "SELECT rowid, ts, account_id, window_key FROM snapshots WHERE ts < ?",
-            (epoch_to_iso(cutoff),),
+            (epoch_to_iso(cutoff + rollup_seconds),),
         ):
             epoch = iso_to_epoch(row["ts"])
             if epoch is None:
@@ -503,8 +732,42 @@ def maintain(conn, config, now_ts=None):
             conn.executemany("DELETE FROM snapshots WHERE rowid = ?", doomed)
         report["raw_deleted"] = len(doomed)
         report["raw_kept_unrolled"] = kept
+
+        balance_covered = {
+            (row["account_id"], row["window_key"], row["bucket_ts"])
+            for row in conn.execute(
+                "SELECT account_id, window_key, bucket_ts FROM balance_rollups WHERE bucket_ts < ?",
+                (epoch_to_iso(cutoff),),
+            )
+        }
+        balance_doomed = []
+        balance_kept = 0
+        for row in conn.execute(
+            "SELECT rowid, ts, account_id, window_key FROM balances WHERE ts < ?",
+            (epoch_to_iso(cutoff + rollup_seconds),),
+        ):
+            epoch = iso_to_epoch(row["ts"])
+            if epoch is None:
+                balance_kept += 1
+                continue
+            key = (row["account_id"], row["window_key"], epoch_to_iso(bucket_of(epoch, rollup_seconds)))
+            if key in balance_covered:
+                balance_doomed.append((row["rowid"],))
+            else:
+                balance_kept += 1
+        if balance_doomed:
+            conn.executemany("DELETE FROM balances WHERE rowid = ?", balance_doomed)
+        report["balance_raw_deleted"] = len(balance_doomed)
+        report["balance_kept_unrolled"] = balance_kept
+
         cursor = conn.execute("DELETE FROM rollups WHERE bucket_ts < ?", (epoch_to_iso(now_ts - int(config["rollup_days"]) * 86400),))
         report["rollup_deleted"] = max(0, cursor.rowcount or 0)
+        balance_cursor = conn.execute("DELETE FROM balance_rollups WHERE bucket_ts < ?", (epoch_to_iso(now_ts - int(config["rollup_days"]) * 86400),))
+        report["balance_rollup_deleted"] = max(0, balance_cursor.rowcount or 0)
+        # The alert log rides the rollup retention: a crossing older than the store's own history
+        # is not a record anyone can act on.
+        alerts_cursor = conn.execute("DELETE FROM alerts WHERE at < ?", (epoch_to_iso(now_ts - int(config["rollup_days"]) * 86400),))
+        report["alerts_deleted"] = max(0, alerts_cursor.rowcount or 0)
         _meta_set(conn, "pruned_at", now_ts)
         conn.commit()
     return report
@@ -512,8 +775,16 @@ def maintain(conn, config, now_ts=None):
 
 # ----------------------------------------------------------------------------- read
 
-def pick_bucket(span_seconds, max_points):
+def pick_bucket(span_seconds, max_points, floor=60):
+    """The finest ladder step at or above `floor` whose point count fits the range.
+
+    `floor` is the coarsest grid the store actually holds for this range — the sampling cadence
+    while raw rows exist, the rollup cadence once they do not — so an automatic bucket never
+    lands between two stored rows and leaves alternating empty cells.
+    """
     for step in BUCKET_LADDER:
+        if step < floor:
+            continue
         if span_seconds <= step * max_points:
             return step
     return BUCKET_LADDER[-1]
@@ -567,7 +838,10 @@ def resolve_range(params, now_ts):
 def payload(params, config, now_ts=None):
     """The merged raw+rollup grid: one aligned time axis, one array per series per metric.
 
-    A bucket with no data is `null` in every metric array, so a gap is drawn as a gap.
+    A bucket with no data is `null` in every metric array, so a gap is drawn as a gap. A money
+    balance is served as its own `kind` — `avg`/`min`/`max` are amounts, not percents — so a
+    balance account is present in history without being turned into a percentage it never had.
+    `resets` names every reset stamp seen in the range, for the chart's reset markers.
     """
     now_ts = now_epoch() if now_ts is None else int(now_ts)
     if not config.get("enabled"):
@@ -583,17 +857,25 @@ def payload(params, config, now_ts=None):
     bucket, ok = _int_param(params, "bucket_seconds")
     if not ok or (bucket is not None and not 60 <= bucket <= 7 * 86400):
         return {"error": "bucket_seconds must be between 60 and %d" % (7 * 86400)}
+    rollup_seconds = config.get("rollup_seconds") or 900
+    raw_span = int(config.get("raw_days", 0)) * 86400
     if bucket is None:
-        bucket = pick_bucket(until - since, max_points)
+        floor = rollup_seconds if (until - since) > raw_span else config.get("sample_seconds", 60)
+        bucket = pick_bucket(until - since, max_points, floor)
+        # Once rollups are the only source, a ladder step that is not a whole number of rollup
+        # buckets would put half a rollup in a cell and leave the rest empty.
+        if (until - since) > raw_span and bucket % rollup_seconds:
+            bucket = ((bucket // rollup_seconds) + 1) * rollup_seconds
     start = bucket_of(since, bucket)
     end = bucket_of(until, bucket)
-    grid = list(range(start, end + 1, bucket))
-    # An explicit bucket can ask for more points than the cap allows (60 s over five years is
-    # 2.6 M): refuse it rather than build the grid, and say what to change. The auto ladder
-    # cannot land here, so this only ever fires on a request that named its own bucket.
-    if len(grid) > max_points + 2:
+    # Count first, build second: an explicit bucket can ask for millions of points (60 s over
+    # five years is 2.6 M), and materializing that list before refusing it is a memory spike one
+    # request can trigger. The auto ladder cannot land here, so this fires only on a named bucket.
+    points = (end - start) // bucket + 1
+    if points > max_points + 2:
         return {"error": "bucket_seconds=%d over this range is %d points, more than max_points=%d "
-                         "— raise max_points or pick a coarser bucket" % (bucket, len(grid), max_points)}
+                         "— raise max_points or pick a coarser bucket" % (bucket, points, max_points)}
+    grid = list(range(start, end + 1, bucket))
     wanted_accounts = [value for value in (params.get("account_id") or []) if value]
     wanted_series = [value for value in (params.get("series") or []) if value]
 
@@ -610,8 +892,12 @@ def payload(params, config, now_ts=None):
         # and dropping either half is how a series grows a hole where history exists.
         totals = {}
         answered = set()
+        balance_totals = {}
+        balance_answered = set()
+        currency = {}
+        resets = {}
 
-        def ensure(account_id, window_key):
+        def ensure(account_id, window_key, kind="window"):
             key = "%s/%s" % (account_id, window_key)
             if key not in series:
                 meta = labels.get((account_id, window_key))
@@ -619,9 +905,11 @@ def payload(params, config, now_ts=None):
                     "key": key,
                     "account_id": account_id,
                     "window_key": window_key,
+                    "kind": (meta["kind"] if meta and meta["kind"] else kind),
                     "account_label": (meta["account_label"] if meta else None) or account_id,
                     "window_label": (meta["window_label"] if meta else None) or window_key,
                     "provider": (meta["provider"] if meta else None) or "",
+                    "currency": None,
                     "avg": [None] * len(grid),
                     "min": [None] * len(grid),
                     "max": [None] * len(grid),
@@ -629,10 +917,10 @@ def payload(params, config, now_ts=None):
                 }
             return series[key]
 
-        def accumulate(key, index, n, total, low, high):
-            entry = totals.get((key, index))
+        def accumulate(key, index, n, total, low, high, store):
+            entry = store.get((key, index))
             if entry is None:
-                totals[(key, index)] = [n, total, low, high]
+                store[(key, index)] = [n, total, low, high]
             else:
                 entry[0] += n
                 entry[1] += total
@@ -641,7 +929,8 @@ def payload(params, config, now_ts=None):
 
         raw_rows = 0
         for row in conn.execute(
-            "SELECT ts, account_id, window_key, percent FROM snapshots WHERE ts >= ? AND ts < ?",
+            "SELECT ts, account_id, window_key, percent, resets_at FROM snapshots "
+            "WHERE ts >= ? AND ts < ?",
             (epoch_to_iso(start), epoch_to_iso(end + bucket)),
         ):
             epoch = iso_to_epoch(row["ts"])
@@ -651,8 +940,9 @@ def payload(params, config, now_ts=None):
             if index is None:
                 continue
             key = "%s/%s" % (row["account_id"], row["window_key"])
-            accumulate(key, index, 1, row["percent"], row["percent"], row["percent"])
-            answered.add((key, bucket_of(epoch, bucket)))
+            accumulate(key, index, 1, row["percent"], row["percent"], row["percent"], totals)
+            answered.add((key, bucket_of(epoch, rollup_seconds)))
+            _add_reset(resets, key, row["resets_at"])
             raw_rows += 1
 
         rollup_rows = 0
@@ -668,14 +958,64 @@ def payload(params, config, now_ts=None):
             if index is None:
                 continue
             key = "%s/%s" % (row["account_id"], row["window_key"])
-            if (key, bucket_of(epoch, bucket)) in answered:
-                continue                      # raw is the finer record of that same bucket
-            accumulate(key, index, row["n"], row["pct_sum"], row["pct_min"], row["pct_max"])
+            if (key, bucket_of(epoch, rollup_seconds)) in answered:
+                continue                      # raw is the finer record of that same rollup bucket
+            accumulate(key, index, row["n"], row["pct_sum"], row["pct_min"], row["pct_max"], totals)
             rollup_rows += 1
+
+        balance_rows = 0
+        for row in conn.execute(
+            "SELECT ts, account_id, window_key, amount, currency, resets_at FROM balances "
+            "WHERE ts >= ? AND ts < ?",
+            (epoch_to_iso(start), epoch_to_iso(end + bucket)),
+        ):
+            epoch = iso_to_epoch(row["ts"])
+            if epoch is None:
+                continue
+            index = position.get(bucket_of(epoch, bucket))
+            if index is None:
+                continue
+            key = "%s/%s" % (row["account_id"], row["window_key"])
+            accumulate(key, index, 1, row["amount"], row["amount"], row["amount"], balance_totals)
+            balance_answered.add((key, bucket_of(epoch, rollup_seconds)))
+            if row["currency"]:
+                currency[key] = row["currency"]
+            _add_reset(resets, key, row["resets_at"])
+            balance_rows += 1
+
+        balance_rollup_rows = 0
+        for row in conn.execute(
+            "SELECT bucket_ts, account_id, window_key, n, amt_sum, amt_min, amt_max, currency FROM "
+            "balance_rollups WHERE bucket_ts >= ? AND bucket_ts < ?",
+            (epoch_to_iso(start), epoch_to_iso(end + bucket)),
+        ):
+            epoch = iso_to_epoch(row["bucket_ts"])
+            if epoch is None:
+                continue
+            index = position.get(bucket_of(epoch, bucket))
+            if index is None:
+                continue
+            key = "%s/%s" % (row["account_id"], row["window_key"])
+            if (key, bucket_of(epoch, rollup_seconds)) in balance_answered:
+                continue
+            if row["currency"]:
+                currency[key] = row["currency"]
+            accumulate(key, index, row["n"], row["amt_sum"], row["amt_min"], row["amt_max"], balance_totals)
+            balance_rollup_rows += 1
 
         for (key, index), (n, total, low, high) in totals.items():
             account_id, window_key = key.split("/", 1)
-            entry = ensure(account_id, window_key)
+            entry = ensure(account_id, window_key, "window")
+            entry["n"][index] = n
+            entry["avg"][index] = total / n if n else None
+            entry["min"][index] = low
+            entry["max"][index] = high
+
+        for (key, index), (n, total, low, high) in balance_totals.items():
+            account_id, window_key = key.split("/", 1)
+            entry = ensure(account_id, window_key, "balance")
+            entry["kind"] = "balance"
+            entry["currency"] = currency.get(key)
             entry["n"][index] = n
             entry["avg"][index] = total / n if n else None
             entry["min"][index] = low
@@ -704,14 +1044,26 @@ def payload(params, config, now_ts=None):
                 break
         kept.append(entry)
 
-    weighted_all = [(entry["mean"], entry["samples"]) for entry in kept if entry["mean"] is not None and entry["samples"]]
+    # The summary describes the percentages: a money balance has no percent and must not pull
+    # the average or the peak toward a number it never carried.
+    percent_series = [entry for entry in kept if entry["kind"] != "balance"]
+    weighted_all = [(entry["mean"], entry["samples"]) for entry in percent_series if entry["mean"] is not None and entry["samples"]]
     return {
         "now": epoch_to_iso(now_ts),
         "since": epoch_to_iso(since),
         "until": epoch_to_iso(until),
         "bucket_seconds": bucket,
+        "alert_percent": config.get("alert_percent"),
         "t": grid,
         "series": kept,
+        # Resets are read from raw rows only: neither rollup table carries `resets_at`, so a
+        # reset older than the raw window is no longer named on the chart. Kept deliberately —
+        # storing a reset flag in every rollup would roughly double that table for a marker.
+        "resets": [
+            {"key": key, "at": at}
+            for key in sorted(resets)
+            for at in sorted(resets[key])
+        ],
         "summary": {
             "series": len(kept),
             "samples": sum(entry["samples"] for entry in kept),
@@ -719,16 +1071,29 @@ def payload(params, config, now_ts=None):
                 sum(mean * count for mean, count in weighted_all) / sum(count for _, count in weighted_all)
                 if weighted_all else None
             ),
-            "peak": _extreme(kept),
-            "latest": _latest(kept),
+            "peak": _extreme(percent_series),
+            "latest": _latest(percent_series),
             "span_seconds": until - since,
         },
         "sources": {
             "raw_rows": raw_rows,
             "rollup_rows": rollup_rows,
-            "resolution": "rollup" if rollup_rows and not raw_rows else ("raw+rollup" if rollup_rows else "raw"),
+            "balance_rows": balance_rows,
+            "balance_rollup_rows": balance_rollup_rows,
+            "resolution": (
+                "rollup" if (rollup_rows + balance_rollup_rows) and not (raw_rows + balance_rows)
+                else ("raw+rollup" if (rollup_rows + balance_rollup_rows) else "raw")
+            ),
         },
     }
+
+
+def _add_reset(resets, key, resets_at):
+    """Record a reset stamp under its series, ignoring the empty and malformed ones."""
+    epoch = iso_to_epoch(resets_at)
+    if epoch is None:
+        return
+    resets.setdefault(key, set()).add(epoch)
 
 
 def _extreme(series):
@@ -758,6 +1123,49 @@ def _label(entry):
     return "%s · %s" % (entry["account_label"], entry["window_label"])
 
 
+def pending_alerts(config, limit=20):
+    """Alerts whose delivery never completed, oldest first, so a restart retries them."""
+    if not config.get("enabled"):
+        return []
+    try:
+        conn = connect(config["path"], read_only=True)
+    except (HistoryError, sqlite3.Error, OSError):
+        return []
+    try:
+        rows = conn.execute(
+            "SELECT id, at, account_id, window_key, label, previous, percent, threshold "
+            "FROM alerts WHERE status = 'pending' ORDER BY id LIMIT ?",
+            (int(limit),),
+        ).fetchall()
+        return [dict(row) for row in rows]
+    except sqlite3.Error:
+        return []
+    finally:
+        conn.close()
+
+
+def mark_alert(config, alert_id, status, attempts=0, error=None, now_ts=None):
+    """Record the outcome of one delivery. Best-effort: a failure here is not the caller's."""
+    if not config.get("enabled") or alert_id is None:
+        return
+    now_ts = now_epoch() if now_ts is None else int(now_ts)
+    try:
+        conn = connect(config["path"])
+        try:
+            conn.execute(
+                "UPDATE alerts SET status = ?, attempts = ?, delivered_at = ?, last_error = ? "
+                "WHERE id = ?",
+                (status, int(attempts),
+                 epoch_to_iso(now_ts) if status == "delivered" else None,
+                 (str(error)[:500] if error else None), int(alert_id)),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+    except (HistoryError, sqlite3.Error, OSError):
+        pass
+
+
 def status(config):
     """What /api/quota reports about history: off, on and usable, or on and broken.
 
@@ -780,7 +1188,13 @@ def status(config):
         conn = connect(config["path"], read_only=True)
         try:
             info["series"] = conn.execute("SELECT COUNT(*) FROM series").fetchone()[0]
-            info["newest"] = conn.execute("SELECT MAX(ts) FROM snapshots").fetchone()[0]
+            # ISO stamps sort lexically, so max-of-max across both raw tables is chronological.
+            newest = None
+            for table in ("snapshots", "balances"):
+                row = conn.execute("SELECT MAX(ts) FROM %s" % table).fetchone()
+                if row and row[0] and (newest is None or row[0] > newest):
+                    newest = row[0]
+            info["newest"] = newest
         finally:
             conn.close()
     except (HistoryError, sqlite3.Error, OSError) as exc:

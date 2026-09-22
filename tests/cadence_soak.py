@@ -84,6 +84,11 @@ def wait_for(url, timeout=20):
 
 def main():
     if not os.path.exists(BROWSER):
+        # CI sets SCREENSHOT_BROWSER and CI=true: a missing browser there is a failure, not a
+        # skip, or the soak passes without measuring anything.
+        if os.environ.get("CI"):
+            print("FAIL: no browser at %s (set SCREENSHOT_BROWSER)" % BROWSER)
+            return 1
         print("SKIP: no browser at %s (set SCREENSHOT_BROWSER)" % BROWSER)
         return 0
 
@@ -96,6 +101,7 @@ def main():
     with open(cfg, "w", encoding="utf-8") as fh:
         json.dump({
             "poll_seconds": POLL,
+            "background_url": "none",
             "accounts": [{"id": "cc", "provider": "commandcode",
                           "label": "CommandCode", "token": "x"}],
         }, fh)

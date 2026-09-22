@@ -34,14 +34,22 @@
       "rollups). 'raw_days' of raw samples are kept; older history survives as 'rollup_seconds'",
       "buckets kept 'rollup_days'. A rollup is the long-term record, not a cache of it: a raw",
       "row is dropped only once its bucket exists. 'enabled': false turns the whole layer off —",
-      "no database, no volume, no /api/history."
+      "no database, no volume, no /api/history.",
+      "'alert_percent' is the crossing the history page draws on the trend; when",
+      "'alert_url' is a URL, a crossing from below is POSTed there once as JSON by the",
+      "poller, best-effort and never fatal. An empty 'alert_url' means no webhook. Both",
+      "also come from QUOTA_HISTORY_ALERT_PERCENT and QUOTA_HISTORY_ALERT_URL."
     ],
     "enabled": true,
     "path": "/data/quota.db",
     "sample_seconds": 300,
     "raw_days": 90,
     "rollup_days": 365,
-    "rollup_seconds": 900
+    "rollup_seconds": 900,
+    "alert_percent": 80,
+    "alert_url": "",
+    "alert_retries": 3,
+    "alert_backoff_seconds": 1
   },
   "accounts": [
     {

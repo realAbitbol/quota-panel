@@ -105,6 +105,16 @@
   .nav{font-size:12.5px;color:var(--muted);text-decoration:none;border:1px solid var(--line);
        border-radius:999px;padding:3px 11px}
   .nav:hover{color:var(--fg)}
+  /* The support link: fixed, small, out of the reading column. An anchor, not a resource load. */
+  .kofi{position:fixed;right:16px;bottom:16px;z-index:60;display:inline-flex;align-items:center;
+       gap:7px;padding:7px 12px;border-radius:999px;text-decoration:none;font-size:12.5px;
+       color:var(--fg);background:rgba(var(--card),.8);border:1px solid var(--line);
+       backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);box-shadow:0 4px 16px rgba(0,0,0,.35)}
+  .kofi:hover{color:#fff;border-color:var(--accent)}
+  .kofi svg{width:15px;height:15px;fill:#ff5e5b;flex:0 0 auto}
+  .kofi span{font-weight:600}
+  @media (prefers-reduced-motion:no-preference){ .kofi{transition:color .15s,border-color .15s} }
+  @media (prefers-reduced-motion:reduce){ .fill{transition:none} }
   </style>
 </head>
 <body>
@@ -590,5 +600,9 @@ window.addEventListener('online', () => load());
 load();
 setInterval(tick, TICK_MS);
 </script>
+<a class="kofi" href="https://ko-fi.com/realAbitbol" target="_blank" rel="noopener noreferrer" aria-label="Support this project on Ko-fi">
+  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>
+  <span>Support</span>
+</a>
 </body>
 </html>

@@ -213,6 +213,9 @@ def ui_checks():
     check("the UI loads the artwork through /background",
           'url("/background")' in page, "CSS does not point at the configurable route")
     check("the page references no chart library", "uplot" not in page.lower())
+    check("the page carries the support link to Ko-fi",
+          "https://ko-fi.com/realAbitbol" in page and 'rel="noopener noreferrer"' in page,
+          "the funding link is part of the live page too")
     # One flag from /api/quota reveals the entry point, and that is the whole cost of an
     # optional feature on the live page: a second feed here would make every install pay for a
     # layer most of them leave off.
@@ -669,6 +672,18 @@ def main():
                 write_config(os.path.join(scratch, "prov.json"),
                              dict(base_cfg, accounts=[dict(one, provider="nope")])),
                 "must be one of")
+        refuses("a non-string account id is refused",
+                write_config(os.path.join(scratch, "badid.json"),
+                             dict(base_cfg, accounts=[dict(one, id=["x"])])),
+                "must be a string")
+        refuses("a falsy non-string id is refused, not defaulted",
+                write_config(os.path.join(scratch, "zeroid.json"),
+                             dict(base_cfg, accounts=[dict(one, id=0)])),
+                "must be a string")
+        refuses("a non-string label is refused",
+                write_config(os.path.join(scratch, "badlabel.json"),
+                             dict(base_cfg, accounts=[dict(one, label=False)])),
+                "must be a string")
         refuses("an empty accounts list is refused",
                 write_config(os.path.join(scratch, "empty.json"), dict(base_cfg, accounts=[])),
                 "non-empty 'accounts' list")

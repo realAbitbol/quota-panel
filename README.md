@@ -68,6 +68,7 @@ services:
       - "127.0.0.1:8080:8080"
     volumes:
       - ./accounts.json:/config/accounts.json:ro
+      - quota-history:/data
     read_only: true
     tmpfs:
       - "/tmp:rw,size=32m,noexec,nosuid,nodev"
@@ -87,6 +88,9 @@ services:
       timeout: 5s
       retries: 3
       start_period: 60s              # /api/health answers 503 until the first poll finishes
+
+volumes:
+  quota-history:
 ```
 
 `docker-compose.yml` in this repo is the same service with fuller comments.
@@ -132,9 +136,9 @@ docker run -d -p 127.0.0.1:8080:8080 \
 | `id` | yes, in practice | Identity key. Unique; don't change it once running. |
 | `provider` | yes | One of the providers below. Anything else is refused at startup. |
 | `label` | no | Card title, defaults to `id`. |
-| `token` / `token_env` / `token_file` | exactly one | The key, the *name* of an env var holding it, or a path to a file holding it. |
+| `token` / `token_env` / `token_file` | one of the three | The key, the *name* of an env var holding it, or a path to a file holding it. Precedence: `token` → `token_env` → `token_file`; none at all is a non-fatal `auth_error`. |
 | `poll_seconds` | no | Seconds between polls, `10`–`3600`. Default `60`. |
-| `background_url` | no | Page artwork: an `http(s)` URL at the top level of the file (see the example above), `"none"` for no artwork, or empty/absent for the shipped wallpaper (hotlinked, not redistributed). Fetched once at startup, capped at 4K, re-encoded as WebP. |
+| `background_url` | no | Page artwork: an `http(s)` URL at the top level of the file (see the example above), `"none"` for no artwork, or empty/absent for the default wallpaper URL (hotlinked, not redistributed). Fetched once at startup, capped at 4K, re-encoded as WebP. |
 
 `id` keys everything: `/api/quota`, the Homepage map (`items["<id>_<window>"]`) and the error list. Set it explicitly — omitting it falls back to a positional `<provider>-<index>`, so inserting an account silently reassigns ids. Use lowercase letters, digits and dashes. Duplicate ids are fatal.
 
@@ -151,7 +155,7 @@ Any number of accounts, any mix of providers. An account whose credential is mis
 | `QUOTA_POLL_SECONDS` | `60` | Poll interval **fallback** — `poll_seconds` in the config file wins. |
 | `QUOTA_HTTP_TIMEOUT` | `20` | Per-request timeout, in seconds. |
 | `QUOTA_CURRENCY` | `USD` | Currency reported for a multi-currency balance. |
-| `QUOTA_BACKGROUND_URL` | the shipped wallpaper | Artwork URL, or `none`/`off`. The config file wins. |
+| `QUOTA_BACKGROUND_URL` | the default wallpaper URL (hotlinked) | Artwork URL, or `none`/`off`. The config file wins. |
 | `QUOTA_BACKGROUND_DIR` | `/tmp/quota-panel` | Where the fetched artwork is stored. |
 | `QUOTA_BACKGROUND_TIMEOUT` | `20` | Artwork fetch timeout, in seconds. |
 
@@ -159,22 +163,47 @@ Every provider also has a `*_API_BASE` override so the test suite can point an a
 
 ### Usage history
 
-`/history` charts usage over time from one SQLite file: one line per account (a click on the legend
-shows one alone), and a day-per-column intensity map below it, one row per account. The window that
-stands for an account is the widest its own label names — the five-hour window resets several times
-a day and its daily average describes nothing — and the map uses one hue for every row, so a shade
-means the same thing in every row. It ships on, in `accounts.example.json` and in `docker-compose.yml`:
+`/history` charts usage over time from one SQLite file. It is a deliberately close reading of
+[AIMeter](https://github.com/bugwz/AIMeter)'s Usage History, hand-rolled in SVG — the page vendors
+no chart library:
+
+* **Usage trend** — one filled line per account on a real 0–100 scale with the cap drawn and named,
+  a clickable legend that isolates a line, a hover readout with sample counts, an **alert threshold**
+  line at `alert_percent`, **reset markers** wherever a window reset in range, and a projected cap
+  date from the range's own slope. With one account selected, every window it publishes is a line.
+* **Weekly comparison** — grouped bars of each account's weekly mean, for stage-by-stage shifts.
+* **Share of consumption** — a donut of each account's average consumption.
+* **Intensity vs volatility** — a scatter: X average, Y volatility, bubble size active days.
+* **Radar matrix** — average load, latest, peak, volatility and cost burn per account.
+* **Daily intensity** — one row per account, one column per day, one hue so a shade means the same
+  on every row.
+* **Account insights** — avg / latest / peak / volatility and a sparkline per account.
+* **Window breakdown** — with one account selected, one card per window it publishes: latest,
+  average, peak, volatility, a sparkline and the next reset.
+
+An account's colour and mark come from its provider. A day-or-longer range is snapped to whole
+calendar days, so a daily bar lines up with a day. The window that stands for an account is the
+widest its own label names — the five-hour window resets several times a day and its daily average
+describes nothing. A money balance is kept as money, never turned into a percentage: it is recorded
+in its own tables, shown as a balance in the insights cards, and its drawdown from the range's own
+peak balance is the radar's **cost burn**. Under the controls the page states what the store keeps
+(`sampled every … · raw …d · … rollups kept …d`) and what this range is made of (`raw`, `raw+rollup`
+or `rollup`, with a row count).
+
+It ships on, in `accounts.example.json` and in `docker-compose.yml`:
 
 ```json
 "history": { "enabled": true, "path": "/data/quota.db", "sample_seconds": 300,
-             "raw_days": 90, "rollup_days": 365, "rollup_seconds": 900 }
+             "raw_days": 90, "rollup_days": 365, "rollup_seconds": 900,
+             "alert_percent": 80, "alert_url": "",
+             "alert_retries": 3, "alert_backoff_seconds": 1 }
 ```
 
-`sample_seconds` is how often a reading is stored (polling is unchanged, only the row write is gated); `raw_days`/`rollup_days`/`rollup_seconds` are retention. The same settings come from `QUOTA_HISTORY_ENABLED`, `QUOTA_DB`, `QUOTA_HISTORY_SAMPLE_SECONDS`, `QUOTA_RETENTION_RAW_DAYS`, `QUOTA_RETENTION_ROLLUP_DAYS`, `QUOTA_ROLLUP_SECONDS`. Set `enabled: false` for a panel that keeps no state at all — no database, no volume, `/api/history` answers `404`.
+`sample_seconds` is how often a reading is stored (polling is unchanged, only the row write is gated); `raw_days`/`rollup_days`/`rollup_seconds` are retention. `alert_percent` is the crossing the trend draws. Every crossing is written to the store's `alerts` table (status, attempts, error); when `alert_url` is a URL it is POSTed there as JSON (`account_id`, `window_key`, `label`, `previous`, `percent`, `threshold`, `at`) by a background worker that retries `alert_retries` times with exponential backoff from `alert_backoff_seconds`, and anything left pending is retried after a restart — best-effort and never fatal, so a webhook that is down costs a log line, not a poll. The same settings come from `QUOTA_HISTORY_ENABLED`, `QUOTA_DB`, `QUOTA_HISTORY_SAMPLE_SECONDS`, `QUOTA_RETENTION_RAW_DAYS`, `QUOTA_RETENTION_ROLLUP_DAYS`, `QUOTA_ROLLUP_SECONDS`, `QUOTA_HISTORY_ALERT_PERCENT`, `QUOTA_HISTORY_ALERT_URL`, `QUOTA_HISTORY_ALERT_RETRIES`, `QUOTA_HISTORY_ALERT_BACKOFF_SECONDS`. Set `enabled: false` for a panel that keeps no state at all — no database, no volume, `/api/history` answers `404`.
 
 **Give it a directory, not a file.** sqlite writes its journal beside the database, so `/data` must be writable: `install -d -o 10001 -g 10001 ./data` on the host, then `- ./data:/data` in compose. CIFS/NFS is refused — no working locks.
 
-Cost: ~0.35 GB a year at 300 s sampling (1.7 GB at 60 s) plus ~116 MB of rollups. A failed poll or an unreadable window leaves a **gap**, never a zero, and a money balance is never turned into a percentage. The trend is drawn against **real percents**: a window reading tenths of a percent sits near the axis because that is what it is, and the legend and the hover readout carry its exact number. The intensity map shades each cell by that day's real average, so the same shade means the same usage on every row and every day.
+Cost: ~0.35 GB a year at 300 s sampling (1.7 GB at 60 s) plus ~116 MB of rollups (money balances add a little). A failed poll or an unreadable window leaves a **gap**, never a zero. The trend is drawn against **real percents**: a window reading tenths of a percent sits near the axis because that is what it is, and the legend and the hover readout carry its exact number. The intensity map shades each cell by that day's real average, so the same shade means the same usage on every row and every day.
 
 ## Endpoints
 
@@ -211,7 +240,7 @@ Each item also carries `percent` and `resets_at`, so a tile can render a progres
 * Read-only, outbound only: one `GET` per configured provider, plus one artwork fetch at startup. No write path.
 * Credentials are read at startup, held in memory, never logged, never returned by any endpoint, and sent only to the provider that owns them. A test stub echoes the `Authorization` header it received and no served body may contain it.
 * No built-in login. Run it behind something that authenticates and keep the port on loopback. With inline `token`s, keep `accounts.json` at mode `600`/`640`.
-* The container runs unprivileged (uid 10001) on a read-only rootfs with all capabilities dropped. The static route containment-checks every path and allows a fixed extension list.
+* The container runs unprivileged (uid 10001). `docker-compose.yml` (and the snippet under Install) also makes the rootfs read-only, drops all capabilities and sets `no-new-privileges`; a bare `docker run` from this README gets the uid and the read-only config mount but not those three — add `--read-only --tmpfs /tmp:rw,size=32m,noexec,nosuid,nodev --cap-drop ALL --security-opt no-new-privileges:true` for the full set. The static route containment-checks every path and allows a fixed extension list.
 
 ## Development
 
@@ -220,9 +249,11 @@ cp accounts.example.json accounts.json
 python3 app.py --check                  # one poll, prints JSON, non-zero if any account is not ok
 PORT=8080 python3 app.py
 python3 tests/smoke.py                  # boots the app and exercises the HTTP surface
+python3 tests/history.py                # the optional store: config, sampling, rollups, /api/history, alert log
 python3 tests/balance.py                # registry, balance adapters, error branches
 python3 tests/background.py             # artwork shrink (needs Pillow)
 python3 tests/screenshot.py             # renders the real pages in Chromium and re-shoots docs/screenshot.png + docs/history.png
+python3 tests/tab_switch.py             # a burst of tab switches must keep refreshing
 QUOTA_POLL_SECONDS=10 python3 tests/cadence_soak.py   # the header's countdown must not decay
 ```
 

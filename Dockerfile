@@ -63,6 +63,6 @@ EXPOSE 8080
 # left a branch that can never run, and printed a traceback on every unhealthy probe instead of
 # exiting quietly. Measured with this exact program: 200 -> exit 0, 503 -> exit 1.
 HEALTHCHECK --interval=60s --timeout=5s --start-period=60s --retries=3 \
-  CMD ["python3", "-c", "import urllib.request,sys\ntry:\n    urllib.request.urlopen('http://127.0.0.1:8080/api/health', timeout=4)\n    sys.exit(0)\nexcept Exception:\n    sys.exit(1)"]
+  CMD ["python3", "-c", "import os,urllib.request,sys\nport=os.environ.get('PORT','8080')\ntry:\n    urllib.request.urlopen('http://127.0.0.1:'+port+'/api/health', timeout=4)\n    sys.exit(0)\nexcept Exception:\n    sys.exit(1)"]
 
 CMD ["python3", "/app/app.py"]

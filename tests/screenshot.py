@@ -114,6 +114,11 @@ def seeded_percent(window, stamp, account_index):
     return min(98.5, max(1.0, renewed + span * ramp))
 
 
+def seeded_balance(window, stamp, account_index):
+    """A money balance that falls over the range, so the drawdown (cost burn) is real."""
+    return round(40.0 - (account_index + 1) * 1.5 - ((stamp // 3600) % 200) * 0.05, 2)
+
+
 def fixture_shape_failures(accounts, now_ts, drawn_seconds=7 * 86400, step_seconds=300):
     """The fixture's own shape, checked where it lives: a counter climbs between renewals.
 
@@ -169,14 +174,19 @@ def seed_history(path, accounts, now_ts=None):
             results = []
             for index, account in enumerate(accounts):
                 windows = [w for w in (account.get("windows") or []) if w.get("kind") == "window"]
-                if not windows:
+                balances = [w for w in (account.get("windows") or []) if w.get("kind") == "balance"]
+                entries = [{"key": w.get("key"), "label": w.get("label"), "kind": "window",
+                            "percent": seeded_percent(w, stamp, index)} for w in windows]
+                # A money balance is seeded too: the page must fetch and draw it, and the committed
+                # picture must not be one where the balance panels are quietly empty.
+                entries += [{"key": w.get("key"), "label": w.get("label"), "kind": "balance",
+                             "amount": seeded_balance(w, stamp, index),
+                             "currency": w.get("currency") or "USD"} for w in balances]
+                if not entries:
                     continue
                 results.append({
                     "id": account["id"], "provider": account.get("provider"),
-                    "label": account.get("label"), "state": "ok",
-                    "windows": [{"key": w.get("key"), "label": w.get("label"), "kind": "window",
-                                 "percent": seeded_percent(w, stamp, index)}
-                                for w in windows],
+                    "label": account.get("label"), "state": "ok", "windows": entries,
                 })
             if results:
                 history.record(results, config, now_ts=stamp)
@@ -958,6 +968,14 @@ def main():
         rising = [round(value, 3) for value in (state.get("rising") or [])]
         check("the trend climbs between renewals rather than rippling",
               bool(rising) and min(rising) >= 0.6, str(rising))
+        # The page never fetched balance series once, so the cost-burn axis was silently always
+        # zero. This drives the real page: a balance-only account must reach the insight cards.
+        balance_tiles = cdp.call("Runtime.evaluate", expression="""
+          Array.from(document.querySelectorAll('#insights .tile .k'))
+               .filter(k => k.textContent.trim() === 'Balance').length
+        """, returnByValue=True).get("result", {}).get("value") or 0
+        check("a balance-only account reaches the history page",
+              balance_tiles >= 1, "%s balance tiles" % balance_tiles)
 
         # The range control, exercised — and this is where the first version of this capture went
         # wrong: it dispatched the change and waited only for the map's columns, then shot a chart

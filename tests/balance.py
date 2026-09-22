@@ -480,6 +480,12 @@ def main():
             ("synthetic", "/v2/quotas", {"unexpected": True}, "shape_unknown"),
             ("cheaperinference", "/v1/account/balance", {"nothing": "here"}, "shape_unknown"),
             ("openrouter", "/v1/credits", {"data": {"mystery": 1}}, "shape_unknown"),
+            # A body that is not an object at all: the adapters must answer shape_unknown rather
+            # than call .get on a list/string/number and raise AttributeError.
+            ("deepseek", "/user/balance", ["not", "an", "object"], "shape_unknown"),
+            ("kimi", "/v1/users/me/balance", "just a string", "shape_unknown"),
+            ("zai", "/api/monitor/usage/quota/limit", 42, "shape_unknown"),
+            ("cheaperinference", "/v1/account/balance", [1, 2, 3], "shape_unknown"),
         ):
             res = run(provider, {path: junk}, base)
             check("%s: an unrecognised shape is an error, not a zero (%s)"

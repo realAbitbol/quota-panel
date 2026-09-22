@@ -1,0 +1,13 @@
+version: 2
+# The base image is digest-pinned and Pillow is version-pinned, so CVE fixes are manual without
+# this. No pip entry: the project ships no requirements manifest (Pillow is installed in the
+# Dockerfile), so Dependabot would have nothing to read.
+updates:
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"

@@ -95,6 +95,7 @@ jobs:
         # a skip and *succeeded*. Actions sets CI=true, which makes that absence a failure.
         env:
           SCREENSHOT_OUT: /tmp/quota-panel-screenshot.png
+          SCREENSHOT_HISTORY_OUT: /tmp/quota-panel-history.png
         run: |
           SCREENSHOT_BROWSER="$(command -v google-chrome || command -v google-chrome-stable \
             || command -v chromium || command -v chromium-browser || true)"

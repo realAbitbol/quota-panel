@@ -23,6 +23,7 @@ CLI: `app.py --check` polls once, prints JSON, exits (no server, no DB write).
 import io
 import json
 import os
+import queue
 import re
 import sys
 import threading
@@ -86,7 +87,7 @@ BACKGROUND_URL_DEFAULT = (
 # answers and stay different.
 BACKGROUND_URL_OFF = ("none", "off")
 BACKGROUND_DIR = os.environ.get("QUOTA_BACKGROUND_DIR", "/tmp/quota-panel")
-BACKGROUND_TIMEOUT = int(os.environ.get("QUOTA_BACKGROUND_TIMEOUT", "20"))
+BACKGROUND_TIMEOUT = _env_int("QUOTA_BACKGROUND_TIMEOUT", 20)
 BACKGROUND_MAX_BYTES = 8 * 1024 * 1024
 BACKGROUND_RETRY_SECONDS = 300
 # Content type -> the extension the download is stored under. What is *served* comes from
@@ -248,11 +249,20 @@ def load_accounts(path=CONFIG_PATH):
             # Not fatal: the account is reported with state=auth_error so the
             # panel still renders (and shows *which* account is unconfigured).
             token = ""
+        # Validate the raw values before the `or` fallback: a falsy non-string (`id: 0`,
+        # `label: false`) used to slip past and be silently replaced by the positional default.
+        raw_id, raw_label = item.get("id"), item.get("label")
+        if raw_id is not None and not isinstance(raw_id, str):
+            raise ConfigError("accounts[%d].id must be a string" % idx)
+        if raw_label is not None and not isinstance(raw_label, str):
+            raise ConfigError("accounts[%d].label must be a string" % idx)
+        account_id = raw_id or "%s-%d" % (provider, idx + 1)
+        label = raw_label or raw_id or provider
         out.append(
             {
-                "id": item.get("id") or "%s-%d" % (provider, idx + 1),
+                "id": account_id,
                 "provider": provider,
-                "label": item.get("label") or item.get("id") or provider,
+                "label": label,
                 "token": token,
                 # Optional per-account override of where the mark comes from; the
                 # registry default is what makes the common case zero-config.
@@ -1216,7 +1226,8 @@ def store_history(results):
     """Persist one poll. Best-effort by contract: history never breaks the panel.
 
     Skipped when the store could not be opened at startup, so a bad path costs one log line
-    at boot instead of one per poll.
+    at boot instead of one per poll. A crossing is written to the store's `alerts` log by
+    history.record(); delivery happens on a worker thread, so a slow webhook never delays a poll.
     """
     module = history_module()
     if not module or HISTORY_ERROR or not HISTORY_CONFIG.get("enabled"):
@@ -1231,6 +1242,88 @@ def store_history(results):
             "history: %d sample(s) written, %d rollup row(s), %d raw pruned, %d held back"
             % (report["written"], report["rollup_rows"], report["raw_deleted"], report["raw_kept_unrolled"])
         )
+    alerts = report.get("alerts") or []
+    if not alerts:
+        return
+    if HISTORY_CONFIG.get("alert_url"):
+        start_alert_worker()
+        for alert in alerts:
+            ALERT_QUEUE.put(alert)
+    else:
+        for alert in alerts:
+            module.mark_alert(HISTORY_CONFIG, alert.get("id"), "logged")
+
+
+ALERT_QUEUE = queue.Queue()
+_ALERT_WORKER = None
+_ALERT_WORKER_LOCK = threading.Lock()
+
+
+def start_alert_worker():
+    """One daemon worker drains crossings, so retry/backoff never runs on the poller's thread."""
+    global _ALERT_WORKER
+    with _ALERT_WORKER_LOCK:
+        if _ALERT_WORKER is not None:
+            return
+        _ALERT_WORKER = threading.Thread(target=alert_worker_loop, daemon=True)
+        _ALERT_WORKER.start()
+
+
+def alert_worker_loop():
+    while True:
+        alert = ALERT_QUEUE.get()
+        try:
+            deliver_alert(alert)
+        except Exception as exc:  # noqa: BLE001 - a webhook must never kill the worker
+            log("history alert delivery crashed: %s" % exc)
+        finally:
+            ALERT_QUEUE.task_done()
+
+
+def deliver_alert(alert):
+    """POST one crossing with bounded retry + backoff, then record the outcome in the store."""
+    module = history_module()
+    alert_id = alert.get("id")
+    url = HISTORY_CONFIG.get("alert_url")
+    if not url:
+        if module and alert_id is not None:
+            module.mark_alert(HISTORY_CONFIG, alert_id, "logged")
+        return
+    retries = int(HISTORY_CONFIG.get("alert_retries") or 0)
+    backoff = int(HISTORY_CONFIG.get("alert_backoff_seconds") or 1)
+    attempts = 0
+    last_error = None
+    for attempt in range(retries + 1):
+        attempts = attempt + 1
+        body = json.dumps(alert).encode("utf-8")
+        request = urllib.request.Request(
+            url, data=body, method="POST",
+            headers={"Content-Type": "application/json", "User-Agent": "quota-panel/1.0"},
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=HTTP_TIMEOUT) as response:
+                response.read(1)
+        except Exception as exc:  # noqa: BLE001 - a webhook is not the panel's to depend on
+            last_error = str(exc)
+            if attempt < retries:
+                time.sleep(min(backoff * (2 ** attempt), 60))
+            continue
+        if module and alert_id is not None:
+            module.mark_alert(HISTORY_CONFIG, alert_id, "delivered", attempts=attempts)
+        return
+    log("history alert webhook failed after %d attempt(s): %s" % (attempts, last_error))
+    if module and alert_id is not None:
+        module.mark_alert(HISTORY_CONFIG, alert_id, "failed", attempts=attempts, error=last_error)
+
+
+def start_history_alerts():
+    """Start the worker and re-enqueue anything a previous run left pending."""
+    module = history_module()
+    if not module or HISTORY_ERROR or not HISTORY_CONFIG.get("enabled"):
+        return
+    start_alert_worker()
+    for alert in module.pending_alerts(HISTORY_CONFIG, limit=1000):
+        ALERT_QUEUE.put(alert)
 
 
 def history_status():
@@ -1259,6 +1352,9 @@ class Server(ThreadingHTTPServer):
 
 class Handler(BaseHTTPRequestHandler):
     server_version = "quota-panel/1.0"
+    # ThreadingHTTPServer spawns a thread per connection with no cap; without a socket timeout
+    # a client that connects and sends nothing pins that thread (and its fd) forever.
+    timeout = 15
 
     def _send(self, status, payload, content_type):
         body = payload if isinstance(payload, bytes) else payload.encode("utf-8")
@@ -1499,7 +1595,13 @@ class Handler(BaseHTTPRequestHandler):
         # which turned every refused request into a closed socket and a traceback.
         line = args[0] if args and isinstance(args[0], str) else ""
         if "/api/health" not in line:
-            log("%s - %s" % (self.address_string(), fmt % args))
+            # The request line is logged without its query: a client that puts a key in a query
+            # string must not write it into a log the container retains.
+            cleaned = list(args)
+            if cleaned and isinstance(cleaned[0], str):
+                cleaned[0] = re.sub(r"\?[^ ]*", "", cleaned[0])
+            cleaned = tuple(cleaned)
+            log("%s - %s" % (self.address_string(), fmt % cleaned))
 
 
 def main(argv):
@@ -1536,6 +1638,7 @@ def main(argv):
     # opened is reported once at boot, and the poller then skips it instead of failing per
     # poll.
     load_history(CONFIG_PATH)
+    start_history_alerts()
 
     stop_event = threading.Event()
     thread = threading.Thread(target=poller_loop, args=(accounts, stop_event), daemon=True)

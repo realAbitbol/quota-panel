@@ -17,6 +17,7 @@ Runs in about half a minute and needs nothing but the standard library.
 """
 import importlib.util
 import json
+import sqlite3
 import os
 import shutil
 import socket
@@ -107,6 +108,10 @@ def scalar(path, sql, args=()):
     return rows[0][0] if rows else None
 
 
+def pending_row(path, alert_id):
+    return scalar(path, "SELECT status FROM alerts WHERE id = ?", (alert_id,))
+
+
 def storage_checks():
     print("--- config")
     defaults, notes = history.load_config(None, env={})
@@ -186,6 +191,14 @@ def storage_checks():
     check("a balance window is not turned into a percentage",
           scalar(path, "SELECT COUNT(*) FROM snapshots WHERE window_key = 'credits'") == 0,
           "%s" % scalar(path, "SELECT window_key FROM snapshots"))
+    check("a balance is stored as a money amount, in its own table",
+          scalar(path, "SELECT COUNT(*) FROM balances WHERE window_key = 'credits'") == 1
+          and scalar(path, "SELECT amount FROM balances WHERE window_key = 'credits'") == 12.4,
+          "%s" % scalar(path, "SELECT amount FROM balances"))
+    check("the series records whether it is a window or a balance",
+          scalar(path, "SELECT kind FROM series WHERE window_key = 'credits'") == "balance"
+          and scalar(path, "SELECT kind FROM series WHERE window_key = 'subscription'") == "window",
+          "%s" % query(path, "SELECT window_key, kind FROM series"))
     second = history.record(results, cfg, now_ts=NOW + 120)
     check("a sample inside sample_seconds is skipped", second["written"] == 0 and second["skipped"] == 1,
           "%s" % second)
@@ -203,6 +216,67 @@ def storage_checks():
     fifth = history.record(unreadable, cfg, now_ts=NOW + 2000)
     check("an unreadable window is not stored as 0",
           fifth["written"] == 0 and scalar(path, "SELECT COUNT(*) FROM snapshots") == 2, "%s" % fifth)
+
+    print("--- crossing alerts")
+    alert_path = fresh(os.path.join(WORK, "alerts.db"))
+    alert_cfg = config(path=alert_path, sample_seconds=1, alert_percent=50)
+    history._LAST_SAMPLE.clear()
+
+    def reading(percent):
+        return [{"id": "syn-main", "provider": "synthetic", "label": "Synthetic", "state": "ok",
+                 "windows": [{"kind": "window", "key": "subscription", "label": "Window",
+                              "percent": percent}]}]
+
+    history.record(reading(40), alert_cfg, now_ts=NOW)
+    below = history.record(reading(45), alert_cfg, now_ts=NOW + 10)
+    cross = history.record(reading(55), alert_cfg, now_ts=NOW + 20)
+    again = history.record(reading(60), alert_cfg, now_ts=NOW + 30)
+    check("no alert while the reading stays under the line", below["alerts"] == [], "%s" % below["alerts"])
+    check("a crossing is reported once, with both readings",
+          len(cross["alerts"]) == 1 and cross["alerts"][0]["previous"] == 45
+          and cross["alerts"][0]["percent"] == 55 and cross["alerts"][0]["threshold"] == 50,
+          "%s" % cross["alerts"])
+    check("staying above the line does not re-alert", again["alerts"] == [], "%s" % again["alerts"])
+    cross_id = cross["alerts"][0]["id"] if cross["alerts"] else None
+    check("a crossing is written to the event log as pending",
+          pending_row(alert_path, cross_id) == "pending", "id=%s" % cross_id)
+    check("an undelivered alert is pending for a restart to retry",
+          [row["id"] for row in history.pending_alerts(alert_cfg)] == [cross_id],
+          "%s" % history.pending_alerts(alert_cfg))
+    history.mark_alert(alert_cfg, cross_id, "failed", attempts=4, error="boom", now_ts=NOW + 40)
+    check("a failed delivery is recorded with its attempts and error",
+          pending_row(alert_path, cross_id) == "failed"
+          and scalar(alert_path, "SELECT attempts FROM alerts WHERE id = ?", (cross_id,)) == 4
+          and scalar(alert_path, "SELECT last_error FROM alerts WHERE id = ?", (cross_id,)) == "boom",
+          "%s" % query(alert_path, "SELECT status, attempts, last_error FROM alerts"))
+    check("a failed alert is not pending again",
+          history.pending_alerts(alert_cfg) == [], "%s" % history.pending_alerts(alert_cfg))
+
+    # The prior reading can be a rollup: once raw_days has passed, the raw row is gone and the
+    # crossing has to be detected against what the rollup still holds.
+    rolled_path = fresh(os.path.join(WORK, "rolled-alert.db"))
+    rolled_cfg = config(path=rolled_path, sample_seconds=60, alert_percent=50)
+    conn = history.connect(rolled_path)
+    try:
+        conn.execute(
+            "INSERT INTO rollups (bucket_ts, account_id, window_key, n, pct_sum, pct_min, pct_max) "
+            "VALUES (?,?,?,?,?,?,?)",
+            (history.epoch_to_iso(NOW - 3600), "syn-main", "subscription", 2, 50.0, 20.0, 30.0),
+        )
+        conn.execute(
+            "INSERT OR REPLACE INTO series (account_id, window_key, account_label, provider, "
+            "window_label, kind, first_ts, last_ts) VALUES (?,?,?,?,?,?,?,?)",
+            ("syn-main", "subscription", "Synthetic", "synthetic", "Window", "window",
+             history.epoch_to_iso(NOW - 3600), history.epoch_to_iso(NOW - 3600)),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    history._LAST_SAMPLE.clear()
+    rolled_alert = history.record(reading(60), rolled_cfg, now_ts=NOW)
+    check("a crossing is detected against a rollup-only prior reading",
+          len(rolled_alert["alerts"]) == 1 and rolled_alert["alerts"][0]["previous"] == 30.0,
+          "%s" % rolled_alert["alerts"])
 
     print("--- retention: rollups are the record")
     path = fresh(os.path.join(WORK, "retention.db"))
@@ -269,6 +343,131 @@ def storage_checks():
           and report["raw_kept_unrolled"] == 0,
           "%s" % report)
 
+    print("--- raw and rollup halves of one display bucket are both counted")
+    merge_path = fresh(os.path.join(WORK, "merge.db"))
+    merge_cfg = config(path=merge_path)                 # rollup_seconds = BUCKET (900)
+    display = history.bucket_of(NOW - 3600, 1800)
+    older, newer = display, display + 900
+    conn = history.connect(merge_path)
+    try:
+        conn.execute(
+            "INSERT INTO rollups (bucket_ts, account_id, window_key, n, pct_sum, pct_min, pct_max) "
+            "VALUES (?,?,?,?,?,?,?)",
+            (history.epoch_to_iso(older), "cmd-perso", "monthly", 2, 40.0, 20.0, 20.0),
+        )
+        conn.execute(
+            "INSERT INTO rollups (bucket_ts, account_id, window_key, n, pct_sum, pct_min, pct_max) "
+            "VALUES (?,?,?,?,?,?,?)",
+            (history.epoch_to_iso(newer), "cmd-perso", "monthly", 2, 160.0, 80.0, 80.0),
+        )
+        conn.executemany(
+            "INSERT INTO snapshots (ts, account_id, provider, window_key, percent) VALUES (?,?,?,?,?)",
+            [(history.epoch_to_iso(newer + 60), "cmd-perso", "synthetic", "monthly", 80.0),
+             (history.epoch_to_iso(newer + 120), "cmd-perso", "synthetic", "monthly", 80.0)],
+        )
+        conn.execute(
+            "INSERT OR REPLACE INTO series (account_id, window_key, account_label, provider, "
+            "window_label, kind, first_ts, last_ts) VALUES (?,?,?,?,?,?,?,?)",
+            ("cmd-perso", "monthly", "CommandCode", "synthetic", "Month", "window",
+             history.epoch_to_iso(older), history.epoch_to_iso(newer + 120)),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    merged = history.payload({"since": [history.epoch_to_iso(display)],
+                              "until": [history.epoch_to_iso(display + 1800)],
+                              "bucket_seconds": ["1800"], "max_points": ["10"]},
+                             merge_cfg, now_ts=NOW)
+    merge_entry = {e["key"]: e for e in merged["series"]}.get("cmd-perso/monthly") or {}
+    check("a display bucket keeps both its pruned-raw rollup half and its raw half",
+          merge_entry.get("avg", [None])[0] == 50.0 and merged["sources"]["rollup_rows"] == 1,
+          "avg=%s sources=%s" % (merge_entry.get("avg"), merged["sources"]))
+
+    # A bucket straddling the raw cutoff: its older raw row is inside the raw window's edge, its
+    # newer rows are past it. Without a whole-bucket prune the survivors shadow the complete
+    # rollup, and the cell undercounts. The rollup pass first computes R's rollup (50,80,80), then
+    # the prune must remove every raw row of R, not only the one below the cutoff.
+    shadow_path = fresh(os.path.join(WORK, "shadow.db"))
+    shadow_cfg = config(path=shadow_path)                 # rollup_seconds = BUCKET, raw_days = 90
+    R = history.bucket_of(NOW - 100 * DAY, BUCKET)
+    shadow_now = R + 300 + 90 * DAY                       # cutoff = R + 300, mid-bucket
+    conn = history.connect(shadow_path)
+    try:
+        conn.executemany(
+            "INSERT INTO snapshots (ts, account_id, provider, window_key, percent) VALUES (?,?,?,?,?)",
+            [(history.epoch_to_iso(R + 100), "cmd-perso", "synthetic", "monthly", 50.0),
+             (history.epoch_to_iso(R + 400), "cmd-perso", "synthetic", "monthly", 80.0),
+             (history.epoch_to_iso(R + 700), "cmd-perso", "synthetic", "monthly", 80.0)],
+        )
+        conn.execute(
+            "INSERT OR REPLACE INTO series (account_id, window_key, account_label, provider, "
+            "window_label, kind, first_ts, last_ts) VALUES (?,?,?,?,?,?,?,?)",
+            ("cmd-perso", "monthly", "CommandCode", "synthetic", "Month", "window",
+             history.epoch_to_iso(R + 100), history.epoch_to_iso(R + 700)),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    conn = history.connect(shadow_path)
+    try:
+        history.maintain(conn, shadow_cfg, now_ts=shadow_now)
+    finally:
+        conn.close()
+    shadow = history.payload({"since": [history.epoch_to_iso(R)],
+                              "until": [history.epoch_to_iso(R + BUCKET)],
+                              "bucket_seconds": [str(BUCKET)], "max_points": ["10"]},
+                             shadow_cfg, now_ts=shadow_now)
+    shadow_entry = {e["key"]: e for e in shadow["series"]}.get("cmd-perso/monthly") or {}
+    check("a bucket whose raw rows were pruned does not shadow its complete rollup",
+          shadow_entry.get("avg", [None])[0] == 70.0 and shadow_entry.get("n", [0])[0] == 3,
+          "avg=%s n=%s" % (shadow_entry.get("avg"), shadow_entry.get("n")))
+
+    # H7: the read path is write-proof. mode=ro when it opens, query_only on the fallback; either
+    # way an INSERT must be refused.
+    ro_conn = history.connect(os.path.join(WORK, "sampling.db"), read_only=True)
+    try:
+        refused = False
+        try:
+            ro_conn.execute("INSERT INTO meta (key, value) VALUES ('probe', '1')")
+        except sqlite3.Error:
+            refused = True
+    finally:
+        ro_conn.close()
+    check("a read-only connection refuses a write", refused, "the read-only handle accepted an INSERT")
+
+    print("--- balances roll up and prune like percentages")
+    bpath = fresh(os.path.join(WORK, "balance-retention.db"))
+    bcfg = config(path=bpath)
+    bold = history.bucket_of(NOW - 100 * DAY, BUCKET)
+    conn = history.connect(bpath)
+    try:
+        conn.executemany(
+            "INSERT INTO balances (ts, account_id, provider, window_key, amount, currency, resets_at) "
+            "VALUES (?,?,?,?,?,?,?)",
+            [(history.epoch_to_iso(bold + 60 * i), "ci-main", "cheaperinference", "balance",
+              40.0 - i, "USD", None) for i in range(4)],
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    conn = history.connect(bpath)
+    try:
+        breport = history.maintain(conn, bcfg, now_ts=NOW)
+    finally:
+        conn.close()
+    check("a balance rolls up into its own table, exactly",
+          query(bpath, "SELECT n, amt_sum, amt_min, amt_max FROM balance_rollups")[0][:] == (4, 154.0, 37.0, 40.0),
+          "%s" % query(bpath, "SELECT n, amt_sum FROM balance_rollups"))
+    check("a balance raw row is pruned once its bucket exists",
+          scalar(bpath, "SELECT COUNT(*) FROM balances") == 0 and breport["balance_raw_deleted"] == 4,
+          "%s" % breport)
+    rolled = history.payload({"since": [history.epoch_to_iso(bold - 3600)],
+                              "until": [history.epoch_to_iso(bold + 3600)]}, bcfg, now_ts=NOW)
+    rolled_balance = {e["key"]: e for e in rolled["series"]}.get("ci-main/balance") or {}
+    check("a balance served from its rollup keeps its currency",
+          rolled_balance.get("kind") == "balance" and rolled_balance.get("currency") == "USD",
+          "%s" % rolled_balance)
+
     print("--- /api/history payload")
     result = history.payload({"since": [history.epoch_to_iso(NOW - 120 * DAY)],
                               "until": [history.epoch_to_iso(NOW)], "max_points": ["200"]},
@@ -316,6 +515,51 @@ def storage_checks():
     check("a raw-only range says so", filtered["sources"]["resolution"] == "raw",
           "%s" % filtered["sources"])
 
+    # A balance is served as its own kind and must not pull the percentage summary toward a
+    # number it never carried.
+    balance_payload = history.payload({"hours": ["1"]}, config(path=os.path.join(WORK, "sampling.db")),
+                                      now_ts=NOW + 400)
+    balance_series = {entry["key"]: entry for entry in balance_payload["series"]}
+    check("a balance is served as a balance series",
+          balance_series.get("syn-main/credits", {}).get("kind") == "balance"
+          and (balance_series.get("syn-main/credits", {}).get("samples") or 0) >= 1,
+          "%s" % sorted(balance_series))
+    check("a balance does not pull the percent summary",
+          balance_payload["summary"]["peak"]["key"] == "syn-main/subscription",
+          "%s" % balance_payload["summary"])
+    filtered = history.payload({"hours": ["1"], "series": ["syn-main/credits"]},
+                               config(path=os.path.join(WORK, "sampling.db")), now_ts=NOW + 400)
+    check("a balance key in the series filter is honoured",
+          [entry["key"] for entry in filtered["series"]] == ["syn-main/credits"],
+          "%s" % [entry["key"] for entry in filtered["series"]])
+
+    print("--- resets and the threshold the chart draws")
+    reset_path = fresh(os.path.join(WORK, "resets.db"))
+    reset_cfg = config(path=reset_path, alert_percent=80)
+    conn = history.connect(reset_path)
+    try:
+        conn.execute(
+            "INSERT INTO snapshots (ts, account_id, provider, window_key, percent, used, cap, resets_at) "
+            "VALUES (?,?,?,?,?,?,?,?)",
+            (history.epoch_to_iso(NOW - 3600), "cmd-perso", "synthetic", "monthly", 10.0, None, None,
+             history.epoch_to_iso(NOW - 1800)),
+        )
+        conn.execute(
+            "INSERT OR REPLACE INTO series (account_id, window_key, account_label, provider, "
+            "window_label, kind, first_ts, last_ts) VALUES (?,?,?,?,?,?,?,?)",
+            ("cmd-perso", "monthly", "CommandCode", "synthetic", "Month", "window",
+             history.epoch_to_iso(NOW - 3600), history.epoch_to_iso(NOW - 3600)),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    reset_payload = history.payload({"hours": ["2"], "bucket_seconds": ["900"]}, reset_cfg, now_ts=NOW)
+    check("a reset in the range is named, with its series",
+          reset_payload["resets"] == [{"key": "cmd-perso/monthly", "at": NOW - 1800}],
+          "%s" % reset_payload["resets"])
+    check("the payload carries the threshold the chart draws",
+          reset_payload["alert_percent"] == 80, "%s" % reset_payload["alert_percent"])
+
     for params, expected in (
         ({"since": ["2026-01-02T00:00:00Z"], "until": ["2026-01-01T00:00:00Z"]}, "later than since"),
         ({"since": ["yesterday"]}, "ISO stamp"),
@@ -360,6 +604,21 @@ class StubHandler(BaseHTTPRequestHandler):
     """
 
     routes = {}
+    posted = []
+    post_statuses = []            # scripted HTTP statuses for the next POSTs; empty -> 200
+
+    def do_POST(self):
+        length = int(self.headers.get("Content-Length") or 0)
+        body = self.rfile.read(length) if length else b""
+        try:
+            StubHandler.posted.append(json.loads(body.decode("utf-8") or "{}"))
+        except ValueError:
+            StubHandler.posted.append({"raw": body.decode("utf-8", "replace")})
+        self.send_response(StubHandler.post_statuses.pop(0) if StubHandler.post_statuses else 200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", "2")
+        self.end_headers()
+        self.wfile.write(b"{}")
 
     def do_GET(self):
         path = self.path.split("?")[0]
@@ -493,10 +752,19 @@ def http_checks():
         print("--- and it works once it is")
         enabled_path = fresh(os.path.join(WORK, "enabled", "quota.db"))
         enabled_cfg = os.path.join(WORK, "enabled.json")
+        # The crossing webhook points at this suite's own stub, so a real POST is observed
+        # rather than the call merely not raising. The stub's counter is reset because the
+        # history-off boot above already polled it once, and the crossing needs a real
+        # below-then-above pair in THIS app's samples.
+        StubHandler.posted.clear()
+        StubHandler.post_statuses[:] = [500, 500]      # two failures, then a success
+        calls["n"] = 0
         with open(enabled_cfg, "w", encoding="utf-8") as fh:
             json.dump({"poll_seconds": 1, "background_url": "none", "accounts": accounts,
                        "history": {"enabled": True, "path": enabled_path, "sample_seconds": 5,
-                                   "raw_days": 90, "rollup_days": 365, "rollup_seconds": 900}}, fh)
+                                   "raw_days": 90, "rollup_days": 365, "rollup_seconds": 900,
+                                   "alert_percent": 50,
+                                   "alert_url": "http://127.0.0.1:%d/hook" % stub_port}}, fh)
         proc, base, booted = boot(enabled_cfg, stub_port)
         try:
             check("the panel boots with history on", booted, "nothing answered /api/health")
@@ -518,20 +786,75 @@ def http_checks():
                         break
                 time.sleep(1)
             check("a sample is stored per account and window",
-                  set(series) == {"syn-main/subscription"}, "%s" % sorted(series))
+                  {"syn-main/subscription", "ci-main/balance"} <= set(series), "%s" % sorted(series))
             entry = series.get("syn-main/subscription") or {}
             check("both readings are in the series", (entry.get("samples") or 0) >= 2 and entry.get("peak") == 60.74,
                   "samples=%s peak=%s" % (entry.get("samples"), entry.get("peak")))
             check("the window's own label travels with the series",
                   entry.get("window_label") == "Window" and entry.get("account_label") == "Synthetic",
                   "%s / %s" % (entry.get("account_label"), entry.get("window_label")))
-            check("a balance account contributes no series", "ci-main/credits" not in series
-                  and not any(key.startswith("ci-main") for key in series), "%s" % sorted(series))
+            balance = series.get("ci-main/balance") or {}
+            check("a balance is stored as a balance, never a percentage",
+                  balance.get("kind") == "balance" and balance.get("currency") == "USD"
+                  and (balance.get("samples") or 0) >= 1
+                  and not any(series[key].get("kind") != "balance"
+                              for key in series if key.startswith("ci-main")),
+                  "%s" % balance)
             check("the database exists where it was asked for", os.path.exists(enabled_path), enabled_path)
+
+            # The crossing webhook runs on a worker thread with retry/backoff; the stub fails
+            # twice, so the third attempt lands after ~3 s.
+            hook_deadline = time.time() + 20
+            while time.time() < hook_deadline and len(StubHandler.posted) < 3:
+                time.sleep(0.3)
+            alert = StubHandler.posted[0] if StubHandler.posted else {}
+            check("a crossing is posted to the configured webhook",
+                  alert.get("threshold") == 50 and alert.get("account_id") == "syn-main"
+                  and alert.get("previous") == 30.37 and alert.get("percent") == 60.74,
+                  "%s" % (alert or StubHandler.posted))
+            check("a failing webhook is retried before it is given up on",
+                  len(StubHandler.posted) == 3, "%d POST(s)" % len(StubHandler.posted))
+            check("the delivery outcome is recorded in the event log",
+                  scalar(enabled_path, "SELECT status FROM alerts ORDER BY id DESC LIMIT 1") == "delivered"
+                  and scalar(enabled_path, "SELECT attempts FROM alerts ORDER BY id DESC LIMIT 1") == 3,
+                  "%s" % query(enabled_path, "SELECT status, attempts FROM alerts"))
 
             status, body = get(base + "/api/history?hours=1&max_points=5")
             check("a bad parameter is refused with 400, not 500", status == 400 and "max_points" in body.decode(),
                   "HTTP %s %s" % (status, body.decode()[:80]))
+        finally:
+            stop(proc)
+
+        print("--- a webhook that never answers ends failed, and the poller keeps polling")
+        fail_cfg = os.path.join(WORK, "fail.json")
+        fail_path = os.path.join(WORK, "fail.db")
+        StubHandler.posted.clear()
+        StubHandler.post_statuses[:] = [500] * 50
+        calls["n"] = 0
+        with open(fail_cfg, "w", encoding="utf-8") as fh:
+            json.dump({"poll_seconds": 1, "background_url": "none", "accounts": accounts,
+                       "history": {"enabled": True, "path": fail_path, "sample_seconds": 5,
+                                   "raw_days": 90, "rollup_days": 365, "rollup_seconds": 900,
+                                   "alert_percent": 50,
+                                   "alert_url": "http://127.0.0.1:%d/hook" % stub_port,
+                                   "alert_retries": 1, "alert_backoff_seconds": 1}}, fh)
+        proc, base, booted = boot(fail_cfg, stub_port)
+        try:
+            check("a second store boots for the failure path", booted, "%s" % base)
+            deadline = time.time() + 25
+            while time.time() < deadline:
+                rows = query(fail_path, "SELECT status, attempts FROM alerts")
+                if rows and rows[0][0] == "failed":
+                    break
+                time.sleep(0.3)
+            rows = query(fail_path, "SELECT status, attempts, last_error FROM alerts")
+            check("a webhook that always fails ends failed after retries+1 attempts",
+                  rows and rows[0][0] == "failed" and rows[0][1] == 2, "%s" % rows)
+            status, body = get(base + "/api/quota")
+            parsed = json.loads(body.decode()) if status == 200 else {}
+            check("the poller keeps polling after a failed webhook",
+                  any(a.get("state") == "ok" for a in parsed.get("accounts", [])),
+                  "HTTP %s" % status)
         finally:
             stop(proc)
 
@@ -627,6 +950,73 @@ def page_checks():
     check("the stored span is what gets drawn, and the page says so",
           "function drawnSpan" in page and "range starts before this store does" in page,
           "a young store would draw an empty day-long axis with a speck at the right edge")
+
+    check("the page carries a provider palette and marks",
+          "const PROVIDER_COLORS" in page and "const PROVIDER_LOGOS" in page
+          and "function providerLogo" in page,
+          "a line's colour and mark have to say which provider it belongs to")
+    check("the page draws the panels the reference page draws",
+          all(('id="%s-panel"' % name) in page for name in ("weekly", "donut", "scatter", "radar", "insights"))
+          and all(("function render%s" % name) in page
+                  for name in ("Weekly", "Donut", "Scatter", "Radar", "Insights")),
+          "the multi-chart grid is the body of the reference page")
+    check("the summary names the peak account and the current pressure",
+          "Peak account" in page and "Current pressure" in page and "volatility" in page,
+          "the summary has to name who is under pressure, not just a number")
+    check("a day-or-longer range is snapped to calendar days",
+          "function rangeParams" in page and "setHours(0, 0, 0, 0)" in page,
+          "a daily bar has to line up with a day")
+    check("the alert threshold is drawn and named",
+          "% alert" in page and "alert_percent" in page,
+          "a threshold the reader cannot see is not a threshold")
+    check("reset markers are drawn from the store's own resets",
+          "state.data.resets" in page and "resetIndexes" in page,
+          "a sawtooth that reads as a fall is a sawtooth the page failed to name")
+    check("a projection names the soonest cap crossing",
+          "function projection" in page and "On pace for the cap" in page,
+          "the slope is the one forward-looking number the range actually supports")
+    note_code = (page.split("function renderNote")[1].split("function ")[0]
+                 if "function renderNote" in page else "")
+    check("the projection note respects an isolated line",
+          "state.isolate" in note_code,
+          "an isolated line must not be projected from windows that are not drawn")
+    check("a balance is kept out of the percent chart and shown as money",
+          "filter(isWindow)" in page and "fmtMoney" in page and "balanceOnly" in page,
+          "a balance has no percentage, and a money axis cannot share a percent chart")
+
+    check("a balance-only store is told why the percent panels are empty",
+          "function balanceOnlyStore" in page and "function noPercentMessage" in page
+          and "money balance, not a percentage" in page,
+          "the empty state must not blame sampling when the data is money")
+
+    check("the page carries the support link to Ko-fi",
+          "https://ko-fi.com/realAbitbol" in page and 'rel="noopener noreferrer"' in page
+          and 'aria-label="Support this project on Ko-fi"' in page,
+          "the funding link is part of the page")
+    check("the page surfaces the store's retention and this range's resolution",
+          "function renderStore" in page and 'id="store-line"' in page
+          and "balance_rollup_rows" in page,
+          "a reader has to know whether a flat line is the plan or the retention policy")
+    check("a per-window breakdown appears when one account is chosen",
+          'id="breakdown-panel"' in page and "function renderBreakdown" in page
+          and "Next reset" in page,
+          "the chosen account's windows get a panel of their own")
+    check("the request asks for the viewed accounts' balances too",
+          "function requestKeys" in page and "entry.kind === 'balance'" in page
+          and "accounts[state.account] = true" in page and "paramsFor(requestKeys()" in page,
+          "a balance-only account has no window in trendKeys(), so the selection seeds the set")
+    check("an empty selection never becomes a wildcard request",
+          "__none__" in page,
+          "no series= at all is the server's no-filter, which draws every account")
+    check("a superseded response cannot overwrite a newer one",
+          "state.requestId" in page and "token !== state.requestId" in page,
+          "an out-of-order response must not render a range the controls no longer show")
+    check("the chart legends are keyboard- and AT-legible",
+          "aria-pressed" in page and "tabindex" in page and "ArrowRight" in page,
+          "a value only a mouse can read is a value half the readers cannot read")
+    check("the sparkline breaks on gaps and the donut ink follows the slice",
+          "previous + 1" in page and "function labelInk" in page,
+          "a gap drawn as a line invents data, and fixed ink vanishes on dark slices")
 
 
 def main():

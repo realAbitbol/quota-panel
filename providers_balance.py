@@ -128,9 +128,16 @@ def fetch_cheaperinference(account):
          )
     if body is None:
         return _fail(account, "provider_error", err or "empty response body", status=status)
+    if not isinstance(body, dict):
+        return _fail(account, "shape_unknown",
+                     "CheaperInference returned %s, not a JSON object" % type(body).__name__,
+                     status=status)
 
-    # The wallet object sits at the top level, or one `data` envelope deep.
-    root = unwrap(body, "data") or body
+    # The wallet object sits at the top level, or one `data` envelope deep. A non-object
+    # `data` value is not the wallet, so fall back to the body rather than calling .get on it.
+    root = unwrap(body, "data")
+    if not isinstance(root, dict):
+        root = body
 
     available = num(root.get("available_usd"))
     balance = num(root.get("balance_usd"))
@@ -381,6 +388,10 @@ def fetch_deepseek(account):
         return _fail(account, "network_error", err, status=status)
     if body is None:
         return _fail(account, "provider_error", err or "empty response body", status=status)
+    if not isinstance(body, dict):
+        return _fail(account, "shape_unknown",
+                     "DeepSeek returned %s, not a JSON object" % type(body).__name__,
+                     status=status)
 
     infos = body.get("balance_infos")
     if not isinstance(infos, list) or not infos:
@@ -495,6 +506,9 @@ def fetch_kimi(account):
         return _fail(account, "network_error", err, status=status)
     if body is None:
         return _fail(account, "provider_error", err or "empty response body", status=status)
+    if not isinstance(body, dict):
+        return _fail(account, "shape_unknown",
+                     "Kimi returned %s, not a JSON object" % type(body).__name__, status=status)
 
     if body.get("status") is not True or body.get("code") not in (0, None):
         return _fail(
@@ -600,6 +614,9 @@ def fetch_zai(account):
         return _fail(account, "network_error", err, status=status)
     if body is None:
         return _fail(account, "provider_error", err or "empty response body", status=status)
+    if not isinstance(body, dict):
+        return _fail(account, "shape_unknown",
+                     "z.ai returned %s, not a JSON object" % type(body).__name__, status=status)
 
     # The trap: 200 with success=false.
     if body.get("success") is False or body.get("code") not in (200, None):
