@@ -278,6 +278,27 @@ def storage_checks():
           len(rolled_alert["alerts"]) == 1 and rolled_alert["alerts"][0]["previous"] == 30.0,
           "%s" % rolled_alert["alerts"])
 
+    # The gate used to be `now - last >= sample_seconds`, which drifts with the poll cadence: each
+    # cycle is a little longer than poll_seconds, the write slides forward inside its window, and
+    # eventually a whole window is skipped -- which the trend draws as a gap. Poll every 80 s and
+    # require every 300 s window to hold a reading.
+    drift_path = fresh(os.path.join(WORK, "drift.db"))
+    drift_cfg = config(path=drift_path, sample_seconds=300)
+    stamps = [0]
+    for _ in range(120):
+        stamps.append(stamps[-1] + 80)
+    drift_written = sum(history.record(reading(50), drift_cfg, now_ts=stamp)["written"]
+                        for stamp in stamps)
+    drift = history.payload({"since": [history.epoch_to_iso(0)],
+                             "until": [history.epoch_to_iso(stamps[-1])],
+                             "bucket_seconds": ["300"], "max_points": ["500"]},
+                            drift_cfg, now_ts=stamps[-1])
+    drift_entry = {e["key"]: e for e in drift["series"]}.get("syn-main/subscription") or {}
+    holes = [i for i, value in enumerate(drift_entry.get("avg") or []) if value is None]
+    check("a drifting poll cadence never leaves a sample window empty",
+          not holes and drift_written >= 30,
+          "holes=%s written=%s" % (holes[:6], drift_written))
+
     print("--- retention: rollups are the record")
     path = fresh(os.path.join(WORK, "retention.db"))
     cfg = config(path=path)

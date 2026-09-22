@@ -485,7 +485,14 @@ def record(results, config, now_ts=None):
                 skipped += 1
                 continue
             last = _last_sample_epoch(conn, path, account_id)
-            if last is not None and now_ts - last < config["sample_seconds"]:
+            # One write per SAMPLE WINDOW, not one per `sample_seconds` elapsed. The elapsed test
+            # drifts with the poll cadence: each poll cycle is a little longer than poll_seconds, so
+            # the write slides forward inside its window until it overshoots a boundary and skips a
+            # whole window — which the trend then draws as a gap. Gating on the window the reader
+            # actually buckets by guarantees every window holds a reading (as long as a poll lands
+            # in it), so a fine poll cadence can never leave a hole.
+            window = config["sample_seconds"]
+            if last is not None and bucket_of(now_ts, window) == bucket_of(last, window):
                 skipped += 1
                 continue
             stamp = epoch_to_iso(now_ts)
