@@ -206,7 +206,7 @@ writable `/data` (`install -d -o 10001 -g 10001 ./data`). CIFS/NFS is refused. A
 | `/history` | usage over time |
 | `/api/quota` | normalized JSON: every account, every window, with `resets_at` |
 | `/api/history` | the time series (`hours`/`days`/`since`/`until`, `max_points`, `bucket_seconds`, `account_id`, `series`) |
-| `/api/providers` | the provider registry: id, label, card kind, contract, logo |
+| `/api/providers` | the provider registry: id, label, card kind, logo |
 | `/api/homepage` | flat `items` map keyed `<account_id>_<window>`, for a gethomepage tile |
 | `/api/health` | `200` while the last poll is fresh, `503` when stale |
 | `/background` | the page artwork, `404` when off or the fetch failed |

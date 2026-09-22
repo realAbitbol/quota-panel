@@ -10,10 +10,9 @@ The panel has two card kinds:
                 used" needs a denominator nobody publishes, and inventing one
                 (e.g. against a top-up) would be worse than showing nothing.
 
-Everything here returns the `balance` kind. Each adapter's contract is written
-down in tests/fixtures/providers/ with its provenance, and the README carries a
-`contract: live | documented` column so this repo never overclaims what was
-actually exercised against a real provider.
+Everything here returns the `balance` kind. The response each adapter expects is
+written down in tests/fixtures/providers/, so a provider that changes its payload
+can be diffed against what it used to send before the parser is touched.
 
 Design rules these adapters obey:
   * GET only, never a POST, never the inference path — read-only is the whole point.

@@ -844,8 +844,6 @@ def _fail(account, state, message, *, status=None) -> dict:
         "provider": account["provider"],
         "label": account["label"],
         "kind": provider_kind(account["provider"]),
-        "contract": PROVIDERS.get(account["provider"], {}).get("contract"),
-        "contract_note": PROVIDERS.get(account["provider"], {}).get("contract_note"),
         "logo": provider_logo(account["provider"]),
         "state": state,
         # `status` is the provider's own HTTP code, kept separate from `state`: a card
@@ -874,60 +872,42 @@ def _fmt(value):
 #   window  -> an envelope that refills on a clock (percent is the whole story)
 #   balance -> prepaid money with no cap (percent would need a denominator
 #              nobody publishes, so the card shows money instead)
-# `contract` records what the adapter was actually verified against, and is served by
-# /api/providers so the public UI can never imply more than was measured:
-#   live        -- exercised against a real response from the provider
-#   documented  -- built from the vendor's own published contract, not yet hit live
-#   third-party -- the vendor publishes no contract for this route; the shape comes from
-#                  independent implementations, and contract_note names them rather than
-#                  letting "documented" imply a vendor promise nobody made.
-# `contract_note` carries the caveat a reader needs to audit the value (which implementation,
-# or that the live hit left no committed artifact for CI to re-check).
 # `logo` is a file under static/logos/. The UI draws every mark white (an <img> cannot inherit
 # `currentColor`, so a `color:` rule on it does nothing — see static/index.html). A provider with no
 # mark falls back to _fallback.svg rather than rendering an empty box.
 PROVIDERS = {
     "commandcode": {
-        "kind": "window", "contract": "live", "logo": "commandcode.png",
+        "kind": "window", "logo": "commandcode.png",
         "label": "CommandCode",
-        # "live" is the strongest word in this registry, so the claim names what backs it: this
-        # adapter is exercised against the provider, from the maintainer's own account, daily.
-        "contract_note": "exercised live from the maintainer's account",
     },
     "opencode_go": {
-        "kind": "window", "contract": "live", "logo": "opencode_go.svg",
+        "kind": "window", "logo": "opencode_go.svg",
         "label": "OpenCode Go",
-        "contract_note": "exercised live from the maintainer's account",
     },
     "openrouter": {
-        "kind": "balance", "contract": "documented", "logo": "openrouter.svg",
+        "kind": "balance", "logo": "openrouter.svg",
         "label": "OpenRouter",
     },
     "cheaperinference": {
-        "kind": "balance", "contract": "documented", "logo": "cheaperinference.svg",
+        "kind": "balance", "logo": "cheaperinference.svg",
         "label": "CheaperInference",
     },
     "deepseek": {
-        "kind": "balance", "contract": "documented", "logo": "deepseek.png",
+        "kind": "balance", "logo": "deepseek.png",
         "label": "DeepSeek",
     },
     "kimi": {
-        "kind": "balance", "contract": "documented", "logo": "kimi.svg",
+        "kind": "balance", "logo": "kimi.svg",
         "label": "Kimi / Moonshot",
     },
     "zai": {
-        # Not "documented": z.ai publishes no API reference for this route. Its own page
-        # (docs.z.ai/devpack/notice/usage-revision) documents plan and quota POLICY, and
-        # CodexBar's write-up tells readers to open DevTools and watch
-        # api/monitor/usage/quota/limit. The shape below comes from two independent
-        # implementations agreeing field by field — corroborated, but not a vendor promise.
-        "kind": "window", "contract": "third-party", "logo": "zai.svg",
+        # z.ai publishes no API reference for this route: the shape parsed below comes from two
+        # independent implementations agreeing field by field.
+        "kind": "window", "logo": "zai.svg",
         "label": "z.ai GLM Coding Plan",
-        "contract_note": "no vendor API reference for this route; shaped from two independent "
-                         "implementations (steipete/CodexBar, bugwz/AIMeter)",
     },
     "synthetic": {
-        "kind": "window", "contract": "documented", "logo": "synthetic.svg",
+        "kind": "window", "logo": "synthetic.svg",
         "label": "Synthetic",
     },
 }
@@ -953,7 +933,7 @@ def provider_logo(provider):
 FETCHERS = {"commandcode": fetch_commandcode, "opencode_go": fetch_opencode_go}
 
 # The money-balance and GLM-plan adapters live in their own module: one file per
-# provider family, each carrying the documented contract it was built against.
+# provider family.
 # Imported lazily so a syntax error in a balance adapter can never stop the panel
 # from serving the two providers that were already working.
 BALANCE_FETCHERS = {}
@@ -974,8 +954,6 @@ def load_balance_fetchers():
 def _annotate(account, result) -> dict:
     """Stamp the registry facts every card needs, on the success path too."""
     result["kind"] = provider_kind(account["provider"])
-    result["contract"] = PROVIDERS.get(account["provider"], {}).get("contract")
-    result["contract_note"] = PROVIDERS.get(account["provider"], {}).get("contract_note")
     result["logo"] = provider_logo(account["provider"])
     # The account-level `kind` must describe what was actually rendered. OpenRouter is
     # registered as a balance provider but emits a real percent window when the key has
@@ -1528,7 +1506,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/api/providers":
             # The registry, so a consumer (or the README generation) never has to
-            # guess which card kind a provider feeds or how well it was verified.
+            # guess which card kind a provider feeds.
             self._json(
                 200,
                 {
@@ -1537,8 +1515,6 @@ class Handler(BaseHTTPRequestHandler):
                             "id": key,
                             "label": info["label"],
                             "kind": info["kind"],
-                            "contract": info["contract"],
-                            "contract_note": info.get("contract_note"),
                             "logo": "/static/logos/" + info["logo"],
                         }
                         for key, info in sorted(PROVIDERS.items())

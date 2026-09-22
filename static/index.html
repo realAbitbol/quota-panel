@@ -101,12 +101,16 @@
   .bal-note{font-size:11.5px;color:var(--muted);margin-top:3px}
   .label{font-weight:600;font-size:15px;margin:0}   /* an h2: the card's title, for a reader */
   .plan{font-size:11.5px;color:var(--muted);margin-top:2px}
-  /* cursor:help says the pill carries a definition: live / documented / third-party are the
-     server's own words and each one has a title. */
-  .pill{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--line);color:var(--muted);white-space:nowrap;cursor:help}
+  /* A status light: a dot and one word about the reading on this card. Not a verdict on how the
+     adapter that produced it was written — that is a maintainer's question, and answering it in
+     the reader's header cost every account a legend. cursor:help keeps a definition on hover,
+     because a dot cannot say what "stale" measured. */
+  .pill{display:inline-flex;align-items:center;gap:5px;
+        font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--line);color:var(--muted);white-space:nowrap;cursor:help}
+  .pill .dot{width:6px;height:6px;border-radius:50%;background:currentColor;flex:0 0 auto}
   .pill.ok{color:var(--ok);border-color:#1d5c47}
-  /* Dashed and muted: "documented" must not read as "verified live". */
-  .pill.doc{color:var(--muted);border-style:dashed}
+  /* Amber, not red: nothing here is broken, the server has simply stopped republishing. */
+  .pill.old{color:var(--warn);border-color:#5a4a1d}
   /* #ff6b6b measured 3.50:1 on the card surface at 11px — below AA, on the one marker that
      distinguishes a failing card from a live one in a screenshot. #ffa8a8 measures 5.28:1. */
   /* The modifier is `bad`, not `err`: an error pill used to carry class="pill err", so it also
@@ -122,7 +126,14 @@
   .bar{height:7px;border-radius:999px;background:var(--card-2);overflow:hidden}
   .fill{height:100%;border-radius:999px;background:var(--ok);transition:width .4s ease}
   .fill.warn{background:var(--warn)} .fill.hot{background:var(--hot)}
-  .reset{font-size:11.5px;color:var(--muted);margin-top:4px;font-variant-numeric:tabular-nums}
+  /* When the envelope refills is the second thing a reader looks for, and it was the smallest
+     text on the card. The when-part carries the emphasis; the numbers beside it (used / cap) stay
+     in --muted, so the line still reads as one sentence rather than two claims. */
+  .reset{font-size:12px;color:var(--muted);margin-top:4px;font-variant-numeric:tabular-nums}
+  .reset .when{color:var(--fg);font-weight:500}
+  /* Inside the last day the refill is imminent -- the one moment this line should be what you
+     notice. tick() keeps the class true as the clock crosses the boundary. */
+  .reset.soon .when{color:var(--warn);font-weight:600}
   .err{margin-top:12px;font-size:12.5px;color:#ffb4b4;background:#231418;
        border:1px solid #4a2020;border-radius:9px;padding:9px 11px}
   /* 10.5px was the smallest text here and the first casualty of a bright artwork. */
@@ -139,12 +150,26 @@
     #feed.fresh .ic svg{animation:spin .9s ease}
   }
   @keyframes spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
-  /* The entry point to the optional history page, when that layer is on. */
-  .nav{font-size:12.5px;color:var(--fg);text-decoration:none;
+  /* The switch between the two pages: one button pointing each way -- right on the way into
+     history, left on the way back -- so the pair reads as a single control instead of two
+     unrelated links. The chevron is inline like every other mark here: the page still fetches
+     nothing of its own. */
+  .nav{font-size:12.5px;color:var(--fg);text-decoration:none;display:inline-flex;align-items:center;
+       gap:6px;
        border:1px solid rgba(var(--accent-rgb),.38);
        border-radius:999px;padding:4px 12px;background:rgba(var(--accent-rgb),.14);font-weight:600}
+  /* 320x512 is the glyph's own box, so its height sets its width: a square box squashes it. */
+  .nav svg{width:.55em;height:.9em;fill:currentColor;display:block;flex:0 0 auto}
   .nav:hover{color:#fff;border-color:var(--accent)}
-  @media (prefers-reduced-motion:no-preference){ .nav{transition:color .15s,border-color .15s} }
+  /* A second rule, deliberately: the three declarations above are string-matched by
+     tests/smoke.py, so the deeper fill and the ring live where they cannot disturb them. */
+  @media (hover:hover){
+    .nav:hover{background:rgba(var(--accent-rgb),.26);box-shadow:0 0 0 3px rgba(var(--accent-rgb),.09)}
+  }
+  .nav:active{transform:translateY(1px)}
+  @media (prefers-reduced-motion:no-preference){
+    .nav{transition:color .15s,border-color .15s,background .15s,box-shadow .15s}
+  }
   /* The support link: fixed, small, out of the reading column. An anchor, not a resource load. */
   .kofi{position:fixed;right:16px;bottom:16px;z-index:60;display:inline-flex;align-items:center;
        gap:7px;padding:7px 12px;border-radius:999px;text-decoration:none;font-size:12.5px;
@@ -155,9 +180,6 @@
   .kofi span{font-weight:600}
   @media (prefers-reduced-motion:no-preference){ .kofi{transition:color .15s,border-color .15s} }
   @media (prefers-reduced-motion:reduce){ .fill{transition:none} }
-  /* The three words on the pills are the server's, and nothing on this page defined them. */
-  .legend{margin:14px 2px 0;font-size:11.5px;color:var(--muted);line-height:1.5}
-  .legend b{color:var(--fg);font-weight:600}
   /* The support pill is fixed: on a narrow screen it used to come to rest over the last card. */
   @media (max-width:640px){ body{padding:14px 14px 68px} }
   </style>
@@ -176,14 +198,11 @@
   <!-- #feed repaints once a second, so it is deliberately NOT a live region: a screen reader
        would announce the countdown on every tick. It is the header's one number. -->
   <span class="muted" id="feed"></span>
-  <a class="nav" id="historyLink" href="/history" hidden>History</a>
+  <a class="nav" id="historyLink" href="/history" hidden>History<svg viewBox="0 0 320 512" aria-hidden="true"><path d="M311.1 233.4c12.5 12.5 12.5 32.8 0 45.3l-192 192c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L243.2 256 73.9 86.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l192 192z"/></svg></a>
 </header>
 
 <main>
   <div class="grid" id="grid"><div class="card waiting">Loading…</div></div>
-  <p class="legend">The word on each pill is the contract the server measured:
-    <b>live</b> was exercised against the provider, <b>documented</b> is built from the vendor's
-    published contract, <b>third-party</b> is a route the vendor documents nowhere.</p>
 </main>
 
 <noscript>
@@ -201,6 +220,7 @@ const MIN_POLL_MS = 10000;
 const MAX_POLL_MS = 3600000;
 const RETRY_MS = 15000;             // a failed fetch is retried sooner than a whole cadence
 const FRESH_MS = 900;               // how long the header mark turns after a payload lands
+const SOON_MS = 24 * 3600 * 1000;   // a refill this close is worth noticing on the card
 const FETCH_TIMEOUT_MS = 8000;      // below MIN_POLL_MS: a fetch must settle before the next one
 // The client polls exactly the interval the user configured, and the server republishes slightly
 // inside it. The other direction -- client waits a cadence and a bit -- is what made a 30s setting
@@ -446,26 +466,23 @@ function setFeed(){
 // produce digits, "-", "." and the fixed literals ''/'warn'/'hot'. Attribute contexts are all
 // double-quoted, and src= values are appended to a root-relative path, so a config-supplied
 // logo cannot become an off-origin or javascript: URL.
-function cardHtml(acc){
+function cardHtml(acc, stale){
   const ok = acc.state === 'ok';
   // The mark is keyed off the provider the server resolved, falling back to the
   // neutral glyph — a missing logo file must never render a broken-image box.
   const mark = acc.logo || '_fallback.svg';
-  // A green "live" pill has to mean what the server means by it: `contract` records whether the
-  // adapter was exercised against a real response ('live'), built from the vendor's published
-  // contract ('documented'), or shaped from independent implementations because the vendor
-  // publishes nothing for that route ('third-party'). The server serves that field so the UI
-  // "can never imply more than was measured" — and the card used to badge every healthy
-  // account the same. The pill now carries the server's own word instead of re-deriving one
-  // from two values: z.ai registered as "third-party" was rendering "documented", a promise
-  // the adapter could not support.
-  const contract = acc.contract || 'documented';
-  const documented = contract !== 'live';
-  const pill = ok ? contract : acc.state;
+  // The pill says one thing: the state of the reading on this card. Nothing about how the
+  // adapter that produced it was written — that verdict was a maintainer's note in a reader's
+  // header. `live` is claimed only while the payload this card came from is still current, so a
+  // poller that quietly stopped republishing cannot leave a wall of green lights behind it. A
+  // failure carries the state the server gave, which is what tells "the key was rejected" apart
+  // from "the provider changed its shape".
+  const pill = ok ? (stale ? 'stale' : 'live') : acc.state;
+  const pillClass = ok ? (stale ? 'old' : 'ok') : 'bad';
   const pillTitle = ok
-    ? (acc.contract_note || (documented
-        ? 'built from the vendor’s published contract — not yet exercised against a real response'
-        : 'exercised against a real provider response'))
+    ? (stale
+        ? `the server has not republished for ${dataAge()}s — these are its last numbers`
+        : 'read from the provider in the current poll')
     : (acc.error || acc.state);
   let html = `<div class="card-head">
       <div class="card-id">
@@ -475,7 +492,7 @@ function cardHtml(acc){
           <div class="plan">${esc(acc.plan || acc.provider)}${acc.account_name ? ' · ' + esc(acc.account_name) : ''}</div>
         </div>
       </div>
-      <span class="pill ${ok ? (documented ? 'doc' : 'ok') : 'bad'}" title="${esc(pillTitle)}">${esc(pill)}</span>
+      <span class="pill ${pillClass}" title="${esc(pillTitle)}"><span class="dot" aria-hidden="true"></span>${esc(pill)}</span>
     </div>`;
   if(!ok){
     // http_status is kept separate from state by the server precisely so a card can say "the
@@ -498,12 +515,15 @@ function cardHtml(acc){
     }
     // The note is printed exactly once, on the detail line: it used to be dropped whenever a
     // percent was present (except the magic string "credits") and printed twice when it was not.
-    const detail = [];
+    // The countdown gets a span of its own so it can carry the emphasis: tick() rewrites that
+    // span once a second, and the used/cap numbers beside it are never re-assembled by hand.
     const cd = countdown(w.resets_at);
-    if(cd) detail.push(cd);
-    if(w.used !== null && w.used !== undefined && w.cap) detail.push(`${fmtNum(w.used)} / ${fmtNum(w.cap)}`);
-    if(w.note && p !== null) detail.push(String(w.note));
-    if(detail.length) html += `<div class="reset">${esc(detail.join(' · '))}</div>`;
+    const tail = [];
+    if(w.used !== null && w.used !== undefined && w.cap) tail.push(`${fmtNum(w.used)} / ${fmtNum(w.cap)}`);
+    if(w.note && p !== null) tail.push(String(w.note));
+    const line = (cd ? `<span class="when">${esc(cd)}</span>` : '')
+      + (tail.length ? `<span class="rest">${cd ? ' · ' : ''}${esc(tail.join(' · '))}</span>` : '');
+    if(line) html += `<div class="reset">${line}</div>`;
     html += `</div>`;
   }
   const t = acc.totals || {};
@@ -514,7 +534,11 @@ function cardHtml(acc){
     // The server passes a provider-supplied string through when it merely looks ISO-ish, so an
     // unparseable one used to print "period ends Invalid Date" as if it were a fact.
     const end = Date.parse(acc.period_end);
-    html += `<div class="reset">period ends ${isNaN(end) ? esc(acc.period_end) : new Date(end).toLocaleString()}</div>`;
+    // The day the plan's month ends is what a reader plans around, so the date carries the same
+    // emphasis as a countdown, and turns amber inside its last three days.
+    const soon = !isNaN(end) && (end - serverNow()) < SOON_MS * 3;
+    html += `<div class="reset${soon ? ' soon' : ''}">period ends ${isNaN(end)
+      ? esc(acc.period_end) : `<span class="when">${esc(new Date(end).toLocaleString())}</span>`}</div>`;
   }
   return html;
 }
@@ -523,6 +547,9 @@ function render(){
   const grid = document.getElementById('grid');
   if(!data){ return; }
   const accounts = data.accounts || [];
+  // One freshness reading for the whole paint: every card here came out of the same payload, so
+  // none of them can be fresher than it is.
+  const stale = isStale();
   grid.classList.toggle('first', firstRender);
   grid.innerHTML = '';
   if(!accounts.length){
@@ -534,7 +561,7 @@ function render(){
     try{
       // Every interpolated value in cardHtml passes through esc() (label/plan/error/notes come
       // from the local config and provider APIs), so no raw remote string is parsed as markup.
-      el.innerHTML = cardHtml(acc);
+      el.innerHTML = cardHtml(acc, stale);
     }catch(e){
       // One malformed field must cost one card, not the whole grid — and the failure has to be
       // visible, because a blank panel under a green indicator is the worst possible outcome.
@@ -558,8 +585,18 @@ function tick(){
     if(!node || !iso) continue;
     const cd = countdown(iso);
     if(!cd) continue;
-    const parts = node.textContent.split(' · ');
-    node.textContent = cd + (parts.length > 1 ? ' · ' + parts.slice(1).join(' · ') : '');
+    const when = node.querySelector('.when');
+    if(when){
+      when.textContent = cd;
+    }else{
+      // A .reset rendered without one -- markup from before the split -- still gets its line.
+      const parts = node.textContent.split(' · ');
+      node.textContent = cd + (parts.length > 1 ? ' · ' + parts.slice(1).join(' · ') : '');
+    }
+    // The imminent-refill class lives here, not at render time, so a card left open overnight is
+    // amber by the time today's refill is an hour away.
+    const left = Date.parse(iso) - serverNow();
+    node.classList.toggle('soon', isFinite(left) && left > 0 && left < SOON_MS);
   }
   setFeed();
 }

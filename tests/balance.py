@@ -494,7 +494,7 @@ def main():
                   all(w.get("amount") is None for w in res["windows"]))
 
         # ---- a provider whose mark is missing must not break the card ---------
-        app.PROVIDERS["__ghost__"] = {"kind": "balance", "contract": "documented",
+        app.PROVIDERS["__ghost__"] = {"kind": "balance",
                                       "logo": "does-not-exist.svg", "label": "Ghost"}
         ghost = app._annotate({"id": "g", "provider": "__ghost__", "label": "Ghost"},
                               {"state": "ok", "windows": []})

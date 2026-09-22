@@ -752,27 +752,32 @@ def main():
         """, returnByValue=True).get("result", {}).get("value") or []
         check("no card renders an error in the screenshot", not errors, ", ".join(errors))
 
-        # The pill must be the registry's own word, per card. Membership in a set is not enough:
-        # a UI that flattened every healthy card to one word would still pass it — and that is
-        # exactly how z.ai, registered `third-party` because no vendor publishes its route,
-        # rendered as "documented". /api/quota carries the contract the server decided on, so
-        # the rendered pill is compared against the served value for each card.
+        # The pill is a status light about the reading on this card, and it is compared against
+        # the state the server published for that account. Membership in a set is not enough: a
+        # UI that flattened every healthy card to one word would still pass it. A healthy card
+        # reads `live` while the payload it came from is current — this harness boots, renders
+        # and captures within seconds, and anything older than three cadences would legitimately
+        # read `stale` instead.
         pills = cdp.call("Runtime.evaluate", expression="""
           Array.from(document.querySelectorAll('.card')).map(c => ({
             label: c.querySelector('.label').textContent,
-            pill: c.querySelector('.pill').textContent.trim()
+            pill: c.querySelector('.pill').textContent.trim(),
+            dot: !!c.querySelector('.pill .dot')
           }))
         """, returnByValue=True).get("result", {}).get("value") or []
         with urllib.request.urlopen(base + "/api/quota", timeout=5) as resp:
             served = json.loads(resp.read().decode())
-        expected = {a["label"]: a["contract"] for a in served["accounts"]}
+        expected = {a["label"]: ("live" if a["state"] == "ok" else a["state"])
+                    for a in served["accounts"]}
         wrong = [(c["label"], c["pill"], expected.get(c["label"])) for c in pills
                  if expected.get(c["label"]) != c["pill"]]
-        check("every card's pill is the contract the API published", not wrong, str(wrong))
+        check("every card's pill is the status the reading earned", not wrong, str(wrong))
+        check("the status light is a dot and a word",
+              bool(pills) and all(c["dot"] for c in pills),
+              str([(c["label"], c["dot"]) for c in pills]))
         words = sorted({c["pill"] for c in pills})
-        check("the page does not flatten the contract vocabulary to one word",
-              len(words) > 1, str(words))
-        check("a third-party contract renders as third-party", "third-party" in words, str(words))
+        check("no card advertises a verification verdict any more",
+              not ({"documented", "third-party", "contract"} & set(words)), str(words))
 
         # The header's one number is the countdown to the page's next poll. It must read one
         # cadence (the server's period, plus a design skew so a poll never arrives fractionally

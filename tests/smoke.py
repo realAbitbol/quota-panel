@@ -401,8 +401,8 @@ def main():
               str([(a["id"], a.get("http_status")) for a in accounts]))
         check("GET /api/quota has no credential leak", not leak(quota_body), leak(quota_body) or "")
 
-        # The registry is a published contract (README, accounts.example.json): the card
-        # kind and how well each adapter was verified are served, and nothing tested it.
+        # The registry is published (README, accounts.example.json): the card kind and the
+        # mark each provider draws are served, and nothing tested it.
         status, _, providers_body = get(base + "/api/providers")
         providers = json.loads(providers_body)
         registered = providers.get("providers") or []
@@ -417,21 +417,19 @@ def main():
         check("every served logo path points at a file on disk",
               all(os.path.exists(os.path.join(ROOT, p["logo"].lstrip("/"))) for p in registered),
               str([p["logo"] for p in registered]))
-        check("every provider declares its kind and its contract",
-              all(p["kind"] in ("window", "balance") and p["contract"] in ("live", "documented", "third-party")
-                  for p in registered),
-              str([(p["id"], p.get("kind"), p.get("contract")) for p in registered]))
-
-        # `third-party` exists because z.ai publishes no contract for its route: the registry
-        # must not call that "documented", and the claim a reader cannot re-run must be said
-        # out loud (the live providers carry that caveat).
-        third = [p["id"] for p in registered if p["contract"] == "third-party"]
-        check("z.ai is registered as third-party, not documented", third == ["zai"], str(third))
-        note_less = [p["id"] for p in registered if p["contract"] == "live" and not p["contract_note"]]
-        check("every `live` claim says what backs it", not note_less, str(note_less))
-        check("`third-party` names its sources",
-              all(p.get("contract_note") for p in registered if p["contract"] == "third-party"),
-              str([(p["id"], p.get("contract_note")) for p in registered if p["contract"] == "third-party"]))
+        check("every provider declares its kind",
+              all(p["kind"] in ("window", "balance") for p in registered),
+              str([(p["id"], p.get("kind")) for p in registered]))
+        # The registry used to serve a `contract` verdict on how well each adapter had been
+        # verified, and every card badged the reader with it. It was the maintainer's note in the
+        # reader's header: the pill states the reading's condition now, and these two keep the
+        # notion from creeping back into a payload the UI reads.
+        check("the registry carries no verification verdict",
+              all("contract" not in p and "contract_note" not in p for p in registered),
+              str([sorted(p) for p in registered]))
+        check("no account carries a verification verdict",
+              all("contract" not in a and "contract_note" not in a for a in accounts),
+              str([sorted(a) for a in accounts]))
 
         status, _, home_body = get(base + "/api/homepage")
         home = json.loads(home_body)
