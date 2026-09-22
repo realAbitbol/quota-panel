@@ -17,10 +17,13 @@
     --bg:#0b0d12; --card:20,24,33; --card-2:#1b2130; --line:#252c3b;
     --fg:#e8ecf5; --muted:#b7c2d6; --ok:#33d69f; --warn:#f5c451; --hot:#ff6b6b; --accent:#5b8dff;
     --accent-rgb:91,141,255;
-    --card-alpha:.68;           /* tiles and header sit slightly translucent over the art */
+    --card-alpha:.72;           /* tiles and header sit slightly translucent over the art */
     --card-blur:14px;
   }
   *{box-sizing:border-box}
+  /* The page had no focus ring at all: its two interactive elements (History, the support link)
+     were reachable by keyboard with nothing on screen saying where you were. */
+  :focus-visible{outline:2px solid var(--accent);outline-offset:2px}
   html,body{min-height:100%}
   body{margin:0;color:var(--fg);
        font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
@@ -36,7 +39,7 @@
      both light and dark areas of the image. Pointer-events off so it never
      swallows clicks. */
   body::before{content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;
-       background:linear-gradient(180deg,rgba(11,13,18,.55) 0%,rgba(11,13,18,.38) 45%,rgba(11,13,18,.62) 100%)}
+       background:linear-gradient(180deg,rgba(11,13,18,.62) 0%,rgba(11,13,18,.46) 45%,rgba(11,13,18,.70) 100%)}
   @media (prefers-reduced-motion:no-preference){ body{background-attachment:fixed} }
   header{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:18px;
        background:rgba(var(--card),var(--card-alpha));
@@ -57,7 +60,29 @@
   .card{background:rgba(var(--card),var(--card-alpha));border:1px solid var(--line);border-radius:14px;
        padding:16px 16px 14px;
        backdrop-filter:blur(var(--card-blur));-webkit-backdrop-filter:blur(var(--card-blur))}
-  .grid{display:grid;gap:16px;grid-template-columns:repeat(auto-fill,minmax(310px,1fr))}
+  /* Which card needs a human? Every card used to carry identical weight, so finding the one at
+     96% meant reading eight numbers. The tint is the information the bars already hold, hoisted
+     to the card's edge — no new colour, no new word, and the numbers themselves are untouched. */
+  .card.watch{border-color:#4b4021}
+  .card.urgent{border-color:#5a2a26;box-shadow:inset 3px 0 0 var(--hot)}
+  .card.broken{border-color:#5c2020;box-shadow:inset 3px 0 0 #8a3a32}
+  /* min() keeps the 310px track from forcing a horizontal scroll on a 320-338px viewport, where
+     the content box is narrower than the track's own minimum. */
+  .grid{display:grid;gap:16px;grid-template-columns:repeat(auto-fill,minmax(min(310px,100%),1fr))}
+  /* First paint only: render() rebuilds the grid on every poll, and a grid that re-staggers once
+     a minute is noise rather than life. render() clears .first after its first pass. */
+  @media (prefers-reduced-motion:no-preference){
+    .grid.first>.card{animation:cardIn .30s ease backwards}
+    .grid.first>.card:nth-child(2){animation-delay:.03s}
+    .grid.first>.card:nth-child(3){animation-delay:.06s}
+    .grid.first>.card:nth-child(4){animation-delay:.09s}
+    .grid.first>.card:nth-child(5){animation-delay:.12s}
+    .grid.first>.card:nth-child(6){animation-delay:.15s}
+    .grid.first>.card:nth-child(7){animation-delay:.18s}
+    .grid.first>.card:nth-child(8){animation-delay:.21s}
+    .grid.first>.card:nth-child(n+9){animation-delay:.24s}
+  }
+  @keyframes cardIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
   .card-head{display:flex;justify-content:space-between;align-items:flex-start;gap:10px}
   /* The mark sits flush with the label so the head reads [logo] name / plan … pill.
      Fixed size and flex:0 0 auto keep it from shifting when a label wraps. */
@@ -76,7 +101,9 @@
   .bal-note{font-size:11.5px;color:var(--muted);margin-top:3px}
   .label{font-weight:600;font-size:15px;margin:0}   /* an h2: the card's title, for a reader */
   .plan{font-size:11.5px;color:var(--muted);margin-top:2px}
-  .pill{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--line);color:var(--muted);white-space:nowrap}
+  /* cursor:help says the pill carries a definition: live / documented / third-party are the
+     server's own words and each one has a title. */
+  .pill{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--line);color:var(--muted);white-space:nowrap;cursor:help}
   .pill.ok{color:var(--ok);border-color:#1d5c47}
   /* Dashed and muted: "documented" must not read as "verified live". */
   .pill.doc{color:var(--muted);border-style:dashed}
@@ -89,19 +116,29 @@
   .win{margin-top:11px}
   .win-top{display:flex;justify-content:space-between;font-size:12.5px;margin-bottom:5px}
   .win-name{color:var(--muted);text-transform:uppercase;letter-spacing:.6px;font-size:11px}
-  .win-val{font-variant-numeric:tabular-nums}
+  /* The value sat at the same size as its own label, so the number a reader came for read second.
+     Half a step up plus a weight puts the hierarchy the right way round. */
+  .win-val{font-variant-numeric:tabular-nums;font-size:13.5px;font-weight:600}
   .bar{height:7px;border-radius:999px;background:var(--card-2);overflow:hidden}
   .fill{height:100%;border-radius:999px;background:var(--ok);transition:width .4s ease}
   .fill.warn{background:var(--warn)} .fill.hot{background:var(--hot)}
   .reset{font-size:11.5px;color:var(--muted);margin-top:4px;font-variant-numeric:tabular-nums}
   .err{margin-top:12px;font-size:12.5px;color:#ffb4b4;background:#231418;
        border:1px solid #4a2020;border-radius:9px;padding:9px 11px}
-  .totals{margin-top:10px;font-size:10.5px;color:var(--muted);border-top:1px dashed var(--line);padding-top:8px;line-height:1.35}
+  /* 10.5px was the smallest text here and the first casualty of a bright artwork. */
+  .totals{margin-top:10px;font-size:11px;color:var(--muted);border-top:1px dashed var(--line);padding-top:8px;line-height:1.35}
   .waiting{color:var(--muted);font-size:13px;padding:18px 2px}
   /* The two status halves are one group on the right, opposite the logo and the title. */
   #feed{margin-left:auto;font-variant-numeric:tabular-nums;display:inline-flex;align-items:center}
   #feed.stale{color:var(--warn)}
   #feed.down{color:var(--hot)}
+  /* The mark turns once when a fresh payload has landed, so "the numbers just moved" is visible
+     without adding a word to the header. The SVG turns, not the .ic box: a rotated box grows its
+     bounding rect, and the capture harness measures the gap between that box and the first word. */
+  @media (prefers-reduced-motion:no-preference){
+    #feed.fresh .ic svg{animation:spin .9s ease}
+  }
+  @keyframes spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
   /* The entry point to the optional history page, when that layer is on. */
   .nav{font-size:12.5px;color:var(--fg);text-decoration:none;
        border:1px solid rgba(var(--accent-rgb),.38);
@@ -118,6 +155,11 @@
   .kofi span{font-weight:600}
   @media (prefers-reduced-motion:no-preference){ .kofi{transition:color .15s,border-color .15s} }
   @media (prefers-reduced-motion:reduce){ .fill{transition:none} }
+  /* The three words on the pills are the server's, and nothing on this page defined them. */
+  .legend{margin:14px 2px 0;font-size:11.5px;color:var(--muted);line-height:1.5}
+  .legend b{color:var(--fg);font-weight:600}
+  /* The support pill is fixed: on a narrow screen it used to come to rest over the last card. */
+  @media (max-width:640px){ body{padding:14px 14px 68px} }
   </style>
 </head>
 <body>
@@ -139,6 +181,9 @@
 
 <main>
   <div class="grid" id="grid"><div class="card waiting">Loading…</div></div>
+  <p class="legend">The word on each pill is the contract the server measured:
+    <b>live</b> was exercised against the provider, <b>documented</b> is built from the vendor's
+    published contract, <b>third-party</b> is a route the vendor documents nowhere.</p>
 </main>
 
 <noscript>
@@ -155,6 +200,7 @@ const TICK_MS = 1000;            // countdown repaint
 const MIN_POLL_MS = 10000;
 const MAX_POLL_MS = 3600000;
 const RETRY_MS = 15000;             // a failed fetch is retried sooner than a whole cadence
+const FRESH_MS = 900;               // how long the header mark turns after a payload lands
 const FETCH_TIMEOUT_MS = 8000;      // below MIN_POLL_MS: a fetch must settle before the next one
 // The client polls exactly the interval the user configured, and the server republishes slightly
 // inside it. The other direction -- client waits a cadence and a bit -- is what made a 30s setting
@@ -168,9 +214,24 @@ const MAX_RELOADS = 3;           // …and never more than this many in one docu
 let data = null, clockSkew = 0, pollMs = 60000;   // clockSkew: display-only server offset
 let lastOkAt = null, failStreak = 0, timer = null, inFlight = false;
 let reloads = 0, lastError = '', reloadTimer = null;
+let firstRender = true;          // the stagger belongs to the first paint, not to every poll
 let nextFetchAt = null;          // client-clock instant of the next fetch; what the countdown counts to
 
 const colorFor = p => p >= 90 ? 'hot' : p >= 70 ? 'warn' : '';
+
+// The card's own state, hoisted to its edge: 'broken' / 'urgent' / 'watch' / ''. Derived from the
+// same two thresholds as colorFor(), so the tint can never disagree with the bars it sits beside.
+// A balance card is never 'urgent': money has no cap, so no percentage exists to cross.
+function cardState(acc){
+  if(acc.state !== 'ok') return 'broken';
+  let worst = -1;
+  for(const w of (acc.windows || [])){
+    if((w.kind || 'window') === 'balance') continue;
+    const p = numericPercent(w.percent);
+    if(p !== null && p > worst) worst = p;
+  }
+  return worst >= 90 ? 'urgent' : worst >= 70 ? 'watch' : '';
+}
 
 function esc(s){ return String(s === null || s === undefined ? '' : s)
   .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
@@ -354,7 +415,7 @@ function setFeed(){
   // number, counting down to the next update.
   if(failStreak === 0 && !stale){
     el.innerHTML = ICON.rotate + ' ' + updateText('updating');
-    el.className = 'muted';
+    el.className = 'muted' + (Date.now() - lastOkAt < FRESH_MS ? ' fresh' : '');
   } else if(failStreak < RELOAD_AFTER){
     // A payload that parsed fine but stopped moving is not a healthy feed: /api/quota answers
     // 200 with every account in error, so HTTP success alone says nothing about the data.
@@ -462,13 +523,14 @@ function render(){
   const grid = document.getElementById('grid');
   if(!data){ return; }
   const accounts = data.accounts || [];
+  grid.classList.toggle('first', firstRender);
   grid.innerHTML = '';
   if(!accounts.length){
     grid.innerHTML = '<div class="card waiting">Waiting for the first provider poll…</div>';
   }
   for(const acc of accounts){
     const el = document.createElement('div');
-    el.className = 'card';
+    el.className = 'card ' + cardState(acc);
     try{
       // Every interpolated value in cardHtml passes through esc() (label/plan/error/notes come
       // from the local config and provider APIs), so no raw remote string is parsed as markup.
@@ -481,6 +543,7 @@ function render(){
     }
     grid.appendChild(el);
   }
+  firstRender = false;
   setFeed();
 }
 
