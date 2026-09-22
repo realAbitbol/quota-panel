@@ -111,13 +111,17 @@
 <header>
   <img class="logo" src="/static/favicon.svg" width="28" height="28" alt="">
   <h1>Quota Panel</h1>
-  <!-- Hidden in the markup rather than at runtime: a default install has no history layer, and
-       a link to a page whose whole content is "off" is worse than no link at all. load()
-       unhides it only when the server says the layer is on and usable. -->
-  <a class="nav" id="historyLink" href="/history" hidden>History</a>
+  <!-- The entry point to the history page, when that layer is on: the last thing in the header,
+       flush right — the same slot the live panel's link takes on the history page, so the two
+       pages put their only navigation in the same place. #feed owns the auto margin, so whatever
+       follows it sits at the right edge. Hidden in the markup rather than at runtime: a link to a
+       page whose whole content is "off" is worse than no link at all, and load() unhides it as
+       soon as the server says the layer is on (a broken store included — that page prints the
+       error and the fix). -->
   <!-- #feed repaints once a second, so it is deliberately NOT a live region: a screen reader
        would announce the countdown on every tick. It is the header's one number. -->
   <span class="muted" id="feed"></span>
+  <a class="nav" id="historyLink" href="/history" hidden>History</a>
 </header>
 
 <main>

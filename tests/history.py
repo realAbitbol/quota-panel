@@ -556,10 +556,59 @@ def http_checks():
         server.shutdown()
 
 
+def page_checks():
+    """What the /history page must do, checked in its source.
+
+    This repository has no JS test runner, so these are source assertions — the same kind the
+    smoke suite already makes against index.html. Each one stands for a way the page was wrong
+    once and would be wrong again silently:
+      * every series stretched to its own peak, so a row's best day was always full opacity and
+        the map said nothing about any other day;
+      * twelve series on screen at once (every window of every account), including the five-hour
+        window whose daily average describes nothing;
+      * a chart drawn across the whole requested range, which for a store ten minutes old is an
+        empty box with a speck in the corner.
+    """
+    with open(os.path.join(ROOT, "static", "history.html"), encoding="utf-8") as fh:
+        page = fh.read()
+    check("the page has one honest scale: the real percent, no scale selector",
+          "scale-select" not in page and "Own scale" not in page,
+          "a second scale is a second story about the same numbers")
+
+    heat = page.split("async function renderHeatmap()")[1].split("// ---")[0] if \
+        "async function renderHeatmap()" in page else ""
+    # Comments in that function discuss the mistake on purpose, so the assertion reads the code
+    # without its comments: what must never come back is a shade computed from a row's own peak.
+    heat_code = "\n".join(line.split("//")[0] for line in heat.splitlines())
+    check("the heatmap shades a cell by the real percentage",
+          "Math.max(0.08, Math.min(1, value / 100))" in heat_code, heat_code[:60])
+    check("the heatmap never scales a row to its own best day",
+          bool(heat_code.strip()) and "peak" not in heat_code,
+          "row-relative shading paints every row's peak the same and hides the rest")
+    check("a day is a cell, not a full-width bar",
+          ".heat-cell{height:18px" in page and "minmax(" in heat and ", 1fr)" in heat,
+          "a single day stretched to the row width is what a full bar looked like")
+
+    check("the page shows one window at a time, chosen by its own period",
+          "function windowSeconds" in page and "s.window_key === state.window" in page)
+    check("the default window is the widest the account has",
+          "function defaultWindow" in page and "ranked[ranked.length - 1]" in page)
+    check("a window whose label names no period is never the default",
+          "w.seconds !== null" in page and "Infinity" in page)
+
+    check("auto never asks for buckets finer than the store's own cadence",
+          "Math.max(sampleSeconds(), Math.ceil(span / MAX_POINTS))" in page,
+          "60-second buckets over a 300-second store is four empty buckets out of five")
+    check("the stored span is what gets drawn, and the page says so",
+          "function drawnSpan" in page and "range starts before this store does" in page,
+          "a young store would draw an empty day-long axis with a speck at the right edge")
+
+
 def main():
     try:
         storage_checks()
         http_checks()
+        page_checks()
     finally:
         shutil.rmtree(WORK, ignore_errors=True)
     print()

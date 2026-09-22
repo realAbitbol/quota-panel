@@ -52,7 +52,7 @@ docker run -d \
 
 Write the config first: the container polls nothing without it, and bind-mounting a path that does not exist yet leaves a *directory* in its place. Then open <http://localhost:8080>.
 
-The port is bound to loopback because there is no built-in login and the page shows labels, plan names and spend. Put it behind a reverse proxy that authenticates.
+The port is bound to loopback because there is no built-in login and the page shows labels, plan names and spend. Put it behind a reverse proxy that authenticates. A LAN dashboard (Homepage, Dashy, Glance) is the exception: it cannot sit behind that proxy's login, so either give it the published port on the LAN interface or list it in the proxy's bypass rules — a bypass is a stronger commitment than a published port, because it is what answers the public hostname too.
 
 <details>
 <summary>docker compose, with the hardening from this repo</summary>
@@ -157,7 +157,7 @@ Every provider also has a `*_API_BASE` override so the test suite can point an a
 
 ### Usage history
 
-`/history` charts every account window over time from one SQLite file. It ships on, in `accounts.example.json` and in `docker-compose.yml`:
+`/history` charts usage over time from one SQLite file: one line per account, **one window at a time** (the widest one the account has is the default), and a day-per-column intensity map below it, one row per account. It ships on, in `accounts.example.json` and in `docker-compose.yml`:
 
 ```json
 "history": { "enabled": true, "path": "/data/quota.db", "sample_seconds": 300,
@@ -168,7 +168,7 @@ Every provider also has a `*_API_BASE` override so the test suite can point an a
 
 **Give it a directory, not a file.** sqlite writes its journal beside the database, so `/data` must be writable: `install -d -o 10001 -g 10001 ./data` on the host, then `- ./data:/data` in compose. CIFS/NFS is refused — no working locks.
 
-Cost: ~0.35 GB a year at 300 s sampling (1.7 GB at 60 s) plus ~116 MB of rollups. A failed poll or an unreadable window leaves a **gap**, never a zero, and a money balance is never turned into a percentage. The chart opens on **Own scale**, because a series reporting hundredths of a percent disappears on a 0–100 % axis shared with one reporting whole percents.
+Cost: ~0.35 GB a year at 300 s sampling (1.7 GB at 60 s) plus ~116 MB of rollups. A failed poll or an unreadable window leaves a **gap**, never a zero, and a money balance is never turned into a percentage. The trend is drawn against **real percents**: a window reading tenths of a percent sits near the axis because that is what it is, and the legend and the hover readout carry its exact number. The intensity map shades each cell by that day's real average, so the same shade means the same usage on every row and every day.
 
 ## Endpoints
 

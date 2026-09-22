@@ -239,6 +239,15 @@ def ui_checks():
           "AbortController" in history_page and "FETCH_TIMEOUT_MS" in history_page
           and "if(tries === 0) return fetchJson(url, 1)" in history_page,
           "a stalled request would freeze the page with no message and no retry")
+    # Both pages put their one navigation in the same slot — last in the header, at the right edge.
+    # On the live panel that means the link follows #feed, which owns the auto margin; the history
+    # page reaches the same edge with .spacer. Asserted because "put it in the same place" was a
+    # request, and moving an element back in front of the feed would quietly undo it.
+    check("the history link sits where the live panel's link sits",
+          page.index('id="feed"') < page.index('id="historyLink"')
+          and 'class="nav spacer"' in history_page
+          and 'class="nav" id="historyLink"' in page,
+          "the entry point and the way back must occupy the same slot on both pages")
 
 
 def main():
