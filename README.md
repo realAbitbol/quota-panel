@@ -174,7 +174,7 @@ Turn it on in `accounts.json`:
 }
 ```
 
-`path` must be writable — in the container that means a mounted volume at `/data` (see the commented block in `docker-compose.yml`). A CIFS/NFS path is **refused** rather than trusted: sqlite's locking does not hold there and the history would be lost quietly.
+`path` must be writable. In the container the image ships `/data` owned by the service user (uid 10001), so the named volume in the commented `docker-compose.yml` block works as it stands; a host **bind mount** is the host's to make writable, since docker keeps the directory's own ownership. A CIFS/NFS path is **refused** rather than trusted: sqlite's locking does not hold there and the history would be lost quietly.
 
 | Setting | Env var | Default | Meaning |
 |---|---|---|---|

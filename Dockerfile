@@ -16,10 +16,18 @@ WORKDIR /app
 # as downloaded. Nothing else is pip-installed. It is pinned because the suite asserts exact
 # values of what the re-encoder produced, so an unpinned Pillow could let a green build turn red
 # — or silently change what "shrunk" means — with no commit behind it.
+#
+# /data exists in the image for the same reason /config does. A named volume mounted at a path
+# that is absent from the image is created root-owned and stays root-owned, and this container
+# runs as uid 10001 — so a compose user who turned the history layer on and uncommented the volume
+# got `/api/quota` reporting "cannot open the history database at /data/quota.db (unable to open
+# database file)" and `/api/history` answering 503. The directory created here is what the named
+# volume is initialised from (content and ownership), so the writable path ships with the image.
+# Only a host bind mount remains the host's to make writable, as the README says.
 RUN pip install --no-cache-dir pillow==12.3.0 \
  && adduser -D -u 10001 quota \
- && mkdir -p /config \
- && chown -R quota:quota /config /app
+ && mkdir -p /config /data \
+ && chown -R quota:quota /config /data /app
 
 # Only these files are in the image. `--chown` replaces the blanket `chown -R quota /app` that
 # used to run after the copy: the runtime user needs to read these, not to own them.
