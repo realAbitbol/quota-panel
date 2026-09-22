@@ -1039,6 +1039,10 @@ def page_checks():
     check("the trend legend carries each series' provider mark",
           "badgeHtml(s.provider, seriesLabel(s))" in page,
           "the legend must show the provider mark, not only a colour dot")
+
+    check("the live-panel link lights up on hover like the support button",
+          ".nav:hover{color:#fff;border-color:var(--accent)}" in page,
+          "the header link must light up on hover")
     check("the sparkline breaks on gaps and the donut ink follows the slice",
           "previous + 1" in page and "function labelInk" in page,
           "a gap drawn as a line invents data, and fixed ink vanishes on dark slices")

@@ -216,6 +216,9 @@ def ui_checks():
     check("the page carries the support link to Ko-fi",
           "https://ko-fi.com/realAbitbol" in page and 'rel="noopener noreferrer"' in page,
           "the funding link is part of the live page too")
+    check("the history link lights up on hover like the support button",
+          ".nav:hover{color:#fff;border-color:var(--accent)}" in page,
+          "the header link must light up on hover")
     # One flag from /api/quota reveals the entry point, and that is the whole cost of an
     # optional feature on the live page: a second feed here would make every install pay for a
     # layer most of them leave off.
