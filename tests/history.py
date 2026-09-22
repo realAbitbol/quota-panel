@@ -564,10 +564,14 @@ def page_checks():
     once and would be wrong again silently:
       * every series stretched to its own peak, so a row's best day was always full opacity and
         the map said nothing about any other day;
+      * a colour per account in the map, which made a shade mean "which account" instead of "how
+        much" and left two rows impossible to compare down a column;
       * twelve series on screen at once (every window of every account), including the five-hour
-        window whose daily average describes nothing;
+        window whose daily average describes nothing — and a Window selector asking the reader to
+        answer the question the page had just failed to answer for them;
       * a chart drawn across the whole requested range, which for a store ten minutes old is an
-        empty box with a speck in the corner.
+        empty box with a speck in the corner;
+      * a refresh that failed by erasing what was already drawn.
     """
     with open(os.path.join(ROOT, "static", "history.html"), encoding="utf-8") as fh:
         page = fh.read()
@@ -581,20 +585,41 @@ def page_checks():
     # without its comments: what must never come back is a shade computed from a row's own peak.
     heat_code = "\n".join(line.split("//")[0] for line in heat.splitlines())
     check("the heatmap shades a cell by the real percentage",
-          "Math.max(0.08, Math.min(1, value / 100))" in heat_code, heat_code[:60])
+          "function heatPaint" in page and "Math.max(0.08, Math.min(1, value / 100))" in page,
+          "the shade has to come from the reading, not from the row")
     check("the heatmap never scales a row to its own best day",
           bool(heat_code.strip()) and "peak" not in heat_code,
           "row-relative shading paints every row's peak the same and hides the rest")
+    check("the heatmap paints every row with the same hue, mixed into the card",
+          "const HEAT_HUE" in page and "HEAT_CARD" in page
+          and "lineColor" not in heat_code and "accountColor" not in heat_code
+          and "opacity" not in heat_code,
+          "a colour per account makes a shade say which account, and a translucent cell lets the "
+          "artwork behind the panel change the shade of the same number")
     check("a day is a cell, not a full-width bar",
           ".heat-cell{height:18px" in page and "minmax(" in heat and ", 1fr)" in heat,
           "a single day stretched to the row width is what a full bar looked like")
 
-    check("the page shows one window at a time, chosen by its own period",
-          "function windowSeconds" in page and "s.window_key === state.window" in page)
-    check("the default window is the widest the account has",
-          "function defaultWindow" in page and "ranked[ranked.length - 1]" in page)
-    check("a window whose label names no period is never the default",
-          "w.seconds !== null" in page and "Infinity" in page)
+    check("the page offers the account, the range and the interval, and no window selector",
+          '"window-select"' not in page and 'id="account-select"' in page
+          and 'id="range-select"' in page and 'id="bucket-select"' in page,
+          "a window selector asks the reader to answer the question the page exists to answer")
+    check("the window that stands for an account is the widest its label names",
+          "function choosePrimary" in page
+          and "position > ranked[entry.account_id].position" in page and "Infinity" in page,
+          "a label that names no period cannot be ranked, so it must never stand for an account")
+    check("one account selected draws every window that account publishes",
+          "s.account_id === state.account" in page,
+          "with an account chosen, identity is the window; with all of them, it is the account")
+    check("the cap is drawn on the chart and named",
+          "(cap ? ' cap' : '')" in page and "stroke-dasharray=\"4 3\"" in page,
+          "a percentage chart the reader cannot measure against its own cap is a shape, not a reading")
+    check("each line is filled under, the way the page it was modelled on is",
+          "linearGradient" in page and 'stop-opacity="0.28"' in page,
+          "a hairline on a dark background reads as less than it is")
+    check("a refresh that fails keeps the readings already on screen",
+          "showing the previous range" in page and "function renderNote" in page,
+          "a transient stall must not empty a chart the reader was reading")
 
     check("auto never asks for buckets finer than the store's own cadence",
           "Math.max(sampleSeconds(), Math.ceil(span / MAX_POINTS))" in page,

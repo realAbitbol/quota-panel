@@ -48,18 +48,66 @@ HISTORY_DAYS = 21
 HISTORY_WINDOW_LABELS = {"five_hour": "5 h", "rolling": "5 h", "weekly": "Week", "monthly": "Month"}
 
 
-def seeded_percent(window_index, day, step, account_index):
-    """One reading: a shape a heat map can show off, and the three windows differ by nature.
+def label_seconds(label):
+    """The period a window label names, which is the page's own rule mirrored.
 
-    The widest window climbs day by day (that is the shape a plan actually has), the middle one
-    saw-tooths, the shortest resets often — so a row is never a wall of one shade, which is the
-    thing the capture has to demonstrate.
+    The harness cannot count the rows the page must draw without knowing which window the page
+    picks to stand for each account, and re-implementing that choice is the only way to check it
+    from outside. Kept deliberately the same shape as windowSeconds() in static/history.html.
     """
-    if window_index == 0:
-        return min(2.0 + ((day * 7 + step * 9) % 12) + account_index, 99.0)
-    if window_index == 1:
-        return min(18.0 + ((day * 11 + step * 6) % 55) + account_index * 4.0, 99.0)
-    return min(4.0 * day + (step * 5.0) / 3.0 + account_index * 7.5, 99.9)
+    text = str(label or "").strip().lower()
+    if not text:
+        return None
+    units = [("hours", 3600), ("hour", 3600), ("hrs", 3600), ("hr", 3600), ("h", 3600),
+             ("days", 86400), ("day", 86400), ("d", 86400),
+             ("weeks", 604800), ("week", 604800), ("w", 604800),
+             ("months", 2592000), ("month", 2592000), ("mo", 2592000),
+             ("minutes", 60), ("minute", 60), ("mins", 60), ("min", 60), ("m", 60),
+             ("years", 31536000), ("year", 31536000), ("y", 31536000)]
+    named = re.search(r"(\d+(?:\.\d+)?)\s*([a-z]+)", text)
+    if named:
+        for word, seconds in units:
+            if word == named.group(2):
+                return float(named.group(1)) * seconds
+    for word, seconds in units:
+        if re.search(r"\b" + word, text):
+            return seconds
+    return None
+
+
+def standing_label(accounts):
+    """The widest window label the accounts publish: the page's pick, computed here."""
+    ranked = []
+    for account in accounts:
+        for window in account.get("windows") or []:
+            if window.get("kind") not in (None, "window"):
+                continue
+            label = HISTORY_WINDOW_LABELS.get(window.get("key"), window.get("label"))
+            seconds = label_seconds(label)
+            if seconds is not None:
+                ranked.append((seconds, label))
+    return max(ranked)[1] if ranked else None
+
+
+def seeded_percent(window_index, day, step, account_index):
+    """One reading: three windows with three different natures, and days that differ by more than a
+    shade.
+
+    A plan is consumed over a period and then resets, so the standing window ramps and drops; the
+    weekly window saw-tooths every seven days; the shortest resets several times a day. The
+    amplitudes are tens of points, not two: the first version of this fixture moved a day by about
+    four percentage points, which under a shade that *is* the percentage is a map that looks the
+    same every day — and was committed as one.
+    """
+    position = day + account_index * 3               # accounts are not in phase with each other
+    if window_index == 0:                            # a five-hour window: several resets a day
+        return min(96.0, 22.0 + ((position * 17 + step * 29) % 74))
+    if window_index == 1:                            # weekly: a ramp that resets every seven days
+        return min(97.0, (position % 7) * 13.0 + 4.0 + (step * 11) % 9)
+    # The standing window: a ramp that resets when the period rolls over, and a lighter account
+    # stays lighter than a heavier one on every day.
+    ramped = (position % 14) * 6.6 + (step * 7) % 11
+    return min(98.5, max(1.5, ramped - account_index * 4.5))
 
 
 def seed_history(path, accounts, now_ts=None):
@@ -68,6 +116,10 @@ def seed_history(path, accounts, now_ts=None):
     `accounts` is /api/quota's own list. The store is written through the repository's own module
     rather than hand-rolled SQL: if the writer's shape changes, this seeding breaks with it instead
     of quietly producing a screenshot of a store the app can no longer read.
+
+    One sample per `sample_seconds`, which is what the poller does. A fixture that writes six samples
+    a day into a store that advertises a five-minute cadence is a store no reader would recognise: a
+    week of it, bucketed at the panel's own interval, is a scattering of dots where a trend belongs.
     """
     if ROOT not in sys.path:
         sys.path.insert(0, ROOT)
@@ -76,12 +128,15 @@ def seed_history(path, accounts, now_ts=None):
     config = dict(history.DEFAULTS)
     config.update({"enabled": True, "path": path, "sample_seconds": 300})
     now = int(now_ts if now_ts is not None else time.time())
+    step_seconds = int(config["sample_seconds"])
+    steps_per_day = 86400 // step_seconds
     day_start = now - HISTORY_DAYS * 86400
+    day_start -= day_start % step_seconds
     for day in range(HISTORY_DAYS):
-        for step in range(6):                       # six readings a day, four hours apart
-            stamp = day_start + day * 86400 + step * 14400
+        for step in range(steps_per_day):
+            stamp = day_start + day * 86400 + step * step_seconds
             if stamp > now:
-                continue
+                break
             results = []
             for index, account in enumerate(accounts):
                 windows = [w for w in (account.get("windows") or []) if w.get("kind") == "window"]
@@ -788,17 +843,22 @@ def main():
               const heat = document.getElementById('heat');
               const status = document.getElementById('status-panel');
               if (!heat || !status) return null;
+              const cells = Array.from(document.querySelectorAll('#heat .heat-cell'));
               return {
                 ready: document.readyState,
                 path: location.pathname,
-                cells: document.querySelectorAll('#heat .heat-cell').length,
+                cells: cells.length,
                 rows: Math.max(0, document.querySelectorAll('#heat .heat-grid').length - 1),
                 cols: document.querySelectorAll('#heat .heat-head').length,
                 lines: document.querySelectorAll('#chart svg path').length,
                 empties: document.querySelectorAll('#chart .empty').length,
-                window: document.getElementById('window-select').value,
-                windowLabels: Array.from(document.getElementById('window-select').options)
-                                   .map(o => o.textContent),
+                sub: (document.getElementById('trend-sub') || {}).textContent || '',
+                selector: document.getElementById('window-select') ? 1 : 0,
+                caps: Array.from(document.querySelectorAll('#chart svg text'))
+                        .filter(t => /cap$/.test(t.textContent.trim())).length,
+                fills: document.querySelectorAll('#chart svg linearGradient').length,
+                legend: document.querySelectorAll('#legend button').length,
+                shades: [...new Set(cells.map(c => c.style.background).filter(Boolean))].length,
                 off: status.hidden === false
               };
             })()""", returnByValue=True)
@@ -806,12 +866,13 @@ def main():
             if state.get("ready") == "complete" and state.get("cells"):
                 break
             time.sleep(0.4)
-        # Rows are one per account *of the window on screen*: an account that publishes no Month
-        # window has no Month row, which is the point of showing one window at a time.
-        selected = state.get("window")
-        in_window = [a for a in live["accounts"]
-                     if any(w.get("key") == selected and w.get("kind") == "window"
-                            for w in (a.get("windows") or []))]
+        # Rows are one per account that publishes the window the page picked to stand for an account:
+        # the widest window whose label names a period, which the page then says out loud. An account
+        # that publishes no such window has no row.
+        standing = standing_label(live["accounts"])
+        accounts_with_standing = [a for a in live["accounts"] if any(
+            label_seconds(HISTORY_WINDOW_LABELS.get(w.get("key"), w.get("label"))) is not None
+            for w in (a.get("windows") or []) if w.get("kind") in (None, "window"))]
         if not state:
             print("  history probe never saw this page: %s" % json.dumps(last_probe)[:400])
         check("the history page renders its store", state.get("cells", 0) > 0,
@@ -819,15 +880,50 @@ def main():
         check("the history page is the page that was navigated to",
               state.get("path") == "/history" and state.get("off") is False,
               "path=%r off=%r" % (state.get("path"), state.get("off")))
-        check("every account in that window has a row", state.get("rows") == len(in_window),
-              "%s rows for %d accounts in %r (state %s)"
-              % (state.get("rows"), len(in_window), selected, state))
-        check("the trend drew a line per account", (state.get("lines") or 0) >= len(in_window),
+        check("the page has no window selector and names the window it chose",
+              state.get("selector") == 0 and bool(standing)
+              and (state.get("sub") or "").startswith(standing),
+              "selector=%r sub=%r standing=%r" % (state.get("selector"), state.get("sub"), standing))
+        check("every account that publishes the standing window has a row",
+              state.get("rows") == len(accounts_with_standing),
+              "%s rows for %d accounts publishing %r (state %s)"
+              % (state.get("rows"), len(accounts_with_standing), standing, state))
+        check("the trend drew a line per account", (state.get("lines") or 0) >= state.get("rows", 0),
               str(state.get("lines")))
-        check("the window selector offers the windows the providers published",
-              len(state.get("windowLabels") or []) >= 2
-              and state.get("window") == "monthly",
-              "selected %r of %s" % (state.get("window"), state.get("windowLabels")))
+        check("each line is filled under", (state.get("fills") or 0) == state.get("rows", 0),
+              "%s gradients for %s lines" % (state.get("fills"), state.get("rows")))
+        check("the legend offers one clickable entry per line",
+              (state.get("legend") or 0) == state.get("rows", 0), str(state.get("legend")))
+        check("the cap is drawn and named on the chart", (state.get("caps") or 0) == 1,
+              "%s cap labels" % state.get("caps"))
+        # The complaint that produced this check: a map whose every day was the same shade. The
+        # fixture moves a day by tens of points and the shade is the percentage, so a real map holds
+        # many distinct shades; a map that holds three is a map that cannot be read.
+        check("the map's days differ by more than a shade",
+              (state.get("shades") or 0) >= 5, "%s distinct shades" % state.get("shades"))
+
+        # The range control, exercised — and this is where the first version of this capture went
+        # wrong: it dispatched the change and waited only for the map's columns, then shot a chart
+        # whose own request had not answered yet. It also did not account for this browser's habit of
+        # stalling one request after a page settles (~29 s, any URL, HTTP/1.0 or keep-alive: measured
+        # both ways, so it is the browser, not the panel). A throwaway request absorbs that stall
+        # here, so the committed picture is not a picture of a browser warm-up.
+        cdp.call("Runtime.evaluate", expression="""
+          window.__warm = fetch('/api/health?warm=1', {cache:'no-store'}).then(r => r.text())
+                            .catch(() => '');
+          true
+        """, returnByValue=True)
+        deadline = time.time() + 45
+        warm = 0
+        while time.time() < deadline:
+            warm = cdp.call("Runtime.evaluate", expression="""
+              performance.getEntriesByType('resource')
+                .filter(e => e.name.indexOf('warm=1') >= 0).length
+            """, returnByValue=True).get("result", {}).get("value") or 0
+            if warm:
+                break
+            time.sleep(0.5)
+        print("  warm-up request settled: %s" % bool(warm))
 
         # A week, so the map is a calendar rather than two columns — and because a control that
         # only works on its default value is a control nobody has tested.
@@ -838,28 +934,43 @@ def main():
           return sel.value;
         })()""", returnByValue=True)
         week = 0
-        deadline = time.time() + 20
+        drawn = 0
+        deadline = time.time() + 45
         while time.time() < deadline:
-            week = cdp.call("Runtime.evaluate", expression=
-                            "document.querySelectorAll('#heat .heat-head').length",
-                            returnByValue=True).get("result", {}).get("value") or 0
-            if week >= 7:
+            probe = cdp.call("Runtime.evaluate", expression="""(() => ({
+              cols: document.querySelectorAll('#heat .heat-head').length,
+              lines: document.querySelectorAll('#chart svg path').length,
+              empties: document.querySelectorAll('#chart .empty').length
+            }))()""", returnByValue=True).get("result", {}).get("value") or {}
+            week, drawn = probe.get("cols") or 0, probe.get("lines") or 0
+            # Both panels, not just the map: an empty chart is exactly what shipping a capture that
+            # waits for the wrong one looked like.
+            if week >= 7 and drawn >= state.get("rows", 1) and not probe.get("empties"):
                 break
             time.sleep(0.4)
         check("a week draws a column per day", week >= 7, "%s columns" % week)
+        check("the trend still draws its lines after the range changes",
+              drawn >= state.get("rows", 1),
+              "%s paths for %s accounts" % (drawn, state.get("rows")))
 
         # The rule this page was rewritten for, checked on the rendered pixels' own values: a
-        # cell's shade is the real percentage, never a row's best day stretched to full.
+        # cell's shade is the real percentage mixed into the card, never a row's best day stretched to
+        # full, and never a translucent cell whose colour depends on the artwork behind the panel.
         shade = cdp.call("Runtime.evaluate", expression="""(() => {
           const cell = Array.from(document.querySelectorAll('#heat .heat-cell')).find(c =>
-            c.style.opacity && /: [\\d.]+%$/.test(c.getAttribute('title') || ''));
+            c.style.background && /: [\\d.]+%$/.test(c.getAttribute('title') || ''));
           if (!cell) return null;
           const value = parseFloat(/: ([\\d.]+)%$/.exec(cell.getAttribute('title'))[1]);
-          return {opacity: parseFloat(cell.style.opacity), value: value,
-                  expected: Math.max(0.08, Math.min(1, value / 100))};
+          const step = Math.max(0.08, Math.min(1, value / 100));
+          const card = [27, 33, 48], hue = [0x5b, 0x8d, 0xff];
+          const expected = 'rgb(' + card.map((base, channel) =>
+            Math.round(base + (hue[channel] - base) * step)).join(', ') + ')';
+          return {value: value, painted: cell.style.background, expected: expected,
+                  opacity: cell.style.opacity || ''};
         })()""", returnByValue=True).get("result", {}).get("value")
-        check("a cell's shade is its real percentage",
-              bool(shade) and abs(shade["opacity"] - shade["expected"]) < 0.02, str(shade))
+        check("a cell's shade is its real percentage, mixed into the card",
+              bool(shade) and shade["painted"] == shade["expected"] and not shade["opacity"],
+              str(shade))
 
         shot = cdp.call("Page.captureScreenshot", format="png", captureBeyondViewport=True)
         data = base64.b64decode(shot["data"])

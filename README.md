@@ -15,7 +15,9 @@
 
 ![quota-panel dashboard](docs/screenshot.png)
 
-*Screenshot uses synthetic data.*
+![usage history](docs/history.png)
+
+*Screenshots use synthetic data.*
 
 **Any number of accounts, any mix of providers** — two CommandCode keys, three OpenRouter keys and a
 DeepSeek key on one page, each with its own card. An account whose credential is missing or refused
@@ -157,9 +159,11 @@ Every provider also has a `*_API_BASE` override so the test suite can point an a
 
 ### Usage history
 
-`/history` charts usage over time from one SQLite file: one line per account, **one window at a time** (the widest one the account has is the default), and a day-per-column intensity map below it, one row per account. It ships on, in `accounts.example.json` and in `docker-compose.yml`:
-
-![usage history](docs/history.png)
+`/history` charts usage over time from one SQLite file: one line per account (a click on the legend
+shows one alone), and a day-per-column intensity map below it, one row per account. The window that
+stands for an account is the widest its own label names — the five-hour window resets several times
+a day and its daily average describes nothing — and the map uses one hue for every row, so a shade
+means the same thing in every row. It ships on, in `accounts.example.json` and in `docker-compose.yml`:
 
 ```json
 "history": { "enabled": true, "path": "/data/quota.db", "sample_seconds": 300,

@@ -8,18 +8,20 @@
      Hand-rolled SVG, no chart library: the panel vendors no third-party code.
      This page is a deliberate subset of AIMeter's Usage History, and it is meant to be read next
      to it:
-       * one window at a time, the widest one by default. A five-hour window resets several times a
-         day, so its daily average describes nothing as "how much of the plan is gone" — the
-         widest window is the only one whose percent means that.
-       * the trend is drawn against real percents (0-100), not against each series' own peak, so a
-         line at 30% and a line at 90% are told apart by looking at them.
-       * the heatmap is one row per account, one column per day, and its colour is the real
-         percentage — the same shade means the same usage on every row and every day. -->
+       * three controls, the same three: an account, a range, an interval. No window selector — a
+         subscription publishes several windows, but only one of them measures consumption of the
+         plan, and it is picked by the period the window's own label names. Asking the reader to
+         choose a window as well asks them to answer the question the page exists to answer.
+       * the trend is drawn against real percents (0-100) with the cap on the axis, filled under
+         each line the way AIMeter fills it, with a clickable legend that isolates a line.
+       * the intensity map is one row per account, one column per day, and one hue for every row:
+         the shade means "how much", so cells can be compared down a column. A colour per account
+         would make the shade mean "which account" instead. -->
 <link rel="icon" href="/static/favicon.ico" sizes="32x32">
 <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
 <link rel="apple-touch-icon" href="/static/favicon.svg">
 <meta name="theme-color" content="#0b0d12">
-<meta name="description" content="Usage history for the quota panel: percent windows over time, sampled and rolled up, one window at a time and a day-per-column intensity map.">
+<meta name="description" content="Usage history for the quota panel: percent windows over time, sampled and rolled up, with a day-per-column intensity map.">
 <title>Quota Panel — History</title>
 <style>
   :root{
@@ -64,17 +66,17 @@
   .stat .s{font-size:11.5px;color:var(--muted);margin-top:2px}
   .chart-wrap{position:relative;width:100%}
   svg{display:block;width:100%;height:auto;overflow:visible}
+  /* AIMeter's legend: a dot, a name, and a click that shows that line alone. */
   .legend{display:flex;flex-wrap:wrap;gap:6px 16px;margin-top:12px}
-  .legend .item{display:flex;align-items:center;gap:7px;font-size:12px;color:var(--muted)}
-  .legend .swatch{width:10px;height:10px;border-radius:3px;flex:0 0 auto}
-  .legend .item.off{opacity:.4}
-  .legend button{background:none;border:0;color:inherit;font:inherit;cursor:pointer;padding:0;
-       display:flex;align-items:center;gap:7px}
+  .legend button{background:none;border:0;color:var(--muted);font:inherit;font-size:12px;cursor:pointer;
+       padding:0;display:flex;align-items:center;gap:7px}
+  .legend button.off{opacity:.35}
+  .legend .dot{width:8px;height:8px;border-radius:50%;flex:0 0 auto}
   .readout{margin-top:10px;font-size:12.5px;color:var(--muted);min-height:20px;
        font-variant-numeric:tabular-nums;border-top:1px dashed var(--line);padding-top:9px}
   .readout b{color:var(--fg);font-weight:600}
-  /* The heatmap, laid out like AIMeter's: a fixed name column, then one equal column per day, so a
-     single day is a square and never a full-width bar. */
+  /* The intensity map, laid out like AIMeter's: a fixed name column, then one equal column per day,
+     so a single day is a square and never a full-width bar. */
   .heat-scroll{overflow-x:auto}
   .heat{min-width:640px}
   .heat-grid{display:grid;align-items:center;gap:2px}
@@ -89,7 +91,7 @@
   .heat-legend .sw{width:12px;height:12px;border-radius:3px;background:var(--accent)}
   .note{font-size:12px;color:var(--muted);margin-top:12px;line-height:1.45}
   .empty{padding:22px 4px;color:var(--muted)}
-  .err{margin-top:12px;font-size:12.5px;color:#ffb4b4;background:#231418;border:1px solid #4a2020;
+  .stale{margin-top:12px;font-size:12.5px;color:var(--warn);background:#241f10;border:1px solid #4a3a17;
        border-radius:9px;padding:10px 12px}
   code{background:var(--card-2);border:1px solid var(--line);border-radius:5px;padding:1px 5px;font-size:12px}
 </style>
@@ -107,9 +109,6 @@
     <div class="controls">
       <label>Account
         <select id="account-select"></select>
-      </label>
-      <label>Window
-        <select id="window-select"></select>
       </label>
       <label>Range
         <select id="range-select"></select>
@@ -146,8 +145,8 @@
 // Escaping discipline, same as the live panel: every value that originates outside this file —
 // account and window labels from the config or a provider, series keys, error text — is passed
 // through esc() at the point of interpolation, and the only unescaped interpolations are
-// numbers from fmtPercent(), positions computed here, and colours from the fixed PALETTE. That
-// is what makes the innerHTML below safe rather than merely convenient.
+// numbers from fmtPercent(), positions computed here, and colours from the fixed PALETTE.
+// That is what makes the innerHTML below safe rather than merely convenient.
 //
 // The controls are AIMeter's, in AIMeter's words: an account, a range, an interval. There is no
 // scale selector, because there is only one honest scale for a percentage — the real one.
@@ -163,11 +162,16 @@ const RANGES = [
 const INTERVALS = [300, 600, 900, 1200, 1800, 3600, 10800];
 const MAX_POINTS = 2000;         // the server's own cap: an interval that would exceed it is not offered
 const REFRESH_MS = 60000;
+// One hue for the whole intensity map. Every row of the map answers the same question — how much of
+// that account's plan is gone — and two rows can only be compared if the same shade means the same
+// number in both. Provider colours are for the trend, where identity is what a line has to carry.
+const HEAT_HUE = [0x5b, 0x8d, 0xff];     // the mix's own channels; --card-2 is what it mixes into
+const HEAT_CARD = [27, 33, 48];
 const PALETTE = ['#5b8dff','#33d69f','#f5c451','#ff6b6b','#c084fc','#38bdf8','#fb923c','#a3e635',
                  '#f472b6','#22d3ee'];
 
-const state = {hours:24, bucket:0, account:'', window:'', windows:[], catalogue:null,
-               data:null, hidden:{}, clipped:null};
+const state = {hours:24, bucket:0, account:'', catalogue:null, primary:{}, data:null,
+               isolate:null, stale:null, clipped:null};
 
 function esc(s){ return String(s === null || s === undefined ? '' : s)
   .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
@@ -189,15 +193,23 @@ function fmtStamp(epoch, withDate){
 
 function fmtDay(epoch){ return new Date(epoch * 1000).toLocaleDateString([], {month:'short', day:'numeric'}); }
 
-function accountColor(accountId){
-  const ids = state.catalogue ? [...new Set(state.catalogue.map(s => s.account_id))].sort() : [];
-  return PALETTE[Math.max(0, ids.indexOf(accountId)) % PALETTE.length];
-}
-
 function fmtInterval(seconds){
   if(seconds % 3600 === 0) return (seconds / 3600) + 'h';
   if(seconds % 60 === 0) return (seconds / 60) + 'm';
   return seconds + 's';
+}
+
+function lineColor(key){
+  // Colour identifies a line, and it is handed out in a stable order — the store's own series order —
+  // so the same account keeps the same colour between ranges and between visits.
+  const keys = state.catalogue ? state.catalogue.map(s => s.key).sort() : [];
+  return PALETTE[Math.max(0, keys.indexOf(key)) % PALETTE.length];
+}
+
+function seriesLabel(entry){
+  // With one account chosen, identity is the window ("5 h", "Week", "Month"); with all of them, the
+  // window is the same for everyone and identity is the account.
+  return state.account ? (entry.window_label || entry.window_key) : entry.account_label;
 }
 
 // How long the window's own label says it lasts. The store keeps the provider's label, and a
@@ -223,19 +235,62 @@ function windowSeconds(label){
   return null;
 }
 
-function seriesParams(){
-  const keys = visibleKeys();
-  if(!keys.length) return [];      // before the catalogue exists: ask for everything once
-  return keys.map(key => 'series=' + encodeURIComponent(key));
+// The one window that stands for each account, chosen from the store's own catalogue: the widest
+// window whose label names a period. A label that says nothing about its length cannot be ranked,
+// so it never wins — the window that stands for an account has to be the one that can.
+function choosePrimary(series){
+  const ranked = {};
+  for(const entry of series){
+    const seconds = windowSeconds(entry.window_label);
+    const position = seconds === null ? Infinity : seconds;
+    if(!ranked[entry.account_id] || position > ranked[entry.account_id].position){
+      ranked[entry.account_id] = {key: entry.window_key, position: position};
+    }
+  }
+  const primary = {};
+  for(const account of Object.keys(ranked)) primary[account] = ranked[account].key;
+  return primary;
 }
 
-function visibleKeys(){
+function primaryLabel(){
+  const accounts = Object.keys(state.primary);
+  if(!accounts.length) return '';
+  const wanted = state.account || accounts[0];
+  const entry = (state.catalogue || []).find(s => s.account_id === wanted
+    && s.window_key === state.primary[wanted]);
+  return entry ? (entry.window_label || entry.window_key) : state.primary[wanted];
+}
+
+// One line per account; one line per window when a single account is asked for. AIMeter's two modes,
+// reached without a third control: the account and the range are the whole choice.
+function trendKeys(){
   if(!state.catalogue) return [];
-  return state.catalogue.filter(s => s.window_key === state.window
-    && (!state.account || s.account_id === state.account) && !state.hidden[s.key]).map(s => s.key);
+  if(state.isolate) return [state.isolate];
+  if(state.account) return state.catalogue.filter(s => s.account_id === state.account).map(s => s.key);
+  return state.catalogue.filter(s => s.window_key === state.primary[s.account_id]).map(s => s.key);
 }
 
-function queryParams(){
+// The map keeps one row per account whatever the trend is showing: a day is a day, and the row that
+// stands for an account is its standing window.
+function heatKeys(){
+  if(!state.catalogue) return [];
+  return state.catalogue.filter(s => s.window_key === state.primary[s.account_id]
+    && (!state.account || s.account_id === state.account)).map(s => s.key);
+}
+
+function paramsFor(keys, extra){
+  return (extra || []).concat(keys.map(key => 'series=' + encodeURIComponent(key))).join('&');
+}
+
+function minInterval(hours){
+  const span = hours * 3600;
+  for(const step of INTERVALS){
+    if(span / step <= MAX_POINTS) return step;
+  }
+  return INTERVALS[INTERVALS.length - 1];
+}
+
+function trendQuery(){
   // "Auto" means as fine as the range allows and never finer than the store's own cadence: asking
   // the server for 60-second buckets over a day whose samples arrive every 300 s pads the grid with
   // four empty buckets out of five, which draws a line that looks like an outage.
@@ -247,15 +302,15 @@ function queryParams(){
   // ladder's own floor applies, which is the same rule the Interval list is built from.
   const bucket = Math.max(state.bucket, minInterval(state.hours));
   if(state.bucket && span / bucket <= MAX_POINTS) params.push('bucket_seconds=' + bucket);
-  return params.concat(seriesParams()).join('&');
+  return paramsFor(trendKeys(), params);
 }
 
 // ------------------------------------------------------------------ fetching
 
 // How long to wait before deciding an answer is not coming. The store answers a 24 h range in
 // ~15 ms, so this is three orders of magnitude of slack — it exists to catch a request that is
-// stuck at the socket level and will never settle on its own (measured: one such request hung
-// for 30 s and then resolved, which reads to the reader as a control that does nothing).
+// stuck at the socket level and will not settle on its own (measured: one such request hung for
+// 30 s and then resolved, which reads to the reader as a control that does nothing).
 const FETCH_TIMEOUT_MS = 8000;
 
 async function fetchJson(url, attempt){
@@ -268,9 +323,8 @@ async function fetchJson(url, attempt){
     const body = await res.json().catch(() => ({}));
     return {status:res.status, body};
   }catch(err){
-    // One retry on a fresh connection: the stall is per-connection, so a second attempt is a
-    // different socket rather than the same dead one. Never a third — a wedged panel must not
-    // turn into a request storm.
+    // One retry: the stall is per-connection, so a second attempt is a different socket rather than
+    // the same one. Never a third — a wedged panel must not turn into a request storm.
     if(tries === 0) return fetchJson(url, 1);
     return {status:0, body:{error:'no answer',
       detail:'the panel did not answer within ' + Math.round(FETCH_TIMEOUT_MS / 1000)
@@ -281,22 +335,28 @@ async function fetchJson(url, attempt){
 }
 
 async function load(){
-  const {status, body} = await fetchJson('/api/history?' + queryParams());
+  const {status, body} = await fetchJson('/api/history?' + trendQuery());
   if(status !== 200){
+    if(state.data){
+      // A control that stops answering must not erase the readings already on screen: name the
+      // failure and the range those readings are from, and leave them alone.
+      state.stale = (body.detail || body.error || ('HTTP ' + status)) + ' — showing the previous range';
+      renderNote();
+      return;
+    }
     state.data = null;
     showOffOrBroken(status, body);
     return;
   }
   if(!state.catalogue){
-    // First pass: the store's own catalogue of series, so the Window list is what exists in the
-    // database rather than a list of window names this file guessed. Then ask again for the one
-    // window that is on screen: the summary the server computes must describe what is drawn.
+    // First pass: the store's own catalogue of series, so the window that stands for each account is
+    // one this store holds — and the summary the server computes describes only what is drawn.
     state.catalogue = body.series || [];
-    state.windows = windowChoices(state.catalogue);
-    state.window = defaultWindow(state.windows);
+    state.primary = choosePrimary(state.catalogue);
     if(state.catalogue.length){ state.data = body; renderControls(); await load(); return; }
   }
   state.data = body;
+  state.stale = null;
   document.getElementById('status-panel').hidden = true;
   document.getElementById('trend-panel').hidden = false;
   document.getElementById('heat-panel').hidden = false;
@@ -329,39 +389,6 @@ function showOffOrBroken(status, body){
 
 // ------------------------------------------------------------------ controls
 
-// One entry per window the store holds, ordered by the period its label names, widest last. A
-// window whose label says nothing about its length cannot be ranked, so it sorts last and is
-// never picked by default: the default has to be the one that can stand for the account.
-function windowChoices(series){
-  const byKey = new Map();
-  for(const entry of series){
-    if(!byKey.has(entry.window_key)){
-      byKey.set(entry.window_key, {key:entry.window_key,
-                                   label:entry.window_label || entry.window_key,
-                                   seconds:windowSeconds(entry.window_label)});
-    }
-  }
-  return [...byKey.values()].sort((a, b) => {
-    const left = a.seconds === null ? Infinity : a.seconds;
-    const right = b.seconds === null ? Infinity : b.seconds;
-    return left === right ? a.label.localeCompare(b.label) : left - right;
-  });
-}
-
-function defaultWindow(windows){
-  if(!windows.length) return '';
-  const ranked = windows.filter(w => w.seconds !== null);
-  return (ranked.length ? ranked[ranked.length - 1] : windows[windows.length - 1]).key;
-}
-
-function minInterval(hours){
-  const span = hours * 3600;
-  for(const step of INTERVALS){
-    if(span / step <= MAX_POINTS) return step;
-  }
-  return INTERVALS[INTERVALS.length - 1];
-}
-
 function renderControls(){
   if(!state.catalogue) return;
   const accounts = [...new Map(state.catalogue.map(s => [s.account_id,
@@ -370,12 +397,6 @@ function renderControls(){
   accountSel.innerHTML = '<option value="">All accounts</option>' + accounts.map(([id, label]) =>
     '<option value="' + esc(id) + '">' + esc(label) + '</option>').join('');
   accountSel.value = state.account;
-
-  const windowSel = document.getElementById('window-select');
-  windowSel.innerHTML = state.windows.length
-    ? state.windows.map(w => '<option value="' + esc(w.key) + '">' + esc(w.label) + '</option>').join('')
-    : '<option value="">No window in the store yet</option>';
-  windowSel.value = state.window;
 
   const rangeSel = document.getElementById('range-select');
   rangeSel.innerHTML = RANGES.map(r => '<option value="' + r.hours + '">' + r.label + '</option>').join('');
@@ -425,51 +446,89 @@ function drawnSpan(series, grid){
   return {first, last};
 }
 
+function seriesSegments(s, span){
+  // One array of points per unbroken run: a gap breaks the line instead of being drawn across, and
+  // the fill under a line has to break with it.
+  const segments = [];
+  let current = null;
+  for(let i = span.first; i <= span.last; i++){
+    const value = s.avg[i];
+    if(value === null || value === undefined){ current = null; continue; }
+    if(!current){ current = []; segments.push(current); }
+    current.push([i, value]);
+  }
+  return segments;
+}
+
+function renderNote(){
+  const note = document.getElementById('trend-note');
+  if(!note) return;
+  const clipped = state.clipped;
+  const grid = (state.data && state.data.t) || [];
+  const parts = [];
+  if(state.stale) parts.push('Not refreshed: ' + state.stale + '.');
+  if(clipped && grid.length) parts.push('The range starts before this store does: drawn from '
+    + fmtStamp(grid[clipped.first], true) + '.');
+  note.className = state.stale ? 'stale' : 'note';
+  note.textContent = parts.join(' ');
+}
+
 function renderChart(){
   const host = document.getElementById('chart');
   const series = (state.data && state.data.series) || [];
   const grid = (state.data && state.data.t) || [];
-  const label = state.windows.find(w => w.key === state.window);
+  const bucket = state.data ? state.data.bucket_seconds : 0;
   document.getElementById('trend-title').textContent = 'Usage trend';
   document.getElementById('trend-sub').textContent = series.length
-    ? (label ? label.label + ' window' : '') + ' · '
-      + (state.data.bucket_seconds ? fmtInterval(state.data.bucket_seconds) + ' buckets' : '')
+    ? (state.account ? 'Every window this account publishes' : primaryLabel() + ' window')
+      + (bucket ? ' · ' + fmtInterval(bucket) + ' buckets' : '')
     : '';
-  if(!series.length || !grid.length){
-    host.innerHTML = '<div class="empty">No samples in this range yet. History starts with the '
-      + 'first successful poll after the layer was enabled.</div>';
+  const empty = '<div class="empty">No samples in this range yet. History starts with the first '
+    + 'successful poll after the layer was enabled.</div>';
+  const span = series.length && grid.length ? drawnSpan(series, grid) : {first:null, last:null};
+  if(!series.length || !grid.length || span.first === null){
+    host.innerHTML = empty;
     document.getElementById('legend').innerHTML = '';
-    return;
-  }
-  const span = drawnSpan(series, grid);
-  if(span.first === null){
-    host.innerHTML = '<div class="empty">No samples in this range yet. History starts with the '
-      + 'first successful poll after the layer was enabled.</div>';
-    document.getElementById('legend').innerHTML = '';
+    state.clipped = null;
+    renderNote();
     return;
   }
   state.clipped = span.first > 0 || span.last < grid.length - 1 ? span : null;
 
   const width = Math.max(360, host.clientWidth || 900);
-  const height = 270;
-  const pad = {left:52, right:16, top:12, bottom:26};
+  const height = 280;
+  const pad = {left:58, right:16, top:14, bottom:26};
   const plotW = width - pad.left - pad.right;
   const plotH = height - pad.top - pad.bottom;
   const withDate = state.hours > 24;
   const count = span.last - span.first + 1;
   const x = i => pad.left + (count === 1 ? plotW / 2 : ((i - span.first) / (count - 1)) * plotW);
-  // The real scale, always: 0-100% is what a percentage means, and it is what lets a 2% window and
-  // an 87% window be compared by eye instead of each being stretched to fill the box.
+  // The real scale, always: 0-100% is what a percentage means, and 100% is the window's own cap —
+  // the line every reading on this chart is measured against. It is drawn as a line, and named.
   const y = value => pad.top + plotH - (Math.max(0, Math.min(value, 100)) / 100) * plotH;
+  // A store young enough to hold a few buckets is drawn as what it is — points with dots — because a
+  // line needs two of them and a lone sample drawn as a path is an invisible nothing.
+  const sparse = count <= 40;
 
+  const fillId = key => 'fill-' + key.replace(/[^A-Za-z0-9_-]/g, '_');
   let svg = '<svg viewBox="0 0 ' + width + ' ' + height + '" preserveAspectRatio="none" role="img" '
     + 'aria-label="Usage over time, ' + esc(state.hours + ' hours') + '">';
+  // AIMeter fills under each line with a vertical gradient of the line's own colour, so a line reads
+  // as a volume and not as a hairline on a dark background.
+  svg += '<defs>' + series.map(s => '<linearGradient id="' + esc(fillId(s.key))
+    + '" x1="0" y1="0" x2="0" y2="1">'
+    + '<stop offset="0%" stop-color="' + lineColor(s.key) + '" stop-opacity="0.28"/>'
+    + '<stop offset="100%" stop-color="' + lineColor(s.key) + '" stop-opacity="0.02"/>'
+    + '</linearGradient>').join('') + '</defs>';
   for(let step = 0; step <= 4; step++){
     const value = plotH * step / 4;
+    const percent = 100 - step * 25;
+    const cap = percent === 100;
     svg += '<line x1="' + pad.left + '" y1="' + (pad.top + value) + '" x2="' + (pad.left + plotW)
-      + '" y2="' + (pad.top + value) + '" stroke="#252c3b" stroke-width="1"/>';
+      + '" y2="' + (pad.top + value) + '" stroke="' + (cap ? '#3d5a9a' : '#252c3b') + '" '
+      + 'stroke-width="1"' + (cap ? ' stroke-dasharray="4 3"' : '') + '/>';
     svg += '<text x="' + (pad.left - 8) + '" y="' + (pad.top + value + 3.5) + '" text-anchor="end" '
-      + 'font-size="10" fill="#b7c2d6">' + (100 - step * 25) + '%</text>';
+      + 'font-size="10" fill="#b7c2d6">' + percent + '%' + (cap ? ' cap' : '') + '</text>';
   }
   const ticks = Math.min(6, count);
   for(let t = 0; t < ticks; t++){
@@ -478,39 +537,37 @@ function renderChart(){
       + 'fill="#b7c2d6">' + esc(fmtStamp(grid[index], withDate)) + '</text>';
   }
   for(const s of series){
-    const color = accountColor(s.account_id);
-    let path = '', open = false, points = 0, lone = -1;
-    // A store young enough to hold one or two buckets per series is drawn as what it is — points —
-    // because a line needs two of them, and a lone sample drawn as a path is an invisible nothing.
-    const sparse = count <= 40;
-    for(let i = span.first; i <= span.last; i++){
-      const value = s.avg[i];
-      if(value === null || value === undefined){
-        open = false;                   // a gap breaks the line instead of being drawn across
-        continue;
-      }
-      points++;
-      lone = i;
-      path += (open ? 'L' : 'M') + x(i).toFixed(1) + ' ' + y(value).toFixed(1) + ' ';
-      open = true;
-      if(sparse) svg += '<circle cx="' + x(i).toFixed(1) + '" cy="' + y(value).toFixed(1)
-        + '" r="2" fill="' + color + '"/>';
+    // Every fill first, and every line after: in one pass per series a later series' fill paints over
+    // an earlier series' line, and the leftmost lines vanish under the ones drawn after them. The
+    // page this is modelled on layers its areas and its lines for the same reason.
+    for(const segment of seriesSegments(s, span)){
+      if(segment.length < 2) continue;
+      const line = segment.map(([i, value]) => x(i).toFixed(1) + ' ' + y(value).toFixed(1)).join('L');
+      const floor = (pad.top + plotH).toFixed(1);
+      svg += '<path d="M' + line + 'L' + x(segment[segment.length - 1][0]).toFixed(1) + ' ' + floor
+        + 'L' + x(segment[0][0]).toFixed(1) + ' ' + floor + 'Z" fill="url(#'
+        + esc(fillId(s.key)) + ')" stroke="none"/>';
     }
-    if(points > 1){
-      svg += '<path d="' + path + '" fill="none" stroke="' + color
-        + '" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>';
-      // A bucket that is the whole day, or the whole week, must not be a line that looks flat and
-      // therefore empty: its peak is drawn as a dot too.
-      for(let i = span.first; i <= span.last; i++){
-        if(s.max[i] !== null && s.max[i] !== undefined && s.avg[i] !== null
-           && Math.abs(s.max[i] - s.avg[i]) > 1e-9){
-          svg += '<circle cx="' + x(i).toFixed(1) + '" cy="' + y(s.max[i]).toFixed(1)
-            + '" r="1.6" fill="' + color + '" fill-opacity="0.55"/>';
+  }
+  for(const s of series){
+    const color = lineColor(s.key);
+    for(const segment of seriesSegments(s, span)){
+      if(segment.length > 1){
+        const line = segment.map(([i, value]) => x(i).toFixed(1) + ' ' + y(value).toFixed(1)).join('L');
+        svg += '<path d="M' + line + '" fill="none" stroke="' + color
+          + '" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"/>';
+      }else{
+        svg += '<circle cx="' + x(segment[0][0]).toFixed(1) + '" cy="' + y(segment[0][1]).toFixed(1)
+          + '" r="2.5" fill="' + color + '"/>';
+      }
+    }
+    if(sparse){
+      for(const segment of seriesSegments(s, span)){
+        for(const [i, value] of segment){
+          svg += '<circle cx="' + x(i).toFixed(1) + '" cy="' + y(value).toFixed(1) + '" r="2" fill="'
+            + color + '"/>';
         }
       }
-    }else if(points === 1){
-      svg += '<circle cx="' + x(lone).toFixed(1) + '" cy="' + y(s.avg[lone]).toFixed(1)
-        + '" r="2.5" fill="' + color + '"/>';
     }
   }
   svg += '<line id="cursor" x1="0" y1="' + pad.top + '" x2="0" y2="' + (pad.top + plotH)
@@ -521,24 +578,21 @@ function renderChart(){
   host.innerHTML = svg;
 
   document.getElementById('legend').innerHTML = series.map(s =>
-    '<button type="button" class="item" data-key="' + esc(s.key) + '">'
-    + '<span class="swatch" style="background:' + accountColor(s.account_id) + '"></span>'
-    + esc(s.account_label)
-    + ' <span class="muted">' + (s.latest ? fmtPercent(s.latest.percent) + ' now' : 'no reading')
+    '<button type="button" data-key="' + esc(s.key) + '" class="'
+    + (state.isolate && state.isolate !== s.key ? 'off' : '')
+    + '" title="Click to show this one alone">'
+    + '<span class="dot" style="background:' + lineColor(s.key) + '"></span>'
+    + esc(seriesLabel(s)) + ' <span class="muted">'
+    + (s.latest ? fmtPercent(s.latest.percent) + ' now' : 'no reading')
     + ' · peak ' + esc(fmtPercent(s.peak)) + '</span></button>').join('');
   for(const node of document.querySelectorAll('#legend button')){
     node.addEventListener('click', () => {
       const key = node.getAttribute('data-key');
-      state.hidden[key] = !state.hidden[key];
+      state.isolate = state.isolate === key ? null : key;
       load();
     });
   }
-  const note = document.getElementById('trend-note');
-  if(note){
-    note.textContent = state.clipped
-      ? 'The range starts before this store does: drawn from ' + fmtStamp(grid[span.first], true) + '.'
-      : '';
-  }
+  renderNote();
   bindHover(pad, plotW, plotH, x, grid, span, count);
 }
 
@@ -578,7 +632,7 @@ function renderReadout(index){
   const series = state.data.series || [];
   const parts = series.map(s => {
     const value = s.avg[index];
-    return '<b style="color:' + accountColor(s.account_id) + '">' + esc(s.account_label)
+    return '<b style="color:' + lineColor(s.key) + '">' + esc(seriesLabel(s))
       + '</b> ' + esc(fmtPercent(value)) + (s.n[index] ? ' <span class="muted">(' + s.n[index]
       + ' sample' + (s.n[index] === 1 ? '' : 's') + ')</span>' : '');
   }).filter(Boolean);
@@ -588,13 +642,22 @@ function renderReadout(index){
 
 // ------------------------------------------------------------------ heatmap
 
+// A cell's colour, mixed here rather than left to opacity. A translucent cell shows whatever is
+// behind the panel — the page's own artwork — so the same value reads differently on two installs and
+// the shade stops meaning one thing. This is the card's colour with the hue mixed in by the value, so
+// the pixel is the same everywhere and a column can be read by eye.
+function heatPaint(value){
+  const step = Math.max(0.08, Math.min(1, value / 100));
+  return 'rgb(' + HEAT_CARD.map((base, channel) =>
+    Math.round(base + (HEAT_HUE[channel] - base) * step)).join(',') + ')';
+}
+
 async function renderHeatmap(){
   // A second request at a daily bucket instead of averaging the trend buckets here: the mean of a
   // day is then computed once, by the code the suite covers, not by the page.
   const days = Math.max(1, Math.round(state.hours / 24));
-  const params = ['days=' + days, 'bucket_seconds=86400', 'max_points=' + MAX_POINTS]
-    .concat(seriesParams());
-  const {status, body} = await fetchJson('/api/history?' + params.join('&'));
+  const params = ['days=' + days, 'bucket_seconds=86400', 'max_points=' + MAX_POINTS];
+  const {status, body} = await fetchJson('/api/history?' + paramsFor(heatKeys(), params));
   const host = document.getElementById('heat');
   if(status !== 200 || !body.series || !body.series.length){
     host.innerHTML = '<div class="empty">No daily data yet.</div>';
@@ -616,34 +679,30 @@ async function renderHeatmap(){
     + grid.map((epoch, index) => '<div class="heat-head">'
       + (index % every === 0 ? esc(fmtDay(epoch)) : '') + '</div>').join('') + '</div>';
   const rows = series.map(s => {
-    const color = accountColor(s.account_id);
     const cells = s.avg.map((value, index) => {
-      const day = fmtDay(grid[index]);
-      const title = s.account_label + ' · ' + (s.window_label || s.window_key) + ' ' + day
+      const title = s.account_label + ' · ' + (s.window_label || s.window_key) + ' ' + fmtDay(grid[index])
         + ': ' + (value === null || value === undefined ? 'no samples' : fmtPercent(value));
-      // The real percentage drives the shade, so the same colour means the same usage on every row
-      // and every day. Scaling each row to its own best day would paint every row's peak the same
-      // and say nothing at all about the others.
+      // The real percentage drives the shade, so the same shade means the same usage on every row
+      // and every day. Scaling each row to its own best day would paint every row's busiest day the
+      // same, and a colour per account would make the shade answer "which account" instead of "how
+      // much" — the one question a map of cells exists to answer.
       const cellStyle = (value === null || value === undefined) ? ''
-        : 'background:' + color + ';opacity:' + Math.max(0.08, Math.min(1, value / 100)).toFixed(2);
+        : 'background:' + heatPaint(value);
       return '<div class="heat-cell" style="' + cellStyle + '" title="' + esc(title) + '"></div>';
     }).join('');
     return '<div class="heat-grid" style="' + style + '"><div class="heat-name" title="'
       + esc(s.key) + '">' + esc(s.account_label) + '</div>' + cells + '</div>';
   }).join('');
   host.innerHTML = head + rows;
-  document.getElementById('heat-legend-row').innerHTML = [0.15, 0.35, 0.55, 0.75, 0.95]
-    .map(opacity => '<span class="sw" style="opacity:' + opacity + '"></span>').join('');
+  document.getElementById('heat-legend-row').innerHTML = [10, 30, 50, 70, 92]
+    .map(percent => '<span class="sw" style="background:' + heatPaint(percent) + '"></span>').join('');
 }
 
 // ------------------------------------------------------------------ wiring
 
 document.getElementById('account-select').addEventListener('change', e => {
   state.account = e.target.value;
-  load();
-});
-document.getElementById('window-select').addEventListener('change', e => {
-  state.window = e.target.value;
+  state.isolate = null;
   load();
 });
 document.getElementById('range-select').addEventListener('change', e => {
