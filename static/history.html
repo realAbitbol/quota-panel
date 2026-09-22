@@ -32,6 +32,7 @@
   :root{
     --bg:#0b0d12; --card:20,24,33; --card-2:#1b2130; --line:#252c3b;
     --fg:#e8ecf5; --muted:#b7c2d6; --ok:#33d69f; --warn:#f5c451; --hot:#ff6b6b; --accent:#5b8dff;
+    --accent-rgb:91,141,255;
     --card-alpha:.68; --card-blur:14px;
   }
   *{box-sizing:border-box}
@@ -54,8 +55,9 @@
   .muted{color:var(--muted);font-size:12.5px}
   /* Same position as the live panel's entry point: the last thing in the header, flush right. */
   .spacer{margin-left:auto}
-  .nav{font-size:12.5px;color:var(--fg);text-decoration:none;border:1px solid var(--line);
-       border-radius:999px;padding:4px 12px;background:rgba(var(--card),.8);font-weight:600}
+  .nav{font-size:12.5px;color:var(--fg);text-decoration:none;
+       border:1px solid rgba(var(--accent-rgb),.38);
+       border-radius:999px;padding:4px 12px;background:rgba(var(--accent-rgb),.14);font-weight:600}
   .nav:hover{color:#fff;border-color:var(--accent)}
   @media (prefers-reduced-motion:no-preference){ .nav{transition:color .15s,border-color .15s} }
   main{display:flex;flex-direction:column;gap:16px}

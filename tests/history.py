@@ -1042,7 +1042,7 @@ def page_checks():
 
     check("the live-panel link reads as a button and lights up on hover",
           ".nav{font-size:12.5px;color:var(--fg)" in page
-          and "background:rgba(var(--card),.8)" in page
+          and "background:rgba(var(--accent-rgb),.14)" in page
           and ".nav:hover{color:#fff;border-color:var(--accent)}" in page,
           "the header link must read as a pill and light up on hover")
     check("the sparkline breaks on gaps and the donut ink follows the slice",

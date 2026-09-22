@@ -218,7 +218,7 @@ def ui_checks():
           "the funding link is part of the live page too")
     check("the history link reads as a button and lights up on hover",
           ".nav{font-size:12.5px;color:var(--fg)" in page
-          and "background:rgba(var(--card),.8)" in page
+          and "background:rgba(var(--accent-rgb),.14)" in page
           and ".nav:hover{color:#fff;border-color:var(--accent)}" in page,
           "the header link must read as a pill and light up on hover")
     # One flag from /api/quota reveals the entry point, and that is the whole cost of an
