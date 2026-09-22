@@ -901,8 +901,6 @@ PROVIDERS = {
         "label": "Kimi / Moonshot",
     },
     "zai": {
-        # z.ai publishes no API reference for this route: the shape parsed below comes from two
-        # independent implementations agreeing field by field.
         "kind": "window", "logo": "zai.svg",
         "label": "z.ai GLM Coding Plan",
     },

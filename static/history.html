@@ -33,7 +33,7 @@
     --bg:#0b0d12; --card:20,24,33; --card-2:#1b2130; --line:#252c3b;
     --fg:#e8ecf5; --muted:#b7c2d6; --ok:#33d69f; --warn:#f5c451; --hot:#ff6b6b; --accent:#5b8dff;
     --accent-rgb:91,141,255;
-    --card-alpha:.68; --card-blur:14px;
+    --card-alpha:.72; --card-blur:14px;
   }
   *{box-sizing:border-box}
   html,body{min-height:100%}
@@ -41,8 +41,10 @@
        font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
        padding:20px 22px 18px;
        background:var(--bg) url("/background") center / cover no-repeat}
+  /* Readability scrim: the same curve as the live panel, so a card reads the same on both
+     pages over the same artwork. Pointer-events off so it never swallows clicks. */
   body::before{content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;
-       background:linear-gradient(180deg,rgba(11,13,18,.55) 0%,rgba(11,13,18,.38) 45%,rgba(11,13,18,.62) 100%)}
+       background:linear-gradient(180deg,rgba(11,13,18,.62) 0%,rgba(11,13,18,.46) 45%,rgba(11,13,18,.70) 100%)}
   @media (prefers-reduced-motion:no-preference){ body{background-attachment:fixed} }
   header{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:18px;
        background:rgba(var(--card),var(--card-alpha));
