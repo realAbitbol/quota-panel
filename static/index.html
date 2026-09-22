@@ -516,13 +516,15 @@ async function load(){
     if(!res.ok) throw new Error('HTTP ' + res.status);
     const fresh = await res.json();
     data = fresh;
-    // The history entry point follows the server's own answer: the layer is off in a default
-    // install, and the page must not offer a link to a page that can only say "off" because of
-    // a setting this reader never made. An enabled-but-broken store shows the live error on
-    // that page, so the link is withheld for that case too.
+    // The history entry point follows one flag and no other: `enabled`. A default install has
+    // the layer off, so the page must not offer a link that can only say "off" because of a
+    // setting this reader never made. But an enabled store that failed to open is exactly when
+    // someone has to reach that page — it is where the live error and the fix are printed — so
+    // the link must NOT wait for `!history.error`. Withholding it there strands the reader on a
+    // panel that looks fine with no way to find out why history is empty.
     const history = fresh.history || {};
     const historyLink = document.getElementById('historyLink');
-    if(historyLink) historyLink.hidden = !(history.enabled && !history.error);
+    if(historyLink) historyLink.hidden = !history.enabled;
     // Display only — never scheduling. No fallback to `generated_at`: that stamp is older than
     // the response by the age of the data, so using it as a clock offset would subtract the data's
     // own age and make every payload look permanently fresh (dataAge() would read 0 and isStale()

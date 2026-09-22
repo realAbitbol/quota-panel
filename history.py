@@ -238,6 +238,32 @@ def now_epoch():
 
 # ----------------------------------------------------------------------------- store
 
+def _journal_room(path):
+    """Explain where a journal could not go, or return "" when the directory is fine.
+
+    A hardened deployment (measured: `read_only: true` plus a single *file* bind-mounted at the
+    database path) opens the file fine and then fails, because sqlite must create its journal and
+    shared-memory file in the same directory — and in that shape the directory is the read-only
+    image layer. sqlite's own wording ("unable to open database file") blames the database file,
+    which is the one thing not at fault, so this says what is and what to mount instead.
+    """
+    directory = os.path.dirname(os.path.abspath(path)) or "."
+    probe = os.path.join(directory, ".quota-history-journal-probe")
+    try:
+        handle = os.open(probe, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    except OSError as exc:
+        return (" — a write test in %s failed (%s), so sqlite cannot create its journal beside the "
+                "database: mount a directory there rather than a single file, and let the "
+                "container's own user own it (install -d -o 10001 -g 10001 <host dir>, then "
+                "<host dir>:/data)" % (directory, exc))
+    os.close(handle)
+    try:
+        os.unlink(probe)
+    except OSError:
+        pass
+    return ""
+
+
 def connect(path, read_only=False):
     """Open the database, creating the schema on first write.
 
@@ -260,7 +286,8 @@ def connect(path, read_only=False):
     try:
         conn = sqlite3.connect(path, timeout=5.0)
     except sqlite3.Error as exc:
-        raise HistoryError("cannot open the history database at %s (%s)" % (path, exc))
+        raise HistoryError("cannot open the history database at %s (%s)%s"
+                           % (path, exc, _journal_room(path)))
     conn.row_factory = sqlite3.Row
     if not read_only:
         try:
@@ -271,7 +298,8 @@ def connect(path, read_only=False):
             conn.commit()
         except sqlite3.Error as exc:
             conn.close()
-            raise HistoryError("cannot prepare the history database at %s (%s)" % (path, exc))
+            raise HistoryError("cannot prepare the history database at %s (%s)%s"
+                               % (path, exc, _journal_room(path)))
     return conn
 
 

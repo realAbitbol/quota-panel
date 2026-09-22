@@ -176,6 +176,13 @@ Turn it on in `accounts.json`:
 
 `path` must be writable. In the container the image ships `/data` owned by the service user (uid 10001), so the named volume in the commented `docker-compose.yml` block works as it stands; a host **bind mount** is the host's to make writable, since docker keeps the directory's own ownership. A CIFS/NFS path is **refused** rather than trusted: sqlite's locking does not hold there and the history would be lost quietly.
 
+**Mount a directory, never a single file.** sqlite creates its journal and shared-memory file *beside* the database, so the directory has to be writable too. With `read_only: true` (the hardening in the compose example), a lone `- ./quota.db:/data/quota.db` makes the database file writable but leaves its directory on the read-only rootfs, and every history request then answers `503` with `unable to open database file` — the one message that blames the file, which is the part that is fine. Mount the directory instead:
+
+```bash
+install -d -o 10001 -g 10001 ./data    # host, once, next to the compose file
+# compose:  - ./data:/data      (not  - ./quota.db:/data/quota.db)
+```
+
 | Setting | Env var | Default | Meaning |
 |---|---|---|---|
 | `enabled` | `QUOTA_HISTORY_ENABLED` | `false` | Off unless something explicitly turns it on. |
@@ -254,6 +261,8 @@ Every suite talks to a local stub instead of a provider, so they run offline and
 **Everything is red after moving host and the config looks right.** Check the path *inside* the container, and the permissions: the process runs as uid 10001 and cannot read a `600` file owned by someone else.
 
 **The wallpaper never appears.** `/api/health` reports `background.served: none` and the last error.
+
+**`History is enabled but not readable: cannot prepare the history database at … (unable to open database file)`.** The database file is writable, its *directory* is not, so sqlite cannot put its journal there. Nearly always a single-file bind mount (`- ./quota.db:/data/quota.db`) under a read-only rootfs. Mount the directory instead — `install -d -o 10001 -g 10001 ./data`, then `- ./data:/data` — and restart; `/history` and `/api/history` both answer with this reason while it is wrong, and the message names the failing path.
 
 ## Limits
 

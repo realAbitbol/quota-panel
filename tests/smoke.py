@@ -218,6 +218,14 @@ def ui_checks():
     # layer most of them leave off.
     check("the live panel reads the history flag, never the history route",
           "historyLink" in page and "/api/history" not in page)
+    # An enabled store that will not open is the one case where the reader needs that page: it
+    # prints the live error and the fix. Tie the entry point to `enabled` alone and assert it,
+    # because the tempting version — wait for `!error` too — hides the only route to the answer
+    # exactly when it is needed (seen in production: enabled, store unopenable, no link anywhere).
+    check("the history entry point does not wait for a healthy store",
+          "historyLink.hidden = !history.enabled;" in page
+          and "!(history.enabled && !history.error)" not in page,
+          "a broken store would hide the only page that explains the breakage")
     check("the vendored chart library is gone",
           not os.path.exists(os.path.join(ROOT, "static", "vendor", "uplot")))
 

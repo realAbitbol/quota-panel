@@ -154,6 +154,21 @@ def storage_checks():
     unwritable = history.load_config(None, env={"QUOTA_HISTORY_ENABLED": "1",
                                                 "QUOTA_DB": "/dev/null/quota.db"})[0]
     check("a path that cannot be created reports why", bool(history.prepare(unwritable)))
+    # Measured in production: a hardened compose with `read_only: true` and a single *file* bind
+    # mounted at the database path. sqlite opens the file and then cannot put its journal beside
+    # it, and its own message ("unable to open database file") blames the file. The store has to
+    # name the real cause and the fix, because that message is the only clue the operator gets.
+    locked_dir = os.path.join(WORK, "read-only-dir")
+    os.makedirs(locked_dir, exist_ok=True)
+    os.chmod(locked_dir, 0o500)
+    try:
+        boxed = history.load_config(None, env={"QUOTA_HISTORY_ENABLED": "1",
+                                               "QUOTA_DB": os.path.join(locked_dir, "quota.db")})[0]
+        reason = history.prepare(boxed) or ""
+        check("a database whose directory cannot take a journal says so, and says what to mount",
+              "write test in" in reason and "mount a directory" in reason, reason)
+    finally:
+        os.chmod(locked_dir, 0o700)
 
     print("--- sampling")
     path = fresh(os.path.join(WORK, "sampling.db"))
