@@ -824,7 +824,10 @@ def http_checks():
             check("the database exists where it was asked for", os.path.exists(enabled_path), enabled_path)
 
             # The crossing webhook runs on a worker thread with retry/backoff; the stub fails
-            # twice, so the third attempt lands after ~3 s.
+            # twice, so the third attempt lands after ~3 s. Wait on the outcome the worker
+            # records, not on the POST count: the third POST only says the stub answered, and
+            # the row is written a moment later — on a slow runner the gap between the two is
+            # what a single immediate read would measure instead of the result.
             hook_deadline = time.time() + 20
             while time.time() < hook_deadline and len(StubHandler.posted) < 3:
                 time.sleep(0.3)
@@ -835,10 +838,16 @@ def http_checks():
                   "%s" % (alert or StubHandler.posted))
             check("a failing webhook is retried before it is given up on",
                   len(StubHandler.posted) == 3, "%d POST(s)" % len(StubHandler.posted))
+            outcome = []
+            hook_deadline = time.time() + 20
+            while time.time() < hook_deadline:
+                outcome = query(enabled_path, "SELECT status, attempts FROM alerts ORDER BY id DESC LIMIT 1")
+                if outcome and outcome[0][0] in ("delivered", "failed"):
+                    break
+                time.sleep(0.2)
             check("the delivery outcome is recorded in the event log",
-                  scalar(enabled_path, "SELECT status FROM alerts ORDER BY id DESC LIMIT 1") == "delivered"
-                  and scalar(enabled_path, "SELECT attempts FROM alerts ORDER BY id DESC LIMIT 1") == 3,
-                  "%s" % query(enabled_path, "SELECT status, attempts FROM alerts"))
+                  bool(outcome) and outcome[0][0] == "delivered" and outcome[0][1] == 3,
+                  "%s" % [(row[0], row[1]) for row in outcome])
 
             status, body = get(base + "/api/history?hours=1&max_points=5")
             check("a bad parameter is refused with 400, not 500", status == 400 and "max_points" in body.decode(),
