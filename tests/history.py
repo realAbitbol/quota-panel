@@ -1040,9 +1040,11 @@ def page_checks():
           "badgeHtml(s.provider, seriesLabel(s))" in page,
           "the legend must show the provider mark, not only a colour dot")
 
-    check("the live-panel link lights up on hover like the support button",
-          ".nav:hover{color:#fff;border-color:var(--accent)}" in page,
-          "the header link must light up on hover")
+    check("the live-panel link reads as a button and lights up on hover",
+          ".nav{font-size:12.5px;color:var(--fg)" in page
+          and "background:rgba(var(--card),.8)" in page
+          and ".nav:hover{color:#fff;border-color:var(--accent)}" in page,
+          "the header link must read as a pill and light up on hover")
     check("the sparkline breaks on gaps and the donut ink follows the slice",
           "previous + 1" in page and "function labelInk" in page,
           "a gap drawn as a line invents data, and fixed ink vanishes on dark slices")
