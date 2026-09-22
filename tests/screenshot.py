@@ -18,6 +18,7 @@ credential and no provider call is involved — the numbers are fixed, so the sc
 reproducible instead of drifting with live usage.
 """
 import json
+import math
 import os
 import re
 import shutil
@@ -89,25 +90,53 @@ def standing_label(accounts):
     return max(ranked)[1] if ranked else None
 
 
-def seeded_percent(window_index, day, step, account_index):
-    """One reading: three windows with three different natures, and days that differ by more than a
-    shade.
+def seeded_percent(window, stamp, account_index):
+    """One reading: a plan is consumed over its period and then renews, so every window climbs and
+    drops once per period — never a repeating ripple.
 
-    A plan is consumed over a period and then resets, so the standing window ramps and drops; the
-    weekly window saw-tooths every seven days; the shortest resets several times a day. The
-    amplitudes are tens of points, not two: the first version of this fixture moved a day by about
-    four percentage points, which under a shade that *is* the percentage is a map that looks the
-    same every day — and was committed as one.
+    The period comes from the window's own label (`label_seconds`, the page's own rule), so a five-hour
+    window renews several times a day, a weekly one once a week, the standing window once a month, and
+    each account's cycles start at another hour.
+
+    The first version instead added `(step * 7) % 11` to every window: a ten-point ripple with a period
+    of eleven samples, i.e. 55 minutes at the store's five-minute cadence. Read at the panel's own
+    resolution, a monthly window then dropped ~180 times a day and the committed picture was a sawtooth
+    no plan produces — the teeth a reader asked about. A counter only ever goes up between renewals.
     """
-    position = day + account_index * 3               # accounts are not in phase with each other
-    if window_index == 0:                            # a five-hour window: several resets a day
-        return min(96.0, 22.0 + ((position * 17 + step * 29) % 74))
-    if window_index == 1:                            # weekly: a ramp that resets every seven days
-        return min(97.0, (position % 7) * 13.0 + 4.0 + (step * 11) % 9)
-    # The standing window: a ramp that resets when the period rolls over, and a lighter account
-    # stays lighter than a heavier one on every day.
-    ramped = (position % 14) * 6.6 + (step * 7) % 11
-    return min(98.5, max(1.5, ramped - account_index * 4.5))
+    period = float(label_seconds(window.get("label") or "") or 30 * 86400)
+    own = stamp + account_index * 7 * 86400               # accounts are not in phase with each other
+    progress = (own % period) / period
+    # Monotone, and quickest in the middle of the period: usage accumulates, but a plan is rarely
+    # consumed at a constant rate.
+    ramp = progress - 0.14 * progress ** 3 * math.sin(math.pi * progress)
+    span = 88.0 - account_index * 5.0                     # a lighter account stays lighter, every day
+    renewed = 3.0 + (int(own // period) * 7 + account_index * 3) % 5
+    return min(98.5, max(1.0, renewed + span * ramp))
+
+
+def fixture_shape_failures(accounts, now_ts, drawn_seconds=7 * 86400, step_seconds=300):
+    """The fixture's own shape, checked where it lives: a counter climbs between renewals.
+
+    Written because the page-level checks all passed on a capture whose monthly window dropped ~180
+    times a day — a chart can be full of lines and still be a chart of nothing a plan does. The number
+    of renewals allowed comes from each window's own period, so the five-hour window keeps its several
+    resets a day and the monthly one is allowed exactly one.
+    """
+    failures = []
+    for index, account in enumerate(accounts):
+        for window in [w for w in (account.get("windows") or []) if w.get("kind") == "window"]:
+            period = float(label_seconds(window.get("label") or "") or 30 * 86400)
+            stamps = [now_ts - drawn_seconds + i * step_seconds
+                      for i in range(int(drawn_seconds // step_seconds))]
+            values = [seeded_percent(window, stamp, index) for stamp in stamps]
+            climbs = [b - a for a, b in zip(values, values[1:]) if b > a]
+            typical = sum(climbs) / len(climbs) if climbs else 0.0
+            drops = sum(1 for a, b in zip(values, values[1:]) if a - b > max(2.0, typical))
+            allowed = int(drawn_seconds / period) + 1
+            if drops > allowed:
+                failures.append("%s %s: %d drops over %d renewals"
+                                % (account["id"], window.get("label"), drops, allowed))
+    return failures
 
 
 def seed_history(path, accounts, now_ts=None):
@@ -146,8 +175,8 @@ def seed_history(path, accounts, now_ts=None):
                     "id": account["id"], "provider": account.get("provider"),
                     "label": account.get("label"), "state": "ok",
                     "windows": [{"key": w.get("key"), "label": w.get("label"), "kind": "window",
-                                 "percent": seeded_percent(position, day, step, index)}
-                                for position, w in enumerate(windows)],
+                                 "percent": seeded_percent(w, stamp, index)}
+                                for w in windows],
                 })
             if results:
                 history.record(results, config, now_ts=stamp)
@@ -528,7 +557,8 @@ def main():
     check("the providers publish windows to seed the store with", bool(published),
           "%d accounts with a window" % len(published))
     if published:
-        seeded = seed_history(history_path, published)
+        seed_now = int(time.time())
+        seeded = seed_history(history_path, published, now_ts=seed_now)
         counts = scalar = None
         if ROOT not in sys.path:
             sys.path.insert(0, ROOT)
@@ -541,6 +571,11 @@ def main():
             conn.close()
         check("the seeded store has history in it", (counts or 0) > 10 * len(published),
               "%s rows, %s series (config %s)" % (counts, scalar, seeded["sample_seconds"]))
+        # The fixture's own shape, checked where it lives rather than on the picture: every
+        # page-level check passed on a capture of a five-minute sawtooth, which is what shipped once.
+        shape = fixture_shape_failures(published, seed_now)
+        check("the seeded trend climbs between renewals and drops once per period", not shape,
+              "; ".join(shape[:3]))
 
     app = subprocess.Popen([sys.executable, os.path.join(ROOT, "app.py")], env=env,
                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
@@ -859,6 +894,21 @@ def main():
                 fills: document.querySelectorAll('#chart svg linearGradient').length,
                 legend: document.querySelectorAll('#legend button').length,
                 shades: [...new Set(cells.map(c => c.style.background).filter(Boolean))].length,
+                rising: Array.from(document.querySelectorAll('#chart svg path'))
+                          .filter(p => p.getAttribute('stroke') !== 'none')
+                          .map(p => {
+                            const len = p.getTotalLength();
+                            if (!len) return 1;
+                            const ys = [];
+                            for (let i = 0; i <= 60; i++) ys.push(p.getPointAtLength(len * i / 60).y);
+                            let up = 0, moves = 0;
+                            for (let i = 1; i < ys.length; i++) {
+                              if (Math.abs(ys[i] - ys[i - 1]) < 0.01) continue;
+                              moves++;
+                              if (ys[i] < ys[i - 1]) up++;
+                            }
+                            return moves ? up / moves : 1;
+                          }),
                 off: status.hidden === false
               };
             })()""", returnByValue=True)
@@ -901,6 +951,13 @@ def main():
         # many distinct shades; a map that holds three is a map that cannot be read.
         check("the map's days differ by more than a shade",
               (state.get("shades") or 0) >= 5, "%s distinct shades" % state.get("shades"))
+        # A chart can hold a line per account and still be a chart of nothing a plan does: the capture
+        # that was committed once drew a five-minute ripple on a monthly window. A counter rises on
+        # nearly every step between renewals, so a drawn line that falls as often as it climbs is a
+        # fixture artefact, whichever page-level check else passes.
+        rising = [round(value, 3) for value in (state.get("rising") or [])]
+        check("the trend climbs between renewals rather than rippling",
+              bool(rising) and min(rising) >= 0.6, str(rising))
 
         # The range control, exercised — and this is where the first version of this capture went
         # wrong: it dispatched the change and waited only for the map's columns, then shot a chart
