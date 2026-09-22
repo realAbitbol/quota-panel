@@ -1030,7 +1030,7 @@ function renderChart(){
     + '" aria-pressed="' + (state.isolate === s.key ? 'true' : 'false')
     + '" title="Click to show this one alone">'
     + '<span class="dot" style="background:' + lineColor(s.key) + '"></span>'
-    + esc(seriesLabel(s)) + ' <span class="muted">'
+    + badgeHtml(s.provider, seriesLabel(s)) + ' <span class="muted">'
     + (s.latest ? fmtPercent(s.latest.percent) + ' now' : 'no reading')
     + ' · peak ' + esc(fmtPercent(s.peak)) + '</span></button>').join('');
   for(const node of document.querySelectorAll('#legend button')){

@@ -1014,6 +1014,10 @@ def page_checks():
     check("the chart legends are keyboard- and AT-legible",
           "aria-pressed" in page and "tabindex" in page and "ArrowRight" in page,
           "a value only a mouse can read is a value half the readers cannot read")
+
+    check("the trend legend carries each series' provider mark",
+          "badgeHtml(s.provider, seriesLabel(s))" in page,
+          "the legend must show the provider mark, not only a colour dot")
     check("the sparkline breaks on gaps and the donut ink follows the slice",
           "previous + 1" in page and "function labelInk" in page,
           "a gap drawn as a line invents data, and fixed ink vanishes on dark slices")
