@@ -33,10 +33,70 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OUT = os.environ.get("SCREENSHOT_OUT", os.path.join(ROOT, "docs", "screenshot.png"))
+HISTORY_OUT = os.environ.get("SCREENSHOT_HISTORY_OUT", os.path.join(ROOT, "docs", "history.png"))
 BROWSER = os.environ.get(
     "SCREENSHOT_BROWSER", "/Applications/Helium.app/Contents/MacOS/Helium"
 )
 WIDTH, HEIGHT, SCALE = 1440, 900, 2
+
+# The history capture needs a store with history in it, and a store filled by waiting would take
+# days. So this seeds one through the module's own write path — the same `record()` the poller
+# calls — at synthetic timestamps, over the very accounts and windows the running app publishes
+# (read from /api/quota, not guessed), and the app then serves it read-only. Deterministic, no
+# randomness: the same bytes every run, which is what a committed screenshot has to be.
+HISTORY_DAYS = 21
+HISTORY_WINDOW_LABELS = {"five_hour": "5 h", "rolling": "5 h", "weekly": "Week", "monthly": "Month"}
+
+
+def seeded_percent(window_index, day, step, account_index):
+    """One reading: a shape a heat map can show off, and the three windows differ by nature.
+
+    The widest window climbs day by day (that is the shape a plan actually has), the middle one
+    saw-tooths, the shortest resets often — so a row is never a wall of one shade, which is the
+    thing the capture has to demonstrate.
+    """
+    if window_index == 0:
+        return min(2.0 + ((day * 7 + step * 9) % 12) + account_index, 99.0)
+    if window_index == 1:
+        return min(18.0 + ((day * 11 + step * 6) % 55) + account_index * 4.0, 99.0)
+    return min(4.0 * day + (step * 5.0) / 3.0 + account_index * 7.5, 99.9)
+
+
+def seed_history(path, accounts, now_ts=None):
+    """Write `HISTORY_DAYS` of samples for every window the app publishes, and return the config.
+
+    `accounts` is /api/quota's own list. The store is written through the repository's own module
+    rather than hand-rolled SQL: if the writer's shape changes, this seeding breaks with it instead
+    of quietly producing a screenshot of a store the app can no longer read.
+    """
+    if ROOT not in sys.path:
+        sys.path.insert(0, ROOT)
+    import history
+
+    config = dict(history.DEFAULTS)
+    config.update({"enabled": True, "path": path, "sample_seconds": 300})
+    now = int(now_ts if now_ts is not None else time.time())
+    day_start = now - HISTORY_DAYS * 86400
+    for day in range(HISTORY_DAYS):
+        for step in range(6):                       # six readings a day, four hours apart
+            stamp = day_start + day * 86400 + step * 14400
+            if stamp > now:
+                continue
+            results = []
+            for index, account in enumerate(accounts):
+                windows = [w for w in (account.get("windows") or []) if w.get("kind") == "window"]
+                if not windows:
+                    continue
+                results.append({
+                    "id": account["id"], "provider": account.get("provider"),
+                    "label": account.get("label"), "state": "ok",
+                    "windows": [{"key": w.get("key"), "label": w.get("label"), "kind": "window",
+                                 "percent": seeded_percent(position, day, step, index)}
+                                for position, w in enumerate(windows)],
+                })
+            if results:
+                history.record(results, config, now_ts=stamp)
+    return config
 
 # Synthetic provider responses: realistic shapes, fixed numbers. The window values mirror a
 # real CommandCode/OpenCode Go response, and the balance values are the documented shape.
@@ -338,6 +398,12 @@ def main():
     # overwrote each other's config mid-flight, and nothing removed any of it.
     scratch = tempfile.mkdtemp(prefix="quota-panel-screenshot-")
 
+    # History on, with its store in this run's scratch directory: the capture of /history needs
+    # something to draw, and leaving it off would ship a README image of an empty state.
+    history_path = os.path.join(scratch, "quota.db")
+    CONFIG["history"] = {"enabled": True, "path": history_path, "sample_seconds": 300}
+    CONFIG["history"]["_note"] = "seeded by tests/screenshot.py: 21 days through history.record()"
+
     # stub provider server
     stub_port = free_port()
     stub = ThreadingHTTPServer(("127.0.0.1", stub_port), Stub)
@@ -365,6 +431,61 @@ def main():
         env[var] = "http://127.0.0.1:%d" % stub_port
     env["COMMANDCODE_API_BASE"] = "http://127.0.0.1:%d" % stub_port
     env["OPENCODE_GO_USAGE_URL"] = "http://127.0.0.1:%d/zen/go/v1/usage" % stub_port
+
+    # Seed the history store BEFORE the app that will be captured has ever written to it.
+    #
+    # The order is not cosmetic: history.record() refuses a sample older than the newest one already
+    # stored for that account — the gate that stops a restart from back-filling — so seeding a store
+    # that already holds the app's own first poll writes exactly nothing, and the page then draws one
+    # lonely dot. Measured: 126 seeding calls, zero rows.
+    #
+    # The window shapes still come from the app itself, via a throwaway instance on its own port and
+    # its own store: the fixture must describe the windows this build actually publishes, not the
+    # ones a test file believes it publishes.
+    probe_store = os.path.join(scratch, "probe.db")
+    probe_cfg = os.path.join(scratch, "probe-config.json")
+    probe_document = dict(CONFIG, history={"enabled": True, "path": probe_store,
+                                           "sample_seconds": 300})
+    with open(probe_cfg, "w", encoding="utf-8") as fh:
+        json.dump(probe_document, fh)
+    probe_port = free_port()
+    probe = subprocess.Popen([sys.executable, os.path.join(ROOT, "app.py")],
+                             env=dict(env, PORT=str(probe_port), QUOTA_CONFIG=probe_cfg),
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    accounts = []
+    try:
+        deadline = time.time() + 25
+        while time.time() < deadline and not accounts:
+            try:
+                with urllib.request.urlopen("http://127.0.0.1:%d/api/quota" % probe_port,
+                                            timeout=5) as resp:
+                    accounts = json.loads(resp.read().decode()).get("accounts") or []
+            except Exception:  # noqa: BLE001 - still booting
+                time.sleep(0.3)
+    finally:
+        probe.terminate()
+        try:
+            probe.wait(timeout=8)
+        except subprocess.TimeoutExpired:
+            probe.kill()
+    published = [a for a in accounts
+                 if [w for w in (a.get("windows") or []) if w.get("kind") == "window"]]
+    check("the providers publish windows to seed the store with", bool(published),
+          "%d accounts with a window" % len(published))
+    if published:
+        seeded = seed_history(history_path, published)
+        counts = scalar = None
+        if ROOT not in sys.path:
+            sys.path.insert(0, ROOT)
+        import history as history_module
+        conn = history_module.connect(history_path, read_only=True)
+        try:
+            counts = conn.execute("SELECT COUNT(*) FROM snapshots").fetchone()[0]
+            scalar = conn.execute("SELECT COUNT(*) FROM series").fetchone()[0]
+        finally:
+            conn.close()
+        check("the seeded store has history in it", (counts or 0) > 10 * len(published),
+              "%s rows, %s series (config %s)" % (counts, scalar, seeded["sample_seconds"]))
 
     app = subprocess.Popen([sys.executable, os.path.join(ROOT, "app.py")], env=env,
                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
@@ -638,6 +759,116 @@ def main():
         check("screenshot written", os.path.getsize(OUT) > 20000,
               "%d bytes" % os.path.getsize(OUT))
         print("wrote %s (%d bytes)" % (OUT, os.path.getsize(OUT)))
+
+        # ---- the usage history page, shot from the store seeded before this app booted
+        with urllib.request.urlopen(base + "/api/quota", timeout=5) as resp:
+            live = json.loads(resp.read().decode())
+
+        # Navigation is retried and its own result printed: on this browser a navigate issued while
+        # the previous full-page screenshot is still settling comes back with an errorText and
+        # silently leaves the old page in place, which is exactly how the first version of this
+        # check measured the live panel and called it the history page.
+        navigate_result = None
+        for attempt in range(3):
+            navigate_result = cdp.call("Page.navigate", url=base + "/history") or {}
+            if not navigate_result.get("errorText"):
+                break
+            print("  navigate attempt %d: %s" % (attempt + 1, navigate_result.get("errorText")))
+            time.sleep(1.0)
+        print("  navigate -> %s" % json.dumps(navigate_result)[:200])
+
+        state = {}
+        last_probe = None
+        deadline = time.time() + 35
+        while time.time() < deadline:
+            # Returning null until this is really the history page: an element that does not exist
+            # yet makes the whole expression throw, and a thrown expression reads as "no value"
+            # rather than as "not ready", which is how the first version of this check failed.
+            last_probe = cdp.call("Runtime.evaluate", expression="""(() => {
+              const heat = document.getElementById('heat');
+              const status = document.getElementById('status-panel');
+              if (!heat || !status) return null;
+              return {
+                ready: document.readyState,
+                path: location.pathname,
+                cells: document.querySelectorAll('#heat .heat-cell').length,
+                rows: Math.max(0, document.querySelectorAll('#heat .heat-grid').length - 1),
+                cols: document.querySelectorAll('#heat .heat-head').length,
+                lines: document.querySelectorAll('#chart svg path').length,
+                empties: document.querySelectorAll('#chart .empty').length,
+                window: document.getElementById('window-select').value,
+                windowLabels: Array.from(document.getElementById('window-select').options)
+                                   .map(o => o.textContent),
+                off: status.hidden === false
+              };
+            })()""", returnByValue=True)
+            state = (last_probe.get("result") or {}).get("value") or {}
+            if state.get("ready") == "complete" and state.get("cells"):
+                break
+            time.sleep(0.4)
+        # Rows are one per account *of the window on screen*: an account that publishes no Month
+        # window has no Month row, which is the point of showing one window at a time.
+        selected = state.get("window")
+        in_window = [a for a in live["accounts"]
+                     if any(w.get("key") == selected and w.get("kind") == "window"
+                            for w in (a.get("windows") or []))]
+        if not state:
+            print("  history probe never saw this page: %s" % json.dumps(last_probe)[:400])
+        check("the history page renders its store", state.get("cells", 0) > 0,
+              json.dumps(state)[:200])
+        check("the history page is the page that was navigated to",
+              state.get("path") == "/history" and state.get("off") is False,
+              "path=%r off=%r" % (state.get("path"), state.get("off")))
+        check("every account in that window has a row", state.get("rows") == len(in_window),
+              "%s rows for %d accounts in %r (state %s)"
+              % (state.get("rows"), len(in_window), selected, state))
+        check("the trend drew a line per account", (state.get("lines") or 0) >= len(in_window),
+              str(state.get("lines")))
+        check("the window selector offers the windows the providers published",
+              len(state.get("windowLabels") or []) >= 2
+              and state.get("window") == "monthly",
+              "selected %r of %s" % (state.get("window"), state.get("windowLabels")))
+
+        # A week, so the map is a calendar rather than two columns — and because a control that
+        # only works on its default value is a control nobody has tested.
+        cdp.call("Runtime.evaluate", expression="""(() => {
+          const sel = document.getElementById('range-select');
+          sel.value = '168';
+          sel.dispatchEvent(new Event('change'));
+          return sel.value;
+        })()""", returnByValue=True)
+        week = 0
+        deadline = time.time() + 20
+        while time.time() < deadline:
+            week = cdp.call("Runtime.evaluate", expression=
+                            "document.querySelectorAll('#heat .heat-head').length",
+                            returnByValue=True).get("result", {}).get("value") or 0
+            if week >= 7:
+                break
+            time.sleep(0.4)
+        check("a week draws a column per day", week >= 7, "%s columns" % week)
+
+        # The rule this page was rewritten for, checked on the rendered pixels' own values: a
+        # cell's shade is the real percentage, never a row's best day stretched to full.
+        shade = cdp.call("Runtime.evaluate", expression="""(() => {
+          const cell = Array.from(document.querySelectorAll('#heat .heat-cell')).find(c =>
+            c.style.opacity && /: [\\d.]+%$/.test(c.getAttribute('title') || ''));
+          if (!cell) return null;
+          const value = parseFloat(/: ([\\d.]+)%$/.exec(cell.getAttribute('title'))[1]);
+          return {opacity: parseFloat(cell.style.opacity), value: value,
+                  expected: Math.max(0.08, Math.min(1, value / 100))};
+        })()""", returnByValue=True).get("result", {}).get("value")
+        check("a cell's shade is its real percentage",
+              bool(shade) and abs(shade["opacity"] - shade["expected"]) < 0.02, str(shade))
+
+        shot = cdp.call("Page.captureScreenshot", format="png", captureBeyondViewport=True)
+        data = base64.b64decode(shot["data"])
+        os.makedirs(os.path.dirname(HISTORY_OUT), exist_ok=True)
+        with open(HISTORY_OUT, "wb") as fh:
+            fh.write(data)
+        check("history screenshot written", os.path.getsize(HISTORY_OUT) > 20000,
+              "%d bytes" % os.path.getsize(HISTORY_OUT))
+        print("wrote %s (%d bytes)" % (HISTORY_OUT, os.path.getsize(HISTORY_OUT)))
     finally:
         browser.terminate()
         app.terminate()

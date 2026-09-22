@@ -159,6 +159,8 @@ Every provider also has a `*_API_BASE` override so the test suite can point an a
 
 `/history` charts usage over time from one SQLite file: one line per account, **one window at a time** (the widest one the account has is the default), and a day-per-column intensity map below it, one row per account. It ships on, in `accounts.example.json` and in `docker-compose.yml`:
 
+![usage history](docs/history.png)
+
 ```json
 "history": { "enabled": true, "path": "/data/quota.db", "sample_seconds": 300,
              "raw_days": 90, "rollup_days": 365, "rollup_seconds": 900 }
@@ -216,7 +218,7 @@ PORT=8080 python3 app.py
 python3 tests/smoke.py                  # boots the app and exercises the HTTP surface
 python3 tests/balance.py                # registry, balance adapters, error branches
 python3 tests/background.py             # artwork shrink (needs Pillow)
-python3 tests/screenshot.py             # renders the real page in Chromium and re-shoots the README image
+python3 tests/screenshot.py             # renders the real pages in Chromium and re-shoots docs/screenshot.png + docs/history.png
 QUOTA_POLL_SECONDS=10 python3 tests/cadence_soak.py   # the header's countdown must not decay
 ```
 
