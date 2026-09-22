@@ -43,7 +43,7 @@ jobs:
           python-version: "3.12"
 
       - name: Compile
-        run: python -m py_compile app.py providers_balance.py tests/smoke.py tests/background.py tests/balance.py tests/screenshot.py tests/cadence_soak.py tests/tab_switch.py
+        run: python -m py_compile app.py history.py providers_balance.py tests/smoke.py tests/background.py tests/balance.py tests/history.py tests/screenshot.py tests/cadence_soak.py tests/tab_switch.py
 
       - name: Validate the example config
         run: |
@@ -63,12 +63,25 @@ jobs:
               assert os.path.exists(logo), "missing logo for %s: %s" % (a["provider"], logo)
           b = cfg.get("background_url")
           assert b is None or (isinstance(b, str) and (b == "" or b.startswith(("http://", "https://")))), b
-          assert "retention" not in cfg, "the panel stores no history any more"
-          print("example config OK: %d accounts, ids %s, background_url %r" % (len(ids), ids, b))
+          # The optional history layer must ship OFF. The panel's documented default is
+          # stateless — no volume, no database — so a case typo in the example would start
+          # writing to disk on every install that copied this file.
+          import history
+          history_config, history_notes = history.load_config("accounts.example.json", env={})
+          assert history_config["enabled"] is False, history_config
+          assert not history_notes, history_notes
+          print("example config OK: %d accounts, ids %s, background_url %r, history %s"
+                % (len(ids), ids, b, "off"))
           PY
 
       - name: Smoke test the HTTP surface
         run: python tests/smoke.py
+
+      - name: History layer (opt-in storage, retention, HTTP contract)
+        # The layer is off by default, so nothing else would exercise it: this is what keeps
+        # the storage contract, the prune guard and the "no database while it is off" promise
+        # honest.
+        run: python tests/history.py
 
       - name: Balance providers, registry and icons
         run: python tests/balance.py

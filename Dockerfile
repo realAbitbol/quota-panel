@@ -25,6 +25,10 @@ RUN pip install --no-cache-dir pillow==12.3.0 \
 # used to run after the copy: the runtime user needs to read these, not to own them.
 COPY --chown=quota:quota app.py /app/app.py
 COPY --chown=quota:quota providers_balance.py /app/providers_balance.py
+# The optional history layer. It has to be in this list like anything else: app.py imports it
+# lazily, so an image that left it out would not fail — it would silently serve a panel whose
+# history, once enabled, never appears.
+COPY --chown=quota:quota history.py /app/history.py
 COPY --chown=quota:quota static /app/static
 # MIT requires the notice to travel with every copy of the software, and a redistributed image is
 # a copy. It has nowhere else to come from: the COPY list is explicit, so a file left out of it

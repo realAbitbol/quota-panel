@@ -24,6 +24,28 @@
     "under background_url, and in app.py as BACKGROUND_URL_DEFAULT. 'none' or 'off' means no",
     "artwork at all, with no fetch, which is what the test suites and an offline install want."
   ],
+  "history": {
+    "_note": [
+      "OPTIONAL usage history, off by default. While 'enabled' is false the panel keeps no",
+      "state at all: no volume, no database, no history route, and the page shows no link to",
+      "one. Turning it on adds one SQLite file ('path', also QUOTA_DB) and needs somewhere",
+      "writable to keep it — in the container that means a mounted volume at /data.",
+      "'sample_seconds' is how often a sample is stored; the poll keeps polling at",
+      "poll_seconds, only the row write is gated. Measured: a 60 s sample over twelve series",
+      "grows ~350-400 MB a year, a 300 s sample about a fifth of that.",
+      "'raw_days' of raw samples are kept; older history survives as 'rollup_seconds' buckets",
+      "kept 'rollup_days'. A rollup is the long-term record, not a cache of it, and a raw row",
+      "is only deleted once its bucket exists. rollup_days below raw_days is clamped up.",
+      "Do not put 'path' on a CIFS/NFS mount: the panel refuses one rather than lose history",
+      "to sqlite's locking not holding there."
+    ],
+    "enabled": false,
+    "path": "/data/quota.db",
+    "sample_seconds": 300,
+    "raw_days": 90,
+    "rollup_days": 365,
+    "rollup_seconds": 900
+  },
   "accounts": [
     {
       "id": "cc-work",

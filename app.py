@@ -3,8 +3,10 @@
 
 Polls each provider's own usage API for every configured account and serves:
   GET /                dark card UI (progress bars + live reset countdowns)
+  GET /history         usage over time, when the optional history layer is enabled
   GET /background      artwork: the configured background_url image, else 404
   GET /api/quota       normalized JSON (accounts -> windows)
+  GET /api/history     merged raw+rollup time series (404 unless history is enabled)
   GET /api/homepage    flat widget list for a gethomepage customapi tile
   GET /api/health      liveness + poll age
 
@@ -12,6 +14,8 @@ Design constraints (deliberate):
   * stdlib only — no pip deps, no lockfile drift, tiny image.
   * read-only: every provider call is a GET; nothing is ever written upstream.
   * a failing account degrades alone; the panel keeps serving the others.
+  * stateless by default: no volume, no database. History is an opt-in layer
+    (history.py, `history.enabled`) that keeps its own SQLite file when asked for.
 
 CLI: `app.py --check` polls once, prints JSON, exits (no server, no DB write).
 """
@@ -29,7 +33,7 @@ import urllib.request
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 # ----------------------------------------------------------------------------- config
 
@@ -144,6 +148,14 @@ BACKGROUND = {
     "error": None, "attempted_at": 0.0, "served": "none",
 }
 BACKGROUND_LOCK = threading.Lock()
+
+# Optional history (see history.py). `HISTORY_CONFIG` stays None until the settings are
+# resolved; `HISTORY_MODULE` is the lazy-import sentinel (False once an import failed);
+# `HISTORY_ERROR` records why an *enabled* store is unusable, which is a different answer
+# from a store that was never asked for.
+HISTORY_CONFIG: Any = {"enabled": False}
+HISTORY_MODULE: Any = None
+HISTORY_ERROR: Any = None
 
 
 def log(msg):
@@ -1013,8 +1025,12 @@ def poll_account(account) -> dict:
 # ----------------------------------------------------------------------------- storage
 
 
-def refresh_all(accounts):
-    """Poll every account and publish the state the page and widgets read."""
+def refresh_all(accounts, store=True):
+    """Poll every account and publish the state the page and widgets read.
+
+    `store=False` is what `--check` uses: a probe must not write history, and it must not
+    create the database either.
+    """
     # Health reads this to tell "a poll is running" from "the poller is wedged": a long cycle is
     # not a fault, but a cycle that outlives its own budget is.
     with STATE_LOCK:
@@ -1038,6 +1054,10 @@ def refresh_all(accounts):
         "polled %d account(s), %d ok"
         % (len(results), len(results) - len(bad))
     )
+    # After the state is published, not before: a page asking for data must never wait on a
+    # database write, and history is best-effort by contract.
+    if store:
+        store_history(results)
     return results
 
 
@@ -1133,6 +1153,95 @@ def homepage_widgets():
             widgets.append(entry)
             items["%s_%s" % (res["id"], win["key"])] = entry
     return {"generated_at": generated_at, "widgets": widgets, "items": items}
+
+
+# ------------------------------------------------------------------------- optional history
+# One optional layer, off unless it is asked for. Nothing above this point touches it: a
+# default install never imports history.py, never creates a database and never writes a row,
+# which is what keeps "no volume, no state" true for everyone who has not opted in.
+
+
+def history_module():
+    """Import history.py lazily, once.
+
+    Same reason `load_balance_fetchers` does it: a broken optional layer must cost its own
+    feature, never the panel. The sentinel is `False` so a failed import is not retried on
+    every poll.
+    """
+    global HISTORY_MODULE
+    if HISTORY_MODULE is None:
+        try:
+            import history as module
+
+            HISTORY_MODULE = module
+        except Exception as exc:  # noqa: BLE001 - degraded, not dead
+            log("history.py could not be imported (%s: %s) — history stays off"
+                % (type(exc).__name__, exc))
+            HISTORY_MODULE = False
+    return HISTORY_MODULE or None
+
+
+def load_history(config_path=CONFIG_PATH, prepare_store=True):
+    """Resolve the history settings, then open the store once when they ask for it.
+
+    Logged either way: "off" and "asked for and unrunnable" must not look the same in the
+    container log, because only one of them is the user's to fix.
+    """
+    global HISTORY_CONFIG, HISTORY_ERROR
+    module = history_module()
+    if module is None:
+        HISTORY_CONFIG, HISTORY_ERROR = {"enabled": False}, None
+        return HISTORY_CONFIG
+    config, notes = module.load_config(config_path)
+    for note in notes:
+        log("config: %s" % note)
+    if not config["enabled"]:
+        log("history: off (set history.enabled in accounts.json, or QUOTA_HISTORY_ENABLED=1)")
+        HISTORY_CONFIG, HISTORY_ERROR = config, None
+        return config
+    HISTORY_ERROR = module.prepare(config) if prepare_store else None
+    if HISTORY_ERROR:
+        log("history: enabled but unusable — %s" % HISTORY_ERROR)
+    else:
+        log(
+            "history: %s (a sample every %ds, raw %dd, %ds rollups kept %dd)"
+            % (config["path"], config["sample_seconds"], config["raw_days"],
+               config["rollup_seconds"], config["rollup_days"])
+        )
+    HISTORY_CONFIG = config
+    return config
+
+
+def store_history(results):
+    """Persist one poll. Best-effort by contract: history never breaks the panel.
+
+    Skipped when the store could not be opened at startup, so a bad path costs one log line
+    at boot instead of one per poll.
+    """
+    module = history_module()
+    if not module or HISTORY_ERROR or not HISTORY_CONFIG.get("enabled"):
+        return
+    try:
+        report = module.record(results, HISTORY_CONFIG)
+    except Exception as exc:  # noqa: BLE001 - a history failure must not stop the poller
+        log("history write failed: %s" % exc)
+        return
+    if report.get("written"):
+        log(
+            "history: %d sample(s) written, %d rollup row(s), %d raw pruned, %d held back"
+            % (report["written"], report["rollup_rows"], report["raw_deleted"], report["raw_kept_unrolled"])
+        )
+
+
+def history_status():
+    """/api/quota's `history` block: off, on, or on and broken."""
+    module = history_module()
+    if not module or not HISTORY_CONFIG.get("enabled"):
+        return {"enabled": False}
+    status = module.status(HISTORY_CONFIG)
+    if HISTORY_ERROR:
+        status["error"] = HISTORY_ERROR
+    return status
 
 
 class Server(ThreadingHTTPServer):
@@ -1257,6 +1366,9 @@ class Handler(BaseHTTPRequestHandler):
             # A page opened while the first poll is still in flight should get real data,
             # not an empty grid. Bounded so a dead provider can never hang the request.
             FIRST_POLL.wait(8)
+            # Read outside the state lock: this opens the history database, and holding
+            # STATE_LOCK across file I/O would stall the poller behind a page load.
+            history = history_status()
             # Snapshot under the lock, then serialise and write outside it: holding the lock
             # across `wfile.write` let one client that stops reading block the poller, the
             # health probe and every other reader.
@@ -1270,7 +1382,39 @@ class Handler(BaseHTTPRequestHandler):
                     "now": now_iso(),
                     "poll_seconds": POLL_SECONDS,
                     "accounts": list(STATE["accounts"]),
+                    # Whether the optional history layer is on, and how it is sampled. The page
+                    # hides its own entry point until this says so: a default install serves no
+                    # history route, and the UI must not offer a link that 404s.
+                    "history": history,
                 }
+            self._json(200, payload)
+            return
+        if path == "/api/history":
+            # Optional and off is not the same answer as on and broken: the first is a 404
+            # with the reason, the second a 503 with the store's own message.
+            module = history_module()
+            if not module or not HISTORY_CONFIG.get("enabled"):
+                self._json(
+                    404,
+                    {
+                        "error": "history is not enabled",
+                        "hint": "set history.enabled in accounts.json, or QUOTA_HISTORY_ENABLED=1",
+                    },
+                )
+                return
+            if HISTORY_ERROR:
+                self._json(503, {"error": "history store unavailable", "detail": HISTORY_ERROR})
+                return
+            try:
+                payload = module.payload(parse_qs(urlparse(self.path).query), HISTORY_CONFIG)
+            except Exception as exc:  # noqa: BLE001 - the store is the only thing here that can fail
+                log("history query failed on %s: %s" % (self.path, exc))
+                self._json(503, {"error": "history store unavailable", "detail": str(exc)})
+                return
+            if payload.get("error"):
+                # A bad parameter is the caller's, not the store's.
+                self._json(400, payload)
+                return
             self._json(200, payload)
             return
         if path == "/api/homepage":
@@ -1365,7 +1509,8 @@ def main(argv):
         log("WARNING: no account has a credential configured")
 
     if check_only:
-        results = refresh_all(accounts)
+        # store=False: a probe must not create the history database either.
+        results = refresh_all(accounts, store=False)
         print(json.dumps({"accounts": results}, indent=2, ensure_ascii=False))
         return 0 if all(r["state"] == "ok" for r in results) else 1
 
@@ -1376,6 +1521,11 @@ def main(argv):
         threading.Thread(target=fetch_background, args=(True,), daemon=True).start()
     else:
         log("background: no artwork configured")
+
+    # Also after the --check return, and before the poller: an enabled store that cannot be
+    # opened is reported once at boot, and the poller then skips it instead of failing per
+    # poll.
+    load_history(CONFIG_PATH)
 
     stop_event = threading.Event()
     thread = threading.Thread(target=poller_loop, args=(accounts, stop_event), daemon=True)
