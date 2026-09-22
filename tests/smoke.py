@@ -252,7 +252,11 @@ def main():
     # would have this suite fetching a host that is not its stub — the example file says so in
     # as many words, and "none" is the documented way to ask for no artwork. The artwork tests
     # set their own URL on top of it.
-    base_cfg = dict(base_cfg, background_url="none")
+    # The shipped example enables usage history; this suite exercises the layer-off path (404
+    # with the reason, no database written), so it says so explicitly here. The layer-on path,
+    # including the store on disk, is tests/history.py's job.
+    base_cfg = dict(base_cfg, background_url="none",
+                    history=dict(base_cfg.get("history") or {}, enabled=False))
     base_cfg_path = write_config(os.path.join(scratch, "base.json"), base_cfg)
     artwork = b"\x89PNG\r\n\x1a\n" + bytes(range(256)) * 2      # 520 bytes
     # Two recorded success shapes, so the suite sees a healthy card as well as failing ones:

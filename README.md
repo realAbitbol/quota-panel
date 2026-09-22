@@ -155,57 +155,29 @@ Any number of accounts, any mix of providers. An account whose credential is mis
 
 Every provider also has a `*_API_BASE` override so the test suite can point an adapter at a local stub. Nothing in production needs them.
 
-### Usage history (optional, off by default)
+### Usage history
 
-The panel keeps **no state at all** unless you ask for it. With the layer off there is no database, no volume, `/api/history` answers `404` with the reason, and the card UI shows no link to `/history`.
-
-Turn it on in `accounts.json`:
+`/history` charts every account window over time from one SQLite file. It ships on, in `accounts.example.json` and in `docker-compose.yml`:
 
 ```json
-{
-  "history": {
-    "enabled": true,
-    "path": "/data/quota.db",
-    "sample_seconds": 300,
-    "raw_days": 90,
-    "rollup_days": 365,
-    "rollup_seconds": 900
-  }
-}
+"history": { "enabled": true, "path": "/data/quota.db", "sample_seconds": 300,
+             "raw_days": 90, "rollup_days": 365, "rollup_seconds": 900 }
 ```
 
-`path` must be writable. In the container the image ships `/data` owned by the service user (uid 10001), so the named volume in the commented `docker-compose.yml` block works as it stands; a host **bind mount** is the host's to make writable, since docker keeps the directory's own ownership. A CIFS/NFS path is **refused** rather than trusted: sqlite's locking does not hold there and the history would be lost quietly.
+`sample_seconds` is how often a reading is stored (polling is unchanged, only the row write is gated); `raw_days`/`rollup_days`/`rollup_seconds` are retention. The same settings come from `QUOTA_HISTORY_ENABLED`, `QUOTA_DB`, `QUOTA_HISTORY_SAMPLE_SECONDS`, `QUOTA_RETENTION_RAW_DAYS`, `QUOTA_RETENTION_ROLLUP_DAYS`, `QUOTA_ROLLUP_SECONDS`. Set `enabled: false` for a panel that keeps no state at all — no database, no volume, `/api/history` answers `404`.
 
-**Mount a directory, never a single file.** sqlite creates its journal and shared-memory file *beside* the database, so the directory has to be writable too. With `read_only: true` (the hardening in the compose example), a lone `- ./quota.db:/data/quota.db` makes the database file writable but leaves its directory on the read-only rootfs, and every history request then answers `503` with `unable to open database file` — the one message that blames the file, which is the part that is fine. Mount the directory instead:
+**Give it a directory, not a file.** sqlite writes its journal beside the database, so `/data` must be writable: `install -d -o 10001 -g 10001 ./data` on the host, then `- ./data:/data` in compose. CIFS/NFS is refused — no working locks.
 
-```bash
-install -d -o 10001 -g 10001 ./data    # host, once, next to the compose file
-# compose:  - ./data:/data      (not  - ./quota.db:/data/quota.db)
-```
-
-| Setting | Env var | Default | Meaning |
-|---|---|---|---|
-| `enabled` | `QUOTA_HISTORY_ENABLED` | `false` | Off unless something explicitly turns it on. |
-| `path` | `QUOTA_DB` | `/data/quota.db` | SQLite file. |
-| `sample_seconds` | `QUOTA_HISTORY_SAMPLE_SECONDS` | `300` | How often a reading is stored. Polling is unchanged; only the row write is gated. |
-| `raw_days` | `QUOTA_RETENTION_RAW_DAYS` | `90` | Raw samples kept. |
-| `rollup_days` | `QUOTA_RETENTION_ROLLUP_DAYS` | `365` | Rollup buckets kept (clamped up to `raw_days` when shorter). |
-| `rollup_seconds` | `QUOTA_ROLLUP_SECONDS` | `900` | Rollup width, whole minutes. |
-
-A rollup is the long-term record, not a cache of one: a raw row is deleted only once its bucket exists, so nothing is dropped in the gap between the two windows.
-
-Measured footprint, one series per account window: a reading every 300 s grows about **0.35 GB a year** (60 s: about **1.7 GB**), plus ~116 MB a year of rollups. A poll that fails or an unreadable window leaves a **gap** in the chart — never a zero, and a money balance is never turned into a percentage.
-
-Two things the page states rather than hides: a bucket with no data is drawn as a break in the line, and the chart starts on **Own scale** because a series that reports hundredths of a percent (CommandCode) collapses onto a 0–100 % axis shared with one that reports whole percents (OpenCode Go) — the shared view says so on screen when you pick it.
+Cost: ~0.35 GB a year at 300 s sampling (1.7 GB at 60 s) plus ~116 MB of rollups. A failed poll or an unreadable window leaves a **gap**, never a zero, and a money balance is never turned into a percentage. The chart opens on **Own scale**, because a series reporting hundredths of a percent disappears on a 0–100 % axis shared with one reporting whole percents.
 
 ## Endpoints
 
 | Path | Purpose |
 |---|---|
 | `/` | the card UI |
-| `/history` | usage over time — served only while the history layer is on; without it the page still loads and says how to enable it |
+| `/history` | usage over time |
 | `/api/quota` | normalized JSON: every account, every window, with `resets_at` |
-| `/api/history` | the time series (`hours`/`days`/`since`/`until`, `max_points`, `bucket_seconds`, `account_id`, `series`); `404` while the layer is off |
+| `/api/history` | the time series (`hours`/`days`/`since`/`until`, `max_points`, `bucket_seconds`, `account_id`, `series`) |
 | `/api/providers` | the provider registry: id, label, card kind, contract, logo |
 | `/api/homepage` | flat `items` map keyed `<account_id>_<window>`, for a gethomepage tile |
 | `/api/health` | `200` while the last poll is fresh, `503` when stale |
@@ -262,7 +234,7 @@ Every suite talks to a local stub instead of a provider, so they run offline and
 
 **The wallpaper never appears.** `/api/health` reports `background.served: none` and the last error.
 
-**`History is enabled but not readable: cannot prepare the history database at … (unable to open database file)`.** The database file is writable, its *directory* is not, so sqlite cannot put its journal there. Nearly always a single-file bind mount (`- ./quota.db:/data/quota.db`) under a read-only rootfs. Mount the directory instead — `install -d -o 10001 -g 10001 ./data`, then `- ./data:/data` — and restart; `/history` and `/api/history` both answer with this reason while it is wrong, and the message names the failing path.
+**`History is enabled but not readable … (unable to open database file)`.** The database file is writable, its *directory* is not. Mount a directory at `/data` rather than a single file, restart.
 
 ## Limits
 

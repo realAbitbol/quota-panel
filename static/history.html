@@ -258,10 +258,9 @@ function showOffOrBroken(status, body){
   panel.hidden = false;
   const note = document.getElementById('status-note');
   if(status === 404){
-    note.innerHTML = 'History is off. It is an optional layer, and the panel keeps no state '
-      + 'without it. Turn it on in <code>accounts.json</code>:<br><br>'
-      + '<code>"history": { "enabled": true, "path": "/data/quota.db" }</code><br><br>'
-      + 'the container also needs a writable volume at that path — see the README. '
+    note.innerHTML = 'History is off. Set <code>"history": { "enabled": true }</code> in '
+      + '<code>accounts.json</code>, with a writable directory at its <code>path</code> '
+      + '(a mount at <code>/data</code>). See the README. '
       + 'The <a class="nav" href="/">live panel</a> is unaffected either way.';
   }else{
     note.innerHTML = 'History is enabled but not readable right now: ' + esc(body.detail || body.error || ('HTTP ' + status));

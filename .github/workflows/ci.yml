@@ -63,15 +63,16 @@ jobs:
               assert os.path.exists(logo), "missing logo for %s: %s" % (a["provider"], logo)
           b = cfg.get("background_url")
           assert b is None or (isinstance(b, str) and (b == "" or b.startswith(("http://", "https://")))), b
-          # The optional history layer must ship OFF. The panel's documented default is
-          # stateless — no volume, no database — so a case typo in the example would start
-          # writing to disk on every install that copied this file.
+          # The example must ship the history layer ON and consistent: it is the file the
+          # README tells a reader to copy, and its store needs a mounted directory (the
+          # compose example has one). A missing or misspelled key here would ship an example
+          # that silently keeps no history.
           import history
           history_config, history_notes = history.load_config("accounts.example.json", env={})
-          assert history_config["enabled"] is False, history_config
+          assert history_config["enabled"] is True, history_config
           assert not history_notes, history_notes
           print("example config OK: %d accounts, ids %s, background_url %r, history %s"
-                % (len(ids), ids, b, "off"))
+                % (len(ids), ids, b, "on"))
           PY
 
       - name: Smoke test the HTTP surface

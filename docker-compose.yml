@@ -7,10 +7,9 @@
 #   docker compose up -d
 #   open http://localhost:8080
 #
-# Copy ../accounts.example.json to ./accounts.json first. The panel keeps no state of
-# its own — no volume, no database — unless you turn the optional usage-history layer
-# on, which needs somewhere to write: uncomment the volume below and set
-# "history": { "enabled": true } in accounts.json.
+# Copy ../accounts.example.json to ./accounts.json first. Usage history keeps its store in
+# the named volume below — a volume or directory, never a single file, because sqlite writes
+# its journal beside the database.
 
 services:
   quota-panel:
@@ -24,10 +23,9 @@ services:
 
     volumes:
       - ./accounts.json:/config/accounts.json:ro
-      # History is off by default and off means nothing is written. Enable both halves
-      # together: this mount and history.enabled. The mount has to be writable (sqlite
-      # needs a real local disk — a CIFS/NFS path is refused outright).
-      # - quota-history:/data
+      # Usage history's store. Keep it a directory: sqlite needs its journal beside the
+      # database, and a CIFS/NFS path is refused outright.
+      - quota-history:/data
 
     environment:
       QUOTA_POLL_SECONDS: "60"
@@ -69,7 +67,7 @@ services:
       # poll runs sequentially over every account at up to QUOTA_HTTP_TIMEOUT each.
       start_period: 60s
 
-# Declared for the history volume above: uncomment this and the mount together, or compose
-# refuses the service for referring to a volume that does not exist.
-# volumes:
-#   quota-history:
+# History's store; mounted above. Docker initialises it from the image's own /data, which the
+# image ships owned by uid 10001, so the service user can write to it as it stands.
+volumes:
+  quota-history:
