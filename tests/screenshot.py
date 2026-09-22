@@ -614,20 +614,30 @@ def main():
               served.get("served") == "remote", str(served))
 
     # browser
-    profile = os.path.join(scratch, "profile")
-    cdp_port = free_port()
-    browser = subprocess.Popen([
-        BROWSER, "--headless=new", "--remote-debugging-port=%d" % cdp_port,
-        "--user-data-dir=%s" % profile, "--no-first-run", "--no-default-browser-check",
-        "--hide-scrollbars", "--force-device-scale-factor=%d" % SCALE,
-        "--window-size=%d,%d" % (WIDTH, HEIGHT), "about:blank",
-    ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-
-    try:
-        ws = None
-        last_error = None
+    # Two attempts, with the flags that keep headless Chrome alive on a constrained runner: a
+    # browser that dies on startup (busy port, transient memory pressure) used to fail the run
+    # outright, and a failed screenshot job is a failed image build. The browser's own stderr is
+    # kept so a real crash reports itself instead of a bare "timed out".
+    browser = None
+    ws = None
+    last_error = None
+    for attempt in range(2):
+        profile = os.path.join(scratch, "profile-%d" % attempt)
+        cdp_port = free_port()
+        log_path = os.path.join(scratch, "browser-%d.log" % attempt)
+        handle = open(log_path, "wb")
+        browser = subprocess.Popen([
+            BROWSER, "--headless=new", "--remote-debugging-port=%d" % cdp_port,
+            "--user-data-dir=%s" % profile, "--no-first-run", "--no-default-browser-check",
+            "--hide-scrollbars", "--force-device-scale-factor=%d" % SCALE,
+            "--window-size=%d,%d" % (WIDTH, HEIGHT),
+            "--disable-dev-shm-usage", "--disable-gpu", "--no-sandbox", "about:blank",
+        ], stdout=handle, stderr=handle)
         deadline = time.time() + 25
         while time.time() < deadline and ws is None:
+            if browser.poll() is not None:
+                last_error = "browser exited with code %s" % browser.returncode
+                break
             try:
                 raw = urllib.request.urlopen(
                     "http://127.0.0.1:%d/json/list" % cdp_port, timeout=3).read()
@@ -641,9 +651,23 @@ def main():
                 # cause is a bug in this file or a port the browser never got.
                 last_error = "%s: %s" % (type(exc).__name__, exc)
                 time.sleep(0.4)
+        if ws:
+            break
+        try:
+            browser.kill()
+        except Exception:  # noqa: BLE001 - best effort
+            pass
+        try:
+            tail = open(log_path, "rb").read()[-400:].decode("utf-8", "replace").strip()
+            if tail:
+                last_error = "%s | browser: %s" % (last_error, tail.replace("\n", " "))
+        except Exception:  # noqa: BLE001 - the log is a diagnostic, not a requirement
+            pass
+
+    try:
         if not ws:
             check("the browser exposes a CDP page target", False,
-                  "timed out on port %d%s" % (cdp_port, " (%s)" % last_error if last_error else ""))
+                  "no CDP target after two launches (%s)" % (last_error or "unknown"))
             return 1
         check("the browser exposes a CDP page target", True)
 
