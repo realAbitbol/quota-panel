@@ -1359,6 +1359,16 @@ class Handler(BaseHTTPRequestHandler):
         if path.startswith("/static/"):
             self._serve_static(path)
             return
+        if path == "/history":
+            # Served whether or not the layer is on: the page reads /api/quota's history block
+            # and says "off, and here is how to turn it on" rather than 404ing at someone who
+            # followed a link. The link itself only appears once the layer is enabled.
+            try:
+                with open(os.path.join(STATIC_DIR, "history.html"), "rb") as fh:
+                    self._send(200, fh.read(), "text/html; charset=utf-8")
+            except OSError:
+                self._send(500, "UI not found", "text/plain; charset=utf-8")
+            return
         if path == "/background":
             self._serve_background()
             return

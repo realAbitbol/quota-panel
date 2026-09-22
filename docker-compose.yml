@@ -8,7 +8,9 @@
 #   open http://localhost:8080
 #
 # Copy ../accounts.example.json to ./accounts.json first. The panel keeps no state of
-# its own, so there is nothing to persist: no volume, no database.
+# its own — no volume, no database — unless you turn the optional usage-history layer
+# on, which needs somewhere to write: uncomment the volume below and set
+# "history": { "enabled": true } in accounts.json.
 
 services:
   quota-panel:
@@ -22,6 +24,10 @@ services:
 
     volumes:
       - ./accounts.json:/config/accounts.json:ro
+      # History is off by default and off means nothing is written. Enable both halves
+      # together: this mount and history.enabled. The mount has to be writable (sqlite
+      # needs a real local disk — a CIFS/NFS path is refused outright).
+      # - quota-history:/data
 
     environment:
       QUOTA_POLL_SECONDS: "60"
@@ -62,3 +68,8 @@ services:
       # 60s, not 20s: /api/health answers 503 until the first refresh_all finishes, and that first
       # poll runs sequentially over every account at up to QUOTA_HTTP_TIMEOUT each.
       start_period: 60s
+
+# Declared for the history volume above: uncomment this and the mount together, or compose
+# refuses the service for referring to a volume that does not exist.
+# volumes:
+#   quota-history:

@@ -155,12 +155,50 @@ Any number of accounts, any mix of providers. An account whose credential is mis
 
 Every provider also has a `*_API_BASE` override so the test suite can point an adapter at a local stub. Nothing in production needs them.
 
+### Usage history (optional, off by default)
+
+The panel keeps **no state at all** unless you ask for it. With the layer off there is no database, no volume, `/api/history` answers `404` with the reason, and the card UI shows no link to `/history`.
+
+Turn it on in `accounts.json`:
+
+```json
+{
+  "history": {
+    "enabled": true,
+    "path": "/data/quota.db",
+    "sample_seconds": 300,
+    "raw_days": 90,
+    "rollup_days": 365,
+    "rollup_seconds": 900
+  }
+}
+```
+
+`path` must be writable — in the container that means a mounted volume at `/data` (see the commented block in `docker-compose.yml`). A CIFS/NFS path is **refused** rather than trusted: sqlite's locking does not hold there and the history would be lost quietly.
+
+| Setting | Env var | Default | Meaning |
+|---|---|---|---|
+| `enabled` | `QUOTA_HISTORY_ENABLED` | `false` | Off unless something explicitly turns it on. |
+| `path` | `QUOTA_DB` | `/data/quota.db` | SQLite file. |
+| `sample_seconds` | `QUOTA_HISTORY_SAMPLE_SECONDS` | `300` | How often a reading is stored. Polling is unchanged; only the row write is gated. |
+| `raw_days` | `QUOTA_RETENTION_RAW_DAYS` | `90` | Raw samples kept. |
+| `rollup_days` | `QUOTA_RETENTION_ROLLUP_DAYS` | `365` | Rollup buckets kept (clamped up to `raw_days` when shorter). |
+| `rollup_seconds` | `QUOTA_ROLLUP_SECONDS` | `900` | Rollup width, whole minutes. |
+
+A rollup is the long-term record, not a cache of one: a raw row is deleted only once its bucket exists, so nothing is dropped in the gap between the two windows.
+
+Measured footprint, one series per account window: a reading every 300 s grows about **0.35 GB a year** (60 s: about **1.7 GB**), plus ~116 MB a year of rollups. A poll that fails or an unreadable window leaves a **gap** in the chart — never a zero, and a money balance is never turned into a percentage.
+
+Two things the page states rather than hides: a bucket with no data is drawn as a break in the line, and the chart starts on **Own scale** because a series that reports hundredths of a percent (CommandCode) collapses onto a 0–100 % axis shared with one that reports whole percents (OpenCode Go) — the shared view says so on screen when you pick it.
+
 ## Endpoints
 
 | Path | Purpose |
 |---|---|
 | `/` | the card UI |
+| `/history` | usage over time — served only while the history layer is on; without it the page still loads and says how to enable it |
 | `/api/quota` | normalized JSON: every account, every window, with `resets_at` |
+| `/api/history` | the time series (`hours`/`days`/`since`/`until`, `max_points`, `bucket_seconds`, `account_id`, `series`); `404` while the layer is off |
 | `/api/providers` | the provider registry: id, label, card kind, contract, logo |
 | `/api/homepage` | flat `items` map keyed `<account_id>_<window>`, for a gethomepage tile |
 | `/api/health` | `200` while the last poll is fresh, `503` when stale |

@@ -167,6 +167,11 @@ def load_config(config_path=None, env=None):
             notes.append("%s must be an object — ignored (%r)" % (source, raw))
             return
         for key in raw:
+            # A leading underscore is this file's documentation convention (`_note`, both at the
+            # top level and inside the history block): prose, not a setting. Reporting one as an
+            # unknown setting would make the shipped example config log a warning on every start.
+            if key.startswith("_"):
+                continue
             if key not in DEFAULTS:
                 notes.append("%s.%s is not a history setting — ignored" % (source, key))
         for key in DEFAULTS:
@@ -555,6 +560,12 @@ def payload(params, config, now_ts=None):
     start = bucket_of(since, bucket)
     end = bucket_of(until, bucket)
     grid = list(range(start, end + 1, bucket))
+    # An explicit bucket can ask for more points than the cap allows (60 s over five years is
+    # 2.6 M): refuse it rather than build the grid, and say what to change. The auto ladder
+    # cannot land here, so this only ever fires on a request that named its own bucket.
+    if len(grid) > max_points + 2:
+        return {"error": "bucket_seconds=%d over this range is %d points, more than max_points=%d "
+                         "— raise max_points or pick a coarser bucket" % (bucket, len(grid), max_points)}
     wanted_accounts = [value for value in (params.get("account_id") or []) if value]
     wanted_series = [value for value in (params.get("series") or []) if value]
 

@@ -1,0 +1,532 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- Served at /history. This page exists only when the optional history layer is on; while
+     it is off the page still loads and says so, because a link that 404s teaches nothing.
+     Hand-rolled SVG, no chart library: the panel vendors no third-party code, and the one
+     thing this chart must get right — a per-series scale — is not something a mixed-scale
+     library does for you. -->
+<link rel="icon" href="/static/favicon.ico" sizes="32x32">
+<link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/static/favicon.svg">
+<meta name="theme-color" content="#0b0d12">
+<meta name="description" content="Usage history for the quota panel: percent windows over time, sampled, rolled up, and scaled per series.">
+<title>Quota Panel — History</title>
+<style>
+  :root{
+    --bg:#0b0d12; --card:20,24,33; --card-2:#1b2130; --line:#252c3b;
+    --fg:#e8ecf5; --muted:#b7c2d6; --ok:#33d69f; --warn:#f5c451; --hot:#ff6b6b; --accent:#5b8dff;
+    --card-alpha:.68; --card-blur:14px;
+  }
+  *{box-sizing:border-box}
+  html,body{min-height:100%}
+  body{margin:0;color:var(--fg);
+       font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+       padding:20px 22px 18px;
+       background:var(--bg) url("/background") center / cover no-repeat}
+  body::before{content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;
+       background:linear-gradient(180deg,rgba(11,13,18,.55) 0%,rgba(11,13,18,.38) 45%,rgba(11,13,18,.62) 100%)}
+  @media (prefers-reduced-motion:no-preference){ body{background-attachment:fixed} }
+  header{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:18px;
+       background:rgba(var(--card),var(--card-alpha));
+       border:1px solid var(--line);border-radius:14px;padding:14px 16px;
+       backdrop-filter:blur(var(--card-blur));-webkit-backdrop-filter:blur(var(--card-blur))}
+  h1{font-size:19px;margin:0;letter-spacing:.2px}
+  h2{font-size:14px;margin:0 0 12px;letter-spacing:.2px}
+  .logo{width:28px;height:28px;border-radius:8px;flex:0 0 auto;align-self:center;display:block}
+  .muted{color:var(--muted);font-size:12.5px}
+  .spacer{margin-left:auto}
+  .nav{font-size:12.5px;color:var(--muted);text-decoration:none;border:1px solid var(--line);
+       border-radius:999px;padding:3px 11px}
+  .nav:hover{color:var(--fg)}
+  main{display:flex;flex-direction:column;gap:16px}
+  .panel{background:rgba(var(--card),var(--card-alpha));border:1px solid var(--line);border-radius:14px;
+       padding:16px;backdrop-filter:blur(var(--card-blur));-webkit-backdrop-filter:blur(var(--card-blur))}
+  .controls{display:flex;flex-wrap:wrap;gap:12px;align-items:center;margin-bottom:14px}
+  .controls label{font-size:12px;color:var(--muted);display:flex;gap:6px;align-items:center}
+  select{background:var(--card-2);color:var(--fg);border:1px solid var(--line);border-radius:8px;
+       padding:5px 8px;font:inherit;font-size:12.5px}
+  .stats{display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));margin-bottom:16px}
+  .stat{background:var(--card-2);border:1px solid var(--line);border-radius:11px;padding:11px 13px}
+  .stat .k{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px}
+  .stat .v{font-size:21px;font-weight:600;margin-top:3px;font-variant-numeric:tabular-nums}
+  .stat .s{font-size:11.5px;color:var(--muted);margin-top:2px}
+  .chart-wrap{position:relative;width:100%}
+  svg{display:block;width:100%;height:auto;overflow:visible}
+  .legend{display:flex;flex-wrap:wrap;gap:6px 16px;margin-top:12px}
+  .legend .item{display:flex;align-items:center;gap:7px;font-size:12px;color:var(--muted)}
+  .legend .swatch{width:10px;height:10px;border-radius:3px;flex:0 0 auto}
+  .legend .item.off{opacity:.4}
+  .legend button{background:none;border:0;color:inherit;font:inherit;cursor:pointer;padding:0;
+       display:flex;align-items:center;gap:7px}
+  .readout{margin-top:10px;font-size:12.5px;color:var(--muted);min-height:20px;
+       font-variant-numeric:tabular-nums;border-top:1px dashed var(--line);padding-top:9px}
+  .readout b{color:var(--fg);font-weight:600}
+  .heat{display:flex;flex-direction:column;gap:3px}
+  .heat-row{display:flex;align-items:center;gap:8px}
+  .heat-name{width:190px;flex:0 0 auto;font-size:11.5px;color:var(--muted);overflow:hidden;
+       text-overflow:ellipsis;white-space:nowrap}
+  .heat-cells{display:flex;gap:2px;flex:1 1 auto;min-width:0}
+  .heat-cell{height:15px;flex:1 1 0;min-width:2px;border-radius:2px;background:var(--card-2)}
+  .note{font-size:12px;color:var(--muted);margin-top:12px;line-height:1.45}
+  .empty{padding:22px 4px;color:var(--muted)}
+  .err{margin-top:12px;font-size:12.5px;color:#ffb4b4;background:#231418;border:1px solid #4a2020;
+       border-radius:9px;padding:10px 12px}
+  code{background:var(--card-2);border:1px solid var(--line);border-radius:5px;padding:1px 5px;font-size:12px}
+</style>
+</head>
+<body>
+<header>
+  <img class="logo" src="/static/favicon.svg" width="28" height="28" alt="">
+  <h1>Usage history</h1>
+  <span class="muted" id="feed"></span>
+  <a class="nav spacer" href="/">Live panel</a>
+</header>
+
+<main>
+  <section class="panel" id="trend-panel">
+    <div class="controls">
+      <label>Provider
+        <select id="series-select"><option value="">All series</option></select>
+      </label>
+      <label>Range
+        <select id="range-select"></select>
+      </label>
+      <label>Interval
+        <select id="bucket-select"></select>
+      </label>
+      <label>Scale
+        <!-- The chart that was deleted in 4ae8e04 died of a shared scale: one provider
+             publishes whole percents, the other hundredths, so a single integer step
+             flattened the finer series. "Own scale" draws each series against its own peak
+             and prints that peak in the legend; "0-100%" is the absolute comparison. -->
+        <select id="scale-select">
+          <option value="own">Own scale (readable)</option>
+          <option value="absolute">Shared 0–100%</option>
+        </select>
+      </label>
+    </div>
+    <div class="stats" id="stats"></div>
+    <h2 id="trend-title">Usage over time</h2>
+    <div class="chart-wrap" id="chart"></div>
+    <div class="legend" id="legend"></div>
+    <div class="readout" id="readout">Hover the chart for a reading at that time.</div>
+    <div class="note" id="trend-note"></div>
+  </section>
+
+  <section class="panel" id="heat-panel">
+    <h2>Daily intensity</h2>
+    <div class="heat" id="heat"><div class="empty">Loading…</div></div>
+    <div class="note">One row per series, one column per day in the selected range. Each row is
+      coloured against its own highest day, and every cell carries its real average as a tooltip —
+      a shared colour scale would hide the same difference the line chart had to be fixed for.</div>
+  </section>
+
+  <section class="panel" id="status-panel">
+    <div class="note" id="status-note"></div>
+  </section>
+</main>
+
+<script>
+'use strict';
+// Escaping discipline, same as the live panel: every value that originates outside this file —
+// account and window labels from the config or a provider, series keys, error text — is passed
+// through esc() at the point of interpolation, and the only unescaped interpolations are
+// numbers from fmtPercent(), positions computed here, and colours from the fixed PALETTE. That
+// is what makes the innerHTML below safe rather than merely convenient.
+const RANGES = [
+  {label:'5 hours', hours:5}, {label:'12 hours', hours:12}, {label:'1 day', hours:24},
+  {label:'2 days', hours:48}, {label:'1 week', hours:168}, {label:'2 weeks', hours:336},
+  {label:'1 month', hours:720}, {label:'2 months', hours:1440}, {label:'3 months', hours:2160},
+];
+// Auto, then every step the server's own ladder can store: the 15-minute rollup grid is the
+// coarsest thing that always exists, so the list is the ladder, not an invented one.
+const BUCKETS = [
+  {label:'Auto', seconds:0}, {label:'5 min', seconds:300}, {label:'15 min', seconds:900},
+  {label:'30 min', seconds:1800}, {label:'1 hour', seconds:3600}, {label:'3 hours', seconds:10800},
+  {label:'12 hours', seconds:43200}, {label:'1 day', seconds:86400},
+];
+const REFRESH_MS = 60000;
+const PALETTE = ['#5b8dff','#33d69f','#f5c451','#ff6b6b','#c084fc','#38bdf8','#fb923c','#a3e635',
+                 '#f472b6','#22d3ee'];
+
+const state = {hours:24, bucket:0, series:'', scale:'own', hidden:{}, data:null, all:[]};
+
+function esc(s){ return String(s === null || s === undefined ? '' : s)
+  .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+
+// The series selection, as repeated `series=` parameters. Hidden series are named explicitly
+// rather than filtered out of the response here, so the summary/stat cards are computed by the
+// server on exactly what is displayed — a stat that averages a series the reader cannot see is
+// a number nobody can check.
+function seriesParams(){
+  if(state.series) return ['series=' + encodeURIComponent(state.series)];
+  const visible = state.all.map(s => s.key).filter(key => !state.hidden[key]);
+  if(state.all.length && visible.length < state.all.length){
+    return visible.map(key => 'series=' + encodeURIComponent(key));
+  }
+  return [];
+}
+
+function queryParams(){
+  const params = ['hours=' + state.hours, 'max_points=400'];
+  if(state.bucket) params.push('bucket_seconds=' + state.bucket);
+  return params.concat(seriesParams()).join('&');
+}
+
+function fmtPercent(v){
+  // A reading is never rounded into a different reading: 0.09% stays visible, and a missing
+  // value is a dash rather than a 0 the provider never sent.
+  if(v === null || v === undefined || !isFinite(v)) return '—';
+  if(Math.abs(v) < 1) return v.toFixed(2) + '%';
+  if(Math.abs(v - Math.round(v)) < 0.05) return String(Math.round(v)) + '%';
+  return v.toFixed(1) + '%';
+}
+
+function fmtStamp(epoch, withDate){
+  const d = new Date(epoch * 1000);
+  const time = d.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
+  return withDate ? d.toLocaleDateString([], {month:'short', day:'numeric'}) + ' ' + time : time;
+}
+
+function seriesColor(key){
+  const keys = (state.data ? state.data.series : []).map(s => s.key).sort();
+  return PALETTE[Math.max(0, keys.indexOf(key)) % PALETTE.length];
+}
+
+// ------------------------------------------------------------------ fetching
+
+// How long to wait before deciding an answer is not coming. The store answers a 24 h range in
+// ~15 ms, so this is three orders of magnitude of slack — it exists to catch a request that is
+// stuck at the socket level and will never settle on its own (measured: one such request hung
+// for 30 s and then resolved, which reads to the reader as a control that does nothing).
+const FETCH_TIMEOUT_MS = 8000;
+
+async function fetchJson(url, attempt){
+  const tries = attempt || 0;
+  const controller = typeof AbortController === 'function' ? new AbortController() : null;
+  const timer = controller ? setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS) : null;
+  try {
+    const res = await fetch(url, controller ? {cache:'no-store', signal:controller.signal}
+                                            : {cache:'no-store'});
+    const body = await res.json().catch(() => ({}));
+    return {status:res.status, body};
+  }catch(err){
+    // One retry on a fresh connection: the stall is per-connection, so a second attempt is a
+    // different socket rather than the same dead one. Never a third — a wedged panel must not
+    // turn into a request storm.
+    if(tries === 0) return fetchJson(url, 1);
+    return {status:0, body:{error:'no answer',
+      detail:'the panel did not answer within ' + Math.round(FETCH_TIMEOUT_MS / 1000)
+        + 's, on two attempts'}};
+  }finally{
+    if(timer) clearTimeout(timer);
+  }
+}
+
+async function load(){
+  const filtered = /(^|&)series=/.test(queryParams());
+  const {status, body} = await fetchJson('/api/history?' + queryParams());
+  if(status !== 200){
+    state.data = null;
+    showOffOrBroken(status, body);
+    return;
+  }
+  state.data = body;
+  if(!filtered) state.all = body.series;
+  else if(!state.all.length) state.all = body.series;
+  document.getElementById('status-panel').hidden = true;
+  document.getElementById('trend-panel').hidden = false;
+  document.getElementById('heat-panel').hidden = false;
+  if(state.series && !body.series.some(s => s.key === state.series)) state.series = '';
+  renderControls(state.all);
+  renderStats();
+  renderChart();
+  renderReadout(null);
+  renderHeatmap();
+  document.getElementById('feed').textContent = 'sampled every ' + sampleSeconds() + 's';
+}
+
+function sampleSeconds(){ return (window.HISTORY_INFO && window.HISTORY_INFO.sample_seconds) || 300; }
+
+function showOffOrBroken(status, body){
+  document.getElementById('trend-panel').hidden = true;
+  document.getElementById('heat-panel').hidden = true;
+  const panel = document.getElementById('status-panel');
+  panel.hidden = false;
+  const note = document.getElementById('status-note');
+  if(status === 404){
+    note.innerHTML = 'History is off. It is an optional layer, and the panel keeps no state '
+      + 'without it. Turn it on in <code>accounts.json</code>:<br><br>'
+      + '<code>"history": { "enabled": true, "path": "/data/quota.db" }</code><br><br>'
+      + 'the container also needs a writable volume at that path — see the README. '
+      + 'The <a class="nav" href="/">live panel</a> is unaffected either way.';
+  }else{
+    note.innerHTML = 'History is enabled but not readable right now: ' + esc(body.detail || body.error || ('HTTP ' + status));
+  }
+  document.getElementById('feed').textContent = '';
+}
+
+// ------------------------------------------------------------------ controls
+
+function renderControls(allSeries){
+  const rangeSel = document.getElementById('range-select');
+  if(!rangeSel.options.length){
+    rangeSel.innerHTML = RANGES.map(r => '<option value="' + r.hours + '">' + r.label + '</option>').join('');
+    rangeSel.value = String(state.hours);
+  }
+  const bucketSel = document.getElementById('bucket-select');
+  if(!bucketSel.options.length){
+    bucketSel.innerHTML = BUCKETS.map(b => '<option value="' + b.seconds + '">' + b.label + '</option>').join('');
+    bucketSel.value = '0';
+  }
+  const seriesSel = document.getElementById('series-select');
+  seriesSel.innerHTML = '<option value="">All series</option>' + allSeries.map(s =>
+    '<option value="' + esc(s.key) + '">' + esc(s.account_label + ' · ' + s.window_label) + '</option>').join('');
+  seriesSel.value = state.series;
+}
+
+function visibleSeries(){
+  if(!state.data) return [];
+  return state.data.series;
+}
+
+// ------------------------------------------------------------------ stats
+
+function renderStats(){
+  const visible = visibleSeries();
+  const summary = state.data.summary || {};
+  const stats = [
+    {k:'Series in view', v:String(visible.length),
+     s:(summary.samples || 0) + ' samples'},
+    {k:'Average consumption', v:fmtPercent(summary.mean_percent),
+     s:'across the selected range'},
+    {k:'Peak', v:summary.peak ? fmtPercent(summary.peak.percent) : '—',
+     s:summary.peak ? summary.peak.label : 'no data in range'},
+    {k:'Latest', v:summary.latest ? fmtPercent(summary.latest.percent) : '—',
+     s:summary.latest ? summary.latest.label : 'no data in range'},
+  ];
+  document.getElementById('stats').innerHTML = stats.map(s =>
+    '<div class="stat"><div class="k">' + esc(s.k) + '</div><div class="v">' + esc(s.v)
+    + '</div><div class="s">' + esc(s.s) + '</div></div>').join('');
+}
+
+// ------------------------------------------------------------------ chart
+
+function renderChart(){
+  const host = document.getElementById('chart');
+  const series = visibleSeries();
+  const grid = state.data.t || [];
+  if(!series.length || !grid.length){
+    host.innerHTML = '<div class="empty">No samples in this range yet. History starts with the '
+      + 'first successful poll after the layer was enabled.</div>';
+    document.getElementById('legend').innerHTML = '';
+    return;
+  }
+  const width = Math.max(360, host.clientWidth || 900);
+  const height = 270;
+  const pad = {left:52, right:16, top:12, bottom:26};
+  const plotW = width - pad.left - pad.right;
+  const plotH = height - pad.top - pad.bottom;
+  const withDate = state.hours > 24;
+  const x = i => pad.left + (grid.length === 1 ? plotW / 2 : (i / (grid.length - 1)) * plotW);
+
+  // "Own scale" is the default because it is the only one that can be read at all when the
+  // series disagree by orders of magnitude; the y axis is then a share of each series' own
+  // peak, and the legend prints every peak so the shape is never mistaken for a level.
+  const scaleFor = s => state.scale === 'absolute' ? 100 : Math.max(s.peak || 0, 1e-9);
+  const y = (value, scale) => pad.top + plotH - (Math.max(0, Math.min(value, scale)) / scale) * plotH;
+
+  let svg = '<svg viewBox="0 0 ' + width + ' ' + height + '" preserveAspectRatio="none" role="img" '
+    + 'aria-label="Usage over time, ' + esc(state.hours + ' hours') + '">';
+  for(let step = 0; step <= 4; step++){
+    const value = plotH * step / 4;
+    svg += '<line x1="' + pad.left + '" y1="' + (pad.top + value) + '" x2="' + (pad.left + plotW)
+      + '" y2="' + (pad.top + value) + '" stroke="#252c3b" stroke-width="1"/>';
+    const label = state.scale === 'absolute' ? (100 - step * 25) + '%' : (100 - step * 25) + '% of peak';
+    svg += '<text x="' + (pad.left - 8) + '" y="' + (pad.top + value + 3.5) + '" text-anchor="end" '
+      + 'font-size="10" fill="#b7c2d6">' + label + '</text>';
+  }
+  const ticks = Math.min(6, grid.length);
+  for(let t = 0; t < ticks; t++){
+    const index = Math.round(t * (grid.length - 1) / Math.max(1, ticks - 1));
+    svg += '<text x="' + x(index) + '" y="' + (height - 8) + '" text-anchor="middle" font-size="10" '
+      + 'fill="#b7c2d6">' + esc(fmtStamp(grid[index], withDate)) + '</text>';
+  }
+  for(const s of series){
+    const scale = scaleFor(s);
+    let path = '', open = false;
+    for(let i = 0; i < grid.length; i++){
+      const value = s.avg[i];
+      if(value === null || value === undefined){
+        open = false;                   // a gap breaks the line instead of being drawn across
+        continue;
+      }
+      path += (open ? 'L' : 'M') + x(i).toFixed(1) + ' ' + y(value, scale).toFixed(1) + ' ';
+      open = true;
+    }
+    svg += '<path d="' + path + '" fill="none" stroke="' + seriesColor(s.key)
+      + '" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>';
+    // The peaks are drawn too: a single sample that is the whole reason for a series' scale
+    // must not be an invisible spike.
+    for(let i = 0; i < grid.length; i++){
+      if(s.max[i] !== null && s.avg[i] !== null && Math.abs(s.max[i] - s.avg[i]) > 1e-9){
+        svg += '<circle cx="' + x(i) + '" cy="' + y(s.max[i], scale) + '" r="1.6" fill="'
+          + seriesColor(s.key) + '" fill-opacity="0.55"/>';
+      }
+    }
+  }
+  svg += '<line id="cursor" x1="0" y1="' + pad.top + '" x2="0" y2="' + (pad.top + plotH)
+    + '" stroke="#5b8dff" stroke-width="1" stroke-dasharray="3 3" opacity="0"/>';
+  svg += '<rect id="hit" x="' + pad.left + '" y="' + pad.top + '" width="' + plotW + '" height="'
+    + plotH + '" fill="transparent"/>';
+  svg += '</svg>';
+  host.innerHTML = svg;
+
+  document.getElementById('legend').innerHTML = series.map(s =>
+    '<button type="button" class="item" data-key="' + esc(s.key) + '">'
+    + '<span class="swatch" style="background:' + seriesColor(s.key) + '"></span>'
+    + esc(s.account_label + ' · ' + s.window_label)
+    + ' <span class="muted">peak ' + esc(fmtPercent(s.peak)) + ' · mean ' + esc(fmtPercent(s.mean))
+    + ' · ' + s.samples + ' samples</span></button>').join('');
+  for(const node of document.querySelectorAll('#legend button')){
+    node.addEventListener('click', () => {
+      const key = node.getAttribute('data-key');
+      state.hidden[key] = !state.hidden[key];
+      load();
+    });
+  }
+  const note = document.getElementById('trend-note');
+  note.innerHTML = state.scale === 'absolute'
+    ? 'Shared 0–100% scale: series that report hundredths of a percent collapse onto the axis. '
+      + 'Switch to “Own scale” to read them.'
+    : 'Each series is drawn against <b>its own peak</b> (printed in the legend), so one provider\'s '
+      + 'whole percents cannot flatten another\'s hundredths. Hover for the real value at any time.';
+  bindHover(pad, plotW, plotH, x, grid);
+}
+
+function bindHover(pad, plotW, plotH, x, grid){
+  const svg = document.querySelector('#chart svg');
+  const hit = document.getElementById('hit');
+  const cursor = document.getElementById('cursor');
+  if(!svg || !hit) return;
+  const position = event => {
+    const box = svg.getBoundingClientRect();
+    const scale = box.width ? (pad.left + plotW + pad.right) / box.width : 1;
+    const local = (event.clientX - box.left) * scale;
+    const ratio = plotW ? (local - pad.left) / plotW : 0;
+    return Math.max(0, Math.min(grid.length - 1, Math.round(ratio * (grid.length - 1))));
+  };
+  hit.addEventListener('mousemove', event => {
+    const index = position(event);
+    cursor.setAttribute('x1', x(index));
+    cursor.setAttribute('x2', x(index));
+    cursor.setAttribute('opacity', '1');
+    renderReadout(index);
+  });
+  hit.addEventListener('mouseleave', () => {
+    cursor.setAttribute('opacity', '0');
+    renderReadout(null);
+  });
+}
+
+function renderReadout(index){
+  const node = document.getElementById('readout');
+  if(index === null){
+    node.innerHTML = 'Hover the chart for a reading at that time.';
+    return;
+  }
+  const grid = state.data.t || [];
+  const parts = visibleSeries().map(s => {
+    const value = s.avg[index];
+    return '<b style="color:' + seriesColor(s.key) + '">' + esc(s.account_label + ' · ' + s.window_label)
+      + '</b> ' + esc(fmtPercent(value)) + (s.n[index] ? ' <span class="muted">(' + s.n[index]
+      + ' sample' + (s.n[index] === 1 ? '' : 's') + ')</span>' : '');
+  }).filter(Boolean);
+  node.innerHTML = '<span class="muted">' + esc(fmtStamp(grid[index], true)) + '</span> · '
+    + (parts.length ? parts.join(' · ') : 'no series in view');
+}
+
+// ------------------------------------------------------------------ heatmap
+
+async function renderHeatmap(){
+  // A second request at a daily bucket instead of averaging the trend buckets here: the mean
+  // of a day is then computed once, by the code the suite covers, not by the page.
+  const days = Math.max(1, Math.round(state.hours / 24));
+  const params = ['days=' + days, 'bucket_seconds=86400', 'max_points=2000'].concat(seriesParams());
+  const {status, body} = await fetchJson('/api/history?' + params.join('&'));
+  const host = document.getElementById('heat');
+  if(status !== 200 || !body.series || !body.series.length){
+    host.innerHTML = '<div class="empty">No daily data yet.</div>';
+    return;
+  }
+  const series = body.series;
+  const grid = body.t || [];
+  // Columns are days, and the cells are too small to carry a readable date: say the span in
+  // words instead of leaving the reader to count columns from the trend axis above.
+  const span = grid.length
+    ? 'one column per day, ' + new Date(grid[0] * 1000).toLocaleDateString()
+      + ' → ' + new Date(grid[grid.length - 1] * 1000).toLocaleDateString()
+      + ' (' + grid.length + (grid.length === 1 ? ' day' : ' days') + ')'
+    : '';
+  host.innerHTML = series.map(s => {
+    const peak = Math.max(...s.avg.filter(v => v !== null), 0) || 1;
+    const cells = s.avg.map((value, i) => {
+      const share = value === null ? null : Math.min(1, value / peak);
+      const alpha = share === null ? 0 : 0.18 + 0.82 * share;
+      const title = new Date(grid[i] * 1000).toLocaleDateString()
+        + ' — ' + (value === null ? 'no samples' : fmtPercent(value));
+      const style = share === null ? '' : 'background:' + seriesColor(s.key) + ';opacity:' + alpha.toFixed(2);
+      return '<div class="heat-cell" style="' + style + '" title="' + esc(title) + '"></div>';
+    }).join('');
+    return '<div class="heat-row"><div class="heat-name" title="' + esc(s.key) + '">'
+      + esc(s.account_label + ' · ' + s.window_label) + ' <span class="muted">peak '
+      + esc(fmtPercent(peak === 1 ? null : peak)) + '</span></div>'
+      + '<div class="heat-cells">' + cells + '</div></div>';
+  }).join('') + (span ? '<div class="note">' + esc(span) + '</div>' : '');
+}
+
+// ------------------------------------------------------------------ wiring
+
+document.getElementById('range-select').addEventListener('change', e => {
+  state.hours = Number(e.target.value);
+  load();
+});
+document.getElementById('bucket-select').addEventListener('change', e => {
+  state.bucket = Number(e.target.value);
+  load();
+});
+document.getElementById('scale-select').addEventListener('change', e => {
+  state.scale = e.target.value;
+  renderChart();
+});
+document.getElementById('series-select').addEventListener('change', e => {
+  state.series = e.target.value;
+  load();
+});
+let resizeTimer = null;
+window.addEventListener('resize', () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(() => { if(state.data) renderChart(); }, 180);
+});
+
+// The live panel's history block tells the page what it is looking at before the first
+// fetch: the sampling cadence, and whether the layer is on at all.
+(async () => {
+  try{
+    const res = await fetch('/api/quota?t=' + Date.now(), {cache:'no-store'});
+    const payload = await res.json();
+    window.HISTORY_INFO = payload.history || {enabled:false};
+  }catch(e){ window.HISTORY_INFO = {enabled:false}; }
+  if(window.HISTORY_INFO && window.HISTORY_INFO.error){
+    showOffOrBroken(503, {error:'history store unavailable', detail:window.HISTORY_INFO.error});
+    return;
+  }
+  load();
+  setInterval(load, REFRESH_MS);
+})();
+</script>
+</body>
+</html>

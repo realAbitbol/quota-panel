@@ -203,18 +203,34 @@ def refuses(name, config_path, expect, env_extra=None, expect_code=2, args=()):
 
 
 def ui_checks():
-    """The page carries no chart and no history route any more: that layer was removed.
+    """The live page and the history page, as served.
 
-    The artwork route check stays here because it is the one CSS detail this script can
-    verify without a browser.
+    The artwork route check is the one CSS detail this script can verify without a browser.
+    The rest encode the split between the two pages: the panel pays one flag for the optional
+    layer and never fetches the history feed itself, and the chart lives on its own page.
     """
     page = open(PAGE, encoding="utf-8").read()
     check("the UI loads the artwork through /background",
           'url("/background")' in page, "CSS does not point at the configurable route")
     check("the page references no chart library", "uplot" not in page.lower())
-    check("the page never asks for history", "/api/history" not in page)
+    # One flag from /api/quota reveals the entry point, and that is the whole cost of an
+    # optional feature on the live page: a second feed here would make every install pay for a
+    # layer most of them leave off.
+    check("the live panel reads the history flag, never the history route",
+          "historyLink" in page and "/api/history" not in page)
     check("the vendored chart library is gone",
           not os.path.exists(os.path.join(ROOT, "static", "vendor", "uplot")))
+
+    history_page = open(os.path.join(ROOT, "static", "history.html"), encoding="utf-8").read()
+    check("the history page asks the history route", "/api/history" in history_page)
+    check("the history page vendors no chart library either", "uplot" not in history_page.lower())
+    # A request that never settles is the one failure the page cannot see: measured on this
+    # stack, a stuck request stayed stuck for 30 s and then answered, which reads as a control
+    # that does nothing. The page must bound its own wait and retry once on a fresh connection.
+    check("the history page bounds its own wait and retries once",
+          "AbortController" in history_page and "FETCH_TIMEOUT_MS" in history_page
+          and "if(tries === 0) return fetchJson(url, 1)" in history_page,
+          "a stalled request would freeze the page with no message and no retry")
 
 
 def main():
@@ -422,14 +438,28 @@ def main():
               not leak(quota_body, home_body, providers_body, health_body, page_body),
               leak(quota_body, home_body, providers_body, health_body, page_body) or "")
 
-        # The history layer is gone, route included: it must 404, not answer an empty set.
-        status, _, _ = get(base + "/api/history")
-        check("GET /api/history is gone", status == 404, "HTTP %s" % status)
+        # The history layer is optional and off by default, so on this install the route must be
+        # absent — a 404 with the reason, not an empty series set that looks like "no data yet".
+        status, _, raw = get(base + "/api/history")
+        check("GET /api/history is absent while the layer is off", status == 404, "HTTP %s" % status)
+        check("…and the 404 explains how to turn it on", b"history.enabled" in raw,
+              raw[:120].decode("utf-8", "replace"))
         status, _, _ = get(base + "/api/history?hours=24&max_points=400")
-        check("GET /api/history is gone with a query too", status == 404, "HTTP %s" % status)
+        check("GET /api/history is absent with a query too", status == 404, "HTTP %s" % status)
+
+        # The page itself is served either way: it reads the flag and says "off, here is how to
+        # turn it on" instead of 404ing at someone who followed a link.
+        status, ctype, _ = get(base + "/history")
+        check("GET /history serves the history page", status == 200 and "text/html" in ctype,
+              "%s %s" % (status, ctype))
+
+        _, _, quota_raw = get(base + "/api/quota")
+        check("a default install is told history is off",
+              json.loads(quota_raw).get("history") == {"enabled": False},
+              "%s" % json.loads(quota_raw).get("history"))
 
         status, _, _ = get(base + "/static/vendor/uplot/uPlot.iife.min.js")
-        check("the vendored chart library is no longer served", status == 404, "HTTP %s" % status)
+        check("the vendored chart library is not served", status == 404, "HTTP %s" % status)
 
         # Path traversal and unexpected types must never be served.
         for path in ("/static/../app.py", "/static/../../etc/passwd", "/static/accounts.json"):

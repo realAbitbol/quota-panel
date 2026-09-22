@@ -101,12 +101,20 @@
   #feed{margin-left:auto;font-variant-numeric:tabular-nums;display:inline-flex;align-items:center}
   #feed.stale{color:var(--warn)}
   #feed.down{color:var(--hot)}
+  /* The entry point to the optional history page, when that layer is on. */
+  .nav{font-size:12.5px;color:var(--muted);text-decoration:none;border:1px solid var(--line);
+       border-radius:999px;padding:3px 11px}
+  .nav:hover{color:var(--fg)}
   </style>
 </head>
 <body>
 <header>
   <img class="logo" src="/static/favicon.svg" width="28" height="28" alt="">
   <h1>Quota Panel</h1>
+  <!-- Hidden in the markup rather than at runtime: a default install has no history layer, and
+       a link to a page whose whole content is "off" is worse than no link at all. load()
+       unhides it only when the server says the layer is on and usable. -->
+  <a class="nav" id="historyLink" href="/history" hidden>History</a>
   <!-- #feed repaints once a second, so it is deliberately NOT a live region: a screen reader
        would announce the countdown on every tick. It is the header's one number. -->
   <span class="muted" id="feed"></span>
@@ -508,6 +516,13 @@ async function load(){
     if(!res.ok) throw new Error('HTTP ' + res.status);
     const fresh = await res.json();
     data = fresh;
+    // The history entry point follows the server's own answer: the layer is off in a default
+    // install, and the page must not offer a link to a page that can only say "off" because of
+    // a setting this reader never made. An enabled-but-broken store shows the live error on
+    // that page, so the link is withheld for that case too.
+    const history = fresh.history || {};
+    const historyLink = document.getElementById('historyLink');
+    if(historyLink) historyLink.hidden = !(history.enabled && !history.error);
     // Display only — never scheduling. No fallback to `generated_at`: that stamp is older than
     // the response by the age of the data, so using it as a clock offset would subtract the data's
     // own age and make every payload look permanently fresh (dataAge() would read 0 and isStale()

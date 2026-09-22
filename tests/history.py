@@ -122,8 +122,9 @@ def storage_checks():
 
     cfg = os.path.join(WORK, "cfg.json")
     with open(cfg, "w", encoding="utf-8") as fh:
-        json.dump({"history": {"enabled": True, "sample_seconds": 60, "raw_days": 30,
-                               "rollup_days": 10, "rollup_seconds": 1800, "nonsense": 3}}, fh)
+        json.dump({"history": {"_note": "prose, not a setting", "enabled": True, "sample_seconds": 60,
+                               "raw_days": 30, "rollup_days": 10, "rollup_seconds": 1800,
+                               "nonsense": 3}}, fh)
     mixed, notes = history.load_config(cfg, env={"QUOTA_HISTORY_ENABLED": "0",
                                                  "QUOTA_HISTORY_SAMPLE_SECONDS": "900"})
     check("the config file wins over the environment",
@@ -131,6 +132,10 @@ def storage_checks():
     check("rollup_days below raw_days is clamped up, and said so",
           mixed["rollup_days"] == 30 and any("clamped" in note for note in notes), "%s" % notes)
     check("an unknown history key is reported", any("nonsense" in note for note in notes), "%s" % notes)
+    # The example config documents itself with `_note` blocks. Prose is not a setting, and a
+    # warning on every start of a shipped example is a warning nobody reads.
+    check("an underscore note is documentation, not an unknown key",
+          not any("_note" in note for note in notes), "%s" % notes)
 
     _, notes = history.load_config(None, env={"QUOTA_HISTORY_ENABLED": "maybe",
                                               "QUOTA_HISTORY_SAMPLE_SECONDS": "0",
@@ -302,6 +307,9 @@ def storage_checks():
         ({"hours": ["abc"]}, "integers"),
         ({"max_points": ["5"]}, "max_points"),
         ({"bucket_seconds": ["30"]}, "bucket_seconds"),
+        # An explicit bucket over a long range is a point count the caller chose: refused rather
+        # than built, because 60 s over five years is 2.6 M points of grid.
+        ({"days": ["1800"], "bucket_seconds": ["60"]}, "points, more than max_points"),
     ):
         refused = history.payload(params, cfg, now_ts=NOW)
         check("refused: %s" % json.dumps(params),
