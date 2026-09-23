@@ -226,10 +226,12 @@ def ui_checks():
           and "--dim:#8b95ab" in open(os.path.join(ROOT, "static", "history.html"),
                                       encoding="utf-8").read(),
           "the refined chrome steps micro-labels back with one shared token")
+    strip_tag = re.search(r'<div[^>]*\bid="status-strip"[^>]*>', page)
     check("the dashboard carries a status strip that is not a card",
-          'id="status-strip"' in page and 'class="card" id="status-strip"' not in page
+          strip_tag is not None and 'class="card"' not in strip_tag.group(0)
           and "function setStatusStrip" in page,
-          "the one-line summary must not be counted as an account card")
+          "the strip is present and carries no card class: %r"
+          % (strip_tag.group(0) if strip_tag else None))
     # Scoped to worstPercent's own body: the same guard lives in cardState, so a bare
     # "the string exists somewhere" check would pass even with the strip's guard removed.
     worst_body = (page.split("function worstPercent(acc){", 1)[1][:400]
