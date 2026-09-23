@@ -285,6 +285,12 @@ def load_accounts(path=CONFIG_PATH):
         if raw_label is not None and not isinstance(raw_label, str):
             raise ConfigError("accounts[%d].label must be a string" % idx)
         account_id = raw_id or "%s-%d" % (provider, idx + 1)
+        # An explicit id keys the API and the history store, so it is charset-restricted and can
+        # never carry a path separator or a dot-dot. The generated default is provider-derived and
+        # is left alone, so an existing store keyed by `opencode_go-1` keeps working.
+        if raw_id is not None and not re.fullmatch(r"[a-z0-9][a-z0-9-]*", account_id):
+            raise ConfigError(
+                "accounts[%d].id %r must use lowercase letters, digits and dashes" % (idx, account_id))
         label = raw_label or raw_id or provider
         out.append(
             {

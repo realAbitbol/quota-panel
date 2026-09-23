@@ -742,6 +742,10 @@ def main():
                 write_config(os.path.join(scratch, "badlabel.json"),
                              dict(base_cfg, accounts=[dict(one, label=False)])),
                 "must be a string")
+        refuses("an account id outside the documented charset is refused",
+                write_config(os.path.join(scratch, "charbad.json"),
+                             dict(base_cfg, accounts=[dict(one, id="../etc/passwd")])),
+                "lowercase letters, digits and dashes")
         refuses("an empty accounts list is refused",
                 write_config(os.path.join(scratch, "empty.json"), dict(base_cfg, accounts=[])),
                 "non-empty 'accounts' list")
