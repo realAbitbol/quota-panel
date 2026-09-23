@@ -280,6 +280,34 @@ const state = {hours:24, bucket:0, account:'', catalogue:null, primary:{}, data:
                daily:null, isolate:null, stale:null, clipped:null, requestId:0,
                panels:{weekly:null, donut:null, scatter:null, radar:null}};
 
+// ------------------------------------------------------------------ remembered settings
+// The three controls are the reader's, not the page's: they survive a reload in localStorage, and
+// nothing is sent anywhere. Validation happens on the way IN as well as out — a stored value that
+// no longer fits (an account that is gone, a bucket the range cannot afford) falls back to the
+// default rather than driving a query that cannot answer.
+const SETTINGS_KEY = 'quota-panel:history';
+
+function applyStoredSettings(){
+  let saved = null;
+  try{
+    saved = JSON.parse(localStorage.getItem(SETTINGS_KEY) || 'null');
+  }catch(e){ saved = null; }
+  if(!saved || saved.v !== 1) return;
+  if(RANGES.some(r => r.hours === saved.hours)) state.hours = saved.hours;
+  if(typeof saved.account === 'string') state.account = saved.account;
+  if(typeof saved.bucket === 'number' && saved.bucket >= 0) state.bucket = saved.bucket;
+}
+
+function saveSettings(){
+  try{
+    localStorage.setItem(SETTINGS_KEY, JSON.stringify({
+      v: 1, account: state.account, hours: state.hours, bucket: state.bucket,
+    }));
+  }catch(e){ /* a disabled store is not a reason to break the page */ }
+}
+
+applyStoredSettings();
+
 // ------------------------------------------------------------------ identity + palette
 // One hue per provider, the way the page this is modelled on assigns them: an account's colour
 // says which provider it belongs to, and a second account of the same provider is a variant of
@@ -685,6 +713,8 @@ function renderControls(){
   const accountSel = document.getElementById('account-select');
   accountSel.innerHTML = '<option value="">All accounts</option>' + accounts.map(([id, label]) =>
     '<option value="' + esc(id) + '">' + esc(label) + '</option>').join('');
+  const ids = accounts.map(([id]) => id);
+  state.account = ids.indexOf(state.account) >= 0 ? state.account : '';
   accountSel.value = state.account;
 
   const rangeSel = document.getElementById('range-select');
@@ -1504,14 +1534,17 @@ function renderInsights(){
 document.getElementById('account-select').addEventListener('change', e => {
   state.account = e.target.value;
   state.isolate = null;
+  saveSettings();
   load();
 });
 document.getElementById('range-select').addEventListener('change', e => {
   state.hours = Number(e.target.value);
+  saveSettings();
   load();
 });
 document.getElementById('bucket-select').addEventListener('change', e => {
   state.bucket = Number(e.target.value);
+  saveSettings();
   load();
 });
 let resizeTimer = null;

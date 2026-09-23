@@ -935,6 +935,20 @@ def page_checks():
           ".panel{background:rgba(var(--card),var(--card-alpha));border:1px solid var(--line);border-radius:16px;" in page
           and ".stat{background:var(--card-2);border:1px solid var(--line);border-radius:12px;" in page,
           "the panels and stat tiles must share the refined radii")
+    check("the page remembers the three controls client-side",
+          "localStorage" in page and "quota-panel:history" in page
+          and "function applyStoredSettings" in page and "function saveSettings" in page,
+          "a reload must keep the account, range and interval the reader chose")
+    check("the stored settings are read defensively",
+          "function applyStoredSettings" in page and "try{" in page
+          and "JSON.parse" in page and "catch(e)" in page,
+          "a disabled or corrupt store must fall back to defaults, not throw")
+    check("a stored account is re-validated against the catalogue",
+          "state.account = ids.indexOf(state.account) >= 0 ? state.account : ''" in page,
+          "a stored account that no longer exists must fall back to All accounts")
+    check("a restored interval the range cannot afford falls back to Auto",
+          "if(state.bucket && state.bucket < floor) state.bucket = 0;" in page,
+          "an over-fine bucket would ask the server for more points than it allows")
 
     heat = page.split("async function renderHeatmap()")[1].split("// ---")[0] if \
         "async function renderHeatmap()" in page else ""
