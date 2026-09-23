@@ -20,6 +20,8 @@ Design constraints (deliberate):
 CLI: `app.py --check` polls once, prints JSON, exits (no server, no DB write).
 """
 
+import base64
+import hashlib
 import io
 import json
 import os
@@ -166,6 +168,27 @@ def log(msg):
 def scrub_path(path):
     """A request path without its query string: a key in a query must not reach a log."""
     return re.sub(r"\?[^ ]*", "", path) if isinstance(path, str) else path
+
+
+def csp_for_body(body):
+    """A CSP for a page whose script is inline.
+
+    There is no build step, so `script-src` names the SHA-256 of each inline block instead of
+    falling back to `'unsafe-inline'`: a future unescaped interpolation is then a blocked script,
+    not an executed one. Styles stay `'unsafe-inline'` because the UI sets style attributes from
+    JS, and a style injection is a far smaller risk than a script one.
+    """
+    try:
+        text = body.decode("utf-8") if isinstance(body, bytes) else str(body)
+    except (UnicodeDecodeError, AttributeError):
+        text = ""
+    hashes = []
+    for match in re.finditer(r"<script(?:\s[^>]*)?>(.*?)</script>", text, re.S):
+        digest = base64.b64encode(hashlib.sha256(match.group(1).encode("utf-8")).digest()).decode("ascii")
+        hashes.append("'sha256-" + digest + "'")
+    return ("default-src 'self'; script-src 'self' " + " ".join(hashes)
+            + "; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; "
+            "base-uri 'none'; object-src 'none'; frame-ancestors 'none'; form-action 'none'")
 
 
 def now_iso():
@@ -1364,6 +1387,13 @@ class Handler(BaseHTTPRequestHandler):
         # /background takes its content type from the remote host's Content-Type header, so the
         # browser must not second-guess it into something executable on this origin.
         self.send_header("X-Content-Type-Options", "nosniff")
+        # The pages are inline-script, so the policy is built from the bytes actually served.
+        if content_type.startswith("text/html"):
+            self.send_header("Content-Security-Policy", csp_for_body(body))
+        # Nothing here is meant to be framed or to leak a referrer, and the UI uses no device APIs.
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("Permissions-Policy", "geolocation=(), microphone=(), camera=()")
         self.end_headers()
         self.wfile.write(body)
 

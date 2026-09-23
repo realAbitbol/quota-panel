@@ -75,6 +75,13 @@ def get(url):
             return r.status, r.headers.get("Content-Type", ""), r.read()
     except urllib.error.HTTPError as e:
         return e.code, e.headers.get("Content-Type", ""), e.read()
+def head_headers(url):
+    """(status, headers) for a GET, so a response header can be asserted, not only the body."""
+    try:
+        with urllib.request.urlopen(url, timeout=10) as r:
+            return r.status, dict(r.headers)
+    except urllib.error.HTTPError as e:
+        return e.code, dict(e.headers)
 
 
 def write_config(path, doc):
@@ -383,6 +390,20 @@ def main():
         check("server boots", booted, "nothing answered %s/api/health within 15s" % base)
 
         status, ctype, body = get(base + "/")
+        status, headers = head_headers(base + "/")
+        csp = headers.get("Content-Security-Policy", "")
+        check("the pages are served under a content security policy",
+              status == 200 and "default-src 'self'" in csp and "script-src 'self' " in csp
+              and "sha256-" in csp and "'unsafe-inline'" not in csp.split("style-src")[0],
+              "csp=%r" % csp[:160])
+        check("the pages refuse framing and referrer leakage",
+              headers.get("X-Frame-Options") == "DENY"
+              and headers.get("Referrer-Policy") == "no-referrer",
+              "frame=%r referrer=%r" % (headers.get("X-Frame-Options"), headers.get("Referrer-Policy")))
+        check("no page ships an inline event handler",
+              "onerror=" not in open(os.path.join(ROOT, "static", "index.html"), encoding="utf-8").read()
+              and "onerror=" not in open(os.path.join(ROOT, "static", "history.html"), encoding="utf-8").read(),
+              "an inline handler defeats the script policy")
         check("GET / is HTML", status == 200 and "text/html" in ctype, "%s %s" % (status, ctype))
         check("GET / renders the panel", b"Quota Panel" in body)
         check("GET / references the favicon", b"favicon" in body)

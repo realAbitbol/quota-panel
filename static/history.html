@@ -430,9 +430,15 @@ function dailyEmpty(){
     ? 'This account reports a money balance, not a percentage — see the account insights and radar panels.'
     : 'No daily data yet.';
 }
+// A provider mark that 404s hides itself. This used to be an inline onerror, which a strict CSP
+// blocks; the error event does not bubble, so the listener captures instead.
+document.addEventListener('error', function(e){
+  const el = e.target;
+  if(el && el.tagName === 'IMG' && el.classList.contains('mark')) el.style.display = 'none';
+}, true);
 function badgeHtml(provider, label){
-  return '<span class="badge"><img src="' + esc(providerLogo(provider)) + '" alt="" '
-    + 'onerror="this.style.display=&quot;none&quot;"><span class="nm">' + esc(label) + '</span></span>';
+  return '<span class="badge"><img class="mark" src="' + esc(providerLogo(provider)) + '" alt="">'
+    + '<span class="nm">' + esc(label) + '</span></span>';
 }
 function std(values){
   if(values.length <= 1) return 0;
