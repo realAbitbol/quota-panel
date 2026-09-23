@@ -71,6 +71,12 @@
   .grid{display:grid;gap:18px;grid-template-columns:1fr}
   @media (min-width:700px){ .grid{grid-template-columns:1fr 1fr} }
   @media (min-width:1100px){ .grid{grid-template-columns:1fr 1fr 1fr} }
+  .strip{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:12.5px;color:var(--muted);
+       background:rgba(var(--card),.55);border:1px solid var(--line);border-radius:12px;
+       padding:9px 16px;margin-bottom:16px}
+  .strip b{color:var(--fg);font-weight:600}
+  .strip .warn{color:var(--warn)}
+  .strip[hidden]{display:none}
   /* First paint only: render() rebuilds the grid on every poll, and a grid that re-staggers once
      a minute is noise rather than life. render() clears .first after its first pass. */
   @media (prefers-reduced-motion:no-preference){
@@ -172,6 +178,7 @@
     .nav:hover{background:rgba(var(--accent-rgb),.26);box-shadow:0 0 0 3px rgba(var(--accent-rgb),.09)}
   }
   .nav:active{transform:translateY(1px)}
+  .nav.on{color:#fff;background:rgba(var(--accent-rgb),.22);border-color:var(--accent);cursor:default}
   @media (prefers-reduced-motion:no-preference){
     .nav{transition:color .15s,border-color .15s,background .15s,box-shadow .15s}
   }
@@ -203,10 +210,12 @@
   <!-- #feed repaints once a second, so it is deliberately NOT a live region: a screen reader
        would announce the countdown on every tick. It is the header's one number. -->
   <span class="muted" id="feed"></span>
+  <span class="nav on" aria-current="page">Dashboard</span>
   <a class="nav" id="historyLink" href="/history" hidden>History<svg viewBox="0 0 320 512" aria-hidden="true"><path d="M311.1 233.4c12.5 12.5 12.5 32.8 0 45.3l-192 192c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L243.2 256 73.9 86.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l192 192z"/></svg></a>
 </header>
 
 <main>
+  <div class="strip" id="status-strip" hidden></div>
   <div class="grid" id="grid"><div class="card waiting">Loading…</div></div>
 </main>
 
@@ -256,6 +265,51 @@ function cardState(acc){
     if(p !== null && p > worst) worst = p;
   }
   return worst >= 90 ? 'urgent' : worst >= 70 ? 'watch' : '';
+}
+
+// The status strip's one number: the highest percent this account publishes, or -1 when it
+// publishes none. A missing percent is not 0 and not 100 — it is simply not pressure.
+function worstPercent(acc){
+  let worst = -1;
+  for(const w of (acc.windows || [])){
+    if((w.kind || 'window') === 'balance') continue;
+    const p = numericPercent(w.percent);
+    if(p !== null && p > worst) worst = p;
+  }
+  return worst;
+}
+
+// One line that answers "is anything about to run out?" before a single card is read. Built from
+// the same payload the cards come from — no second fetch. Not a live region: it repaints each poll.
+function setStatusStrip(accounts){
+  const el = document.getElementById('status-strip');
+  if(!el) return;
+  if(!accounts.length){ el.hidden = true; return; }
+  const approaching = accounts.filter(a => a.state === 'ok' && worstPercent(a) >= 70).length;
+  const failing = accounts.filter(a => a.state !== 'ok').length;
+  let soonest = Infinity;
+  for(const a of accounts){
+    for(const w of (a.windows || [])){
+      if((w.kind || 'window') === 'balance') continue;
+      const at = Date.parse(w.resets_at);
+      if(isNaN(at)) continue;
+      const left = at - serverNow();
+      if(left > 0 && left < soonest) soonest = left;
+    }
+  }
+  const parts = [accounts.length + ' accounts'];
+  parts.push(approaching
+    ? '<span class="warn">' + approaching + ' approaching limits</span>'
+    : 'all within limits');
+  if(failing) parts.push(failing + ' failing');
+  if(isFinite(soonest)){
+    const d = Math.floor(soonest / 86400000);
+    const h = Math.floor((soonest % 86400000) / 3600000);
+    const m = Math.floor((soonest % 3600000) / 60000);
+    parts.push('next reset in <b>' + (d ? d + 'd ' + h + 'h' : h ? h + 'h ' + m + 'm' : m + 'm') + '</b>');
+  }
+  el.innerHTML = parts.join(' · ');
+  el.hidden = false;
 }
 
 function esc(s){ return String(s === null || s === undefined ? '' : s)
@@ -555,6 +609,7 @@ function render(){
   // One freshness reading for the whole paint: every card here came out of the same payload, so
   // none of them can be fresher than it is.
   const stale = isStale();
+  setStatusStrip(accounts);
   grid.classList.toggle('first', firstRender);
   grid.innerHTML = '';
   if(!accounts.length){

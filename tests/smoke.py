@@ -226,6 +226,16 @@ def ui_checks():
           and "--dim:#8b95ab" in open(os.path.join(ROOT, "static", "history.html"),
                                       encoding="utf-8").read(),
           "the refined chrome steps micro-labels back with one shared token")
+    check("the dashboard carries a status strip that is not a card",
+          'id="status-strip"' in page and 'class="card" id="status-strip"' not in page
+          and "function setStatusStrip" in page,
+          "the one-line summary must not be counted as an account card")
+    check("the status strip counts a missing percent as no pressure",
+          "function worstPercent" in page and "numericPercent(w.percent)" in page,
+          "a null percent must not read as 0% or 100%")
+    check("the status strip omits the reset clause when no reset parses",
+          "isFinite(soonest)" in page,
+          "an unparseable resets_at must not print NaN")
     # One flag from /api/quota reveals the entry point, and that is the whole cost of an
     # optional feature on the live page: a second feed here would make every install pay for a
     # layer most of them leave off.
