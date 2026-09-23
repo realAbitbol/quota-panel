@@ -1,0 +1,9 @@
+# A deliberate, narrow gate: syntax errors (E9), undefined names and unused code (F), and the
+# bugbear checks that catch real footguns. B904 (raise ... from) and B905 (zip strict) are
+# preferences this codebase does not follow, so they are off rather than churned.
+target-version = "py312"
+line-length = 120
+
+[lint]
+select = ["E9", "F", "B"]
+ignore = ["B904", "B905"]

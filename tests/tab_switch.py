@@ -79,7 +79,6 @@ class CDP:
 
     def __init__(self, url, timeout=20):
         import base64
-        import struct
         from urllib.parse import urlparse
         u = urlparse(url)
         self.sock = socket.create_connection((u.hostname, u.port or 80), timeout=timeout)

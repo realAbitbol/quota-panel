@@ -75,7 +75,7 @@ def wait_for(url, timeout=20):
     deadline = time.time() + timeout
     while time.time() < deadline:
         try:
-            with urllib.request.urlopen(url, timeout=3) as r:
+            with urllib.request.urlopen(url, timeout=3):
                 return True
         except Exception:
             time.sleep(0.2)
@@ -179,8 +179,10 @@ def main():
             buf += c.recv(4096)
         assert b"101" in buf.split(b"\r\n")[0], buf[:200]
 
-        def send(payload, _id=[0]):
-            _id[0] += 1
+        counter = [0]
+
+        def send(payload):
+            counter[0] += 1
             data = json.dumps(payload).encode()
             hdr = bytearray([0x81])
             n = len(data)
@@ -196,7 +198,7 @@ def main():
             hdr += mask
             masked = bytes(b ^ mask[i % 4] for i, b in enumerate(data))
             c.sendall(bytes(hdr) + masked)
-            return _id[0]
+            return counter[0]
 
         def recv_exact(n):
             out = b""

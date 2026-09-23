@@ -20,10 +20,11 @@ permissions:
   contents: read
 
 # Two pushes to main can overlap, and an older build finishing last would publish itself as
-# :latest. A newer push on the same ref now cancels the older run instead.
+# :latest. A newer PULL REQUEST run cancels an older one; a push to main is not cancelled,
+# because cancelling mid-publish can leave a tag pushed while the job reports cancelled.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # Every action is pinned to the commit SHA of the tag named in its comment, not to the tag: a
 # re-pointed or compromised tag would execute inside a job that can push to GHCR, which is the
@@ -35,6 +36,7 @@ jobs:
   test:
     name: smoke test
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
@@ -44,6 +46,13 @@ jobs:
 
       - name: Compile
         run: python -m py_compile app.py history.py providers_balance.py tests/smoke.py tests/background.py tests/balance.py tests/history.py tests/screenshot.py tests/cadence_soak.py tests/tab_switch.py
+
+      - name: Lint (ruff)
+        # A real gate: syntax (E9), undefined names and unused code (F), and the bugbear footguns.
+        # Version-pinned so a new ruff release cannot change the result unannounced.
+        run: |
+          python -m pip install --quiet ruff==0.16.1
+          ruff check .
 
       - name: Validate the example config
         run: |
@@ -90,9 +99,9 @@ jobs:
       - name: Background image shrink (Pillow)
         # Before the screenshot step, not after: the screenshot harness only exercises the
         # artwork path when Pillow can generate a backdrop, so installing it later made that
-        # check silently vacuous in CI. Pinned to match the Dockerfile.
+        # check silently vacuous in CI. Hash-pinned in requirements-ci.txt to match the Dockerfile.
         run: |
-          pip install --quiet pillow==12.3.0
+          pip install --quiet --require-hashes -r requirements-ci.txt
           python tests/background.py
 
       - name: Screenshot harness (real render, real Chromium)
@@ -139,6 +148,7 @@ jobs:
     name: build and push image
     runs-on: ubuntu-latest
     needs: test
+    timeout-minutes: 45
     # Build on every PR so a broken Dockerfile is caught before merge; push only
     # from the default branch and from tags.
     permissions:
