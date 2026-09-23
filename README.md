@@ -54,8 +54,9 @@ docker run -d \
 Write the config first: the container polls nothing without it, and a bind mount onto a missing path
 leaves a *directory* in its place. Then open <http://localhost:8080>.
 
-The repo's `docker-compose.yml` is this service with the hardening (read-only rootfs, `cap_drop: ALL`,
-`no-new-privileges`, healthcheck) and fuller comments; the `Dockerfile` builds the same code.
+The repo's [`docker-compose.yml`](docker-compose.yml) is this service with the hardening (read-only rootfs,
+`cap_drop: ALL`, `no-new-privileges`, healthcheck) and fuller comments; the
+[`Dockerfile`](Dockerfile) builds the same code.
 
 ## Configuration
 
