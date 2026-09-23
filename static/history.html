@@ -657,11 +657,19 @@ async function fetchJson(url, attempt){
 }
 
 // One panel's failure must not take the rest with it. Each render runs in its own guard, and a
-// panel that throws (or rejects, for the async ones) says so in place rather than leaving stale
-// charts beside an unhandled rejection.
+// panel that throws (or rejects, for the async ones) says so where it lives. Three renders write
+// into a named region rather than a `*-panel`, so the host is looked up by name, not guessed.
+// The note is cleared before the next render, so a transient failure does not leave a permanent
+// "could not be drawn" beside a chart that is now fine.
+const RENDER_HOST = {stats: 'stats', store: 'store-line', readout: 'readout', trend: 'trend-panel',
+  heat: 'heat-panel', weekly: 'weekly-panel', donut: 'donut-panel', scatter: 'scatter-panel',
+  radar: 'radar-panel', insights: 'insights-panel', breakdown: 'breakdown-panel'};
+
+function renderHost(name){ return document.getElementById(RENDER_HOST[name] || (name + '-panel')); }
+
 function reportRenderError(name, e){
   const text = 'this panel could not be drawn: ' + ((e && e.message) || e);
-  const host = document.getElementById(name + '-panel');
+  const host = renderHost(name);
   if(host){
     let note = host.querySelector('.render-error');
     if(!note){ note = document.createElement('div'); note.className = 'render-error'; host.appendChild(note); }
@@ -672,6 +680,8 @@ function reportRenderError(name, e){
 }
 
 function safeRender(name, fn){
+  const host = renderHost(name);
+  if(host){ const stale = host.querySelector('.render-error'); if(stale) stale.remove(); }
   try{
     const out = fn();
     if(out && typeof out.catch === 'function') out.catch(e => reportRenderError(name, e));

@@ -964,6 +964,9 @@ def page_checks():
           "function safeRender" in page and "function reportRenderError" in page
           and "out.catch(e => reportRenderError(name, e))" in page,
           "a malformed series used to abort every later panel")
+    check("a failed panel says so where it lives, and recovers",
+          "const RENDER_HOST" in page and "stale.remove()" in page and "stats: 'stats'" in page,
+          "the note must appear in the panel's own host and clear on the next render")
     check("the history page escapes the single quote too",
           ".replace(/'/g,'&#39;')" in page,
           "a future single-quoted attribute would become an injection point")

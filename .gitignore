@@ -1,6 +1,7 @@
 # Credential files: match the shape, not a name someone happened to think of. A backup like
-# accounts.json.bak or an override like .env.local must be ignored too, or a public repo leaks a key.
-accounts*
+# accounts.json.bak, an override like accounts.local.json, or a file named my-accounts.json must be
+# ignored too, or a public repo leaks a key.
+*account*.json*
 !accounts.example.json
 .env*
 *.bak

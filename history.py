@@ -566,11 +566,11 @@ def record(results, config, now_ts=None):
                     balance_rows,
                 )
             tracked = [(row, "window") for row in rows] + [(row, "balance") for row in balance_rows]
-            for row, kind in tracked:
-                conn.execute(
-                    "INSERT OR REPLACE INTO series (account_id, window_key, account_label, provider, "
-                    "window_label, kind, first_ts, last_ts) VALUES (?,?,?,?,?,?,"
-                    "COALESCE((SELECT first_ts FROM series WHERE account_id = ? AND window_key = ?), ?), ?)",
+            conn.executemany(
+                "INSERT OR REPLACE INTO series (account_id, window_key, account_label, provider, "
+                "window_label, kind, first_ts, last_ts) VALUES (?,?,?,?,?,?,"
+                "COALESCE((SELECT first_ts FROM series WHERE account_id = ? AND window_key = ?), ?), ?)",
+                [
                     (
                         account_id,
                         row[3],
@@ -582,8 +582,10 @@ def record(results, config, now_ts=None):
                         row[3],
                         row[0],
                         row[0],
-                    ),
-                )
+                    )
+                    for row, kind in tracked
+                ],
+            )
             conn.commit()
             _LAST_SAMPLE[(path, account_id)] = now_ts
             written += 1
