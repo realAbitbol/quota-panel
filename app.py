@@ -813,12 +813,13 @@ def _redact(text: Any, *secrets: Any) -> Any:
     for secret in secrets:
         if not isinstance(secret, str) or len(secret) < 6:
             continue
-        views = [secret]
-        for size in (8, 12, 16, 24, 32, 48):
-            if len(secret) > size:
-                views.append(secret[:size])
-                views.append(secret[-size:])
-        for view in views:
+        # Every prefix and suffix, longest first: a provider that echoes a truncated key can
+        # cut it at any length, and replacing a short view first would leave the rest behind.
+        views = {secret}
+        for size in range(6, len(secret)):
+            views.add(secret[:size])
+            views.add(secret[-size:])
+        for view in sorted(views, key=len, reverse=True):
             text = text.replace(view, "***")
     return CREDENTIAL_SHAPE.sub("***", text)
 
@@ -832,7 +833,8 @@ def _scrub_result(result: Any, *secrets: Any) -> Any:
     if isinstance(result, str):
         return _redact(result, *secrets)
     if isinstance(result, dict):
-        return {key: _scrub_result(value, *secrets) for key, value in result.items()}
+        return {_scrub_result(key, *secrets): _scrub_result(value, *secrets)
+                for key, value in result.items()}
     if isinstance(result, list):
         return [_scrub_result(item, *secrets) for item in result]
     return result

@@ -461,6 +461,20 @@ def main():
               KEY not in json.dumps(res), json.dumps(res)[:200])
         check("a key-shaped echo is redacted too",
               not app.CREDENTIAL_SHAPE.search(json.dumps(res)), json.dumps(res)[:200])
+        # A provider that echoes a TRUNCATED key must not leak the remainder: the scrub has to
+        # cover every prefix/suffix length, not just the sizes a previous author happened to list.
+        LONG_KEY = "opaque-" + "A" * 57          # 64 chars, deliberately not key-shaped
+        leaked = []
+        for size in range(6, len(LONG_KEY) + 1):
+            for echo in (LONG_KEY[:size], LONG_KEY[-size:]):
+                out = app._redact("key: " + echo, LONG_KEY)
+                if out.replace("key: ", "").replace("***", ""):
+                    leaked.append(size)
+        check("every truncated echo of a key is fully redacted", not leaked,
+              "lengths with residual: %s" % sorted(set(leaked))[:10])
+        scrubbed_key = list(app._scrub_result({LONG_KEY: "x"}, LONG_KEY))[0]
+        check("a credential-shaped dict key is scrubbed too", scrubbed_key == "***",
+              repr(scrubbed_key))
 
         # ---- a 404 is not a diagnosis the adapter is entitled to make ---------
         res = run("commandcode", {"/alpha/whoami": (404, {"error": "not found"})}, base)
