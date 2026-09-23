@@ -249,6 +249,10 @@ def ui_checks():
     check("the live page carries no dead constants or orphan comment",
           "SERVER_MARGIN" not in page and "Paint the placeholder before the first poll" not in page,
           "unused code reads as load-bearing")
+    check("the provider registry routes its logo through the fallback",
+          '"/static/logos/" + provider_logo(key)'
+          in open(os.path.join(ROOT, "app.py"), encoding="utf-8").read(),
+          "a missing bundled file must not advertise a broken URL")
     # One flag from /api/quota reveals the entry point, and that is the whole cost of an
     # optional feature on the live page: a second feed here would make every install pay for a
     # layer most of them leave off.

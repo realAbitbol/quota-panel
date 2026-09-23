@@ -139,6 +139,10 @@ def storage_checks():
     loaded, notes = history.load_config(ok_cfg, env={})
     check("an http(s) alert_url is kept", loaded["alert_url"] == "https://example.test/hook",
           "alert_url=%r" % loaded["alert_url"])
+    refused, message = history.resolve_range(
+        {"since": ["2026-01-01T00:00:00Z"], "days": ["abc"]}, NOW)
+    check("a malformed hours/days is refused even when since is given",
+          refused is None and "integer" in (message or ""), "%r %r" % (refused, message))
 
     cfg = os.path.join(WORK, "cfg.json")
     with open(cfg, "w", encoding="utf-8") as fh:

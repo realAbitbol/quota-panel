@@ -1536,7 +1536,7 @@ class Handler(BaseHTTPRequestHandler):
                             "id": key,
                             "label": info["label"],
                             "kind": info["kind"],
-                            "logo": "/static/logos/" + info["logo"],
+                            "logo": "/static/logos/" + provider_logo(key),
                         }
                         for key, info in sorted(PROVIDERS.items())
                     ],

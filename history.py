@@ -496,8 +496,8 @@ def record(results, config, now_ts=None):
             # whole window — which the trend then draws as a gap. Gating on the window the reader
             # actually buckets by guarantees every window holds a reading (as long as a poll lands
             # in it), so a fine poll cadence can never leave a hole.
-            window = config["sample_seconds"]
-            if last is not None and bucket_of(now_ts, window) == bucket_of(last, window):
+            sample_window = config["sample_seconds"]
+            if last is not None and bucket_of(now_ts, sample_window) == bucket_of(last, sample_window):
                 skipped += 1
                 continue
             stamp = epoch_to_iso(now_ts)
@@ -830,17 +830,19 @@ def resolve_range(params, now_ts):
             return None, "%s must be an ISO stamp like 2026-09-22T04:00:00Z" % name
         resolved[name] = epoch
     until = resolved["until"] if resolved["until"] is not None else now_ts
+    # Validate hours/days whether or not `since` is given: a malformed parameter is refused, not
+    # silently ignored because another one happened to be present.
+    hours, ok_hours = _int_param(params, "hours")
+    days, ok_days = _int_param(params, "days")
+    if not ok_hours or not ok_days:
+        return None, "hours and days must be integers"
+    if hours is not None and not 1 <= hours <= 24 * 365 * 5:
+        return None, "hours must be between 1 and %d" % (24 * 365 * 5)
+    if days is not None and not 1 <= days <= 365 * 5:
+        return None, "days must be between 1 and %d" % (365 * 5)
     if resolved["since"] is not None:
         since = resolved["since"]
     else:
-        hours, ok_hours = _int_param(params, "hours")
-        days, ok_days = _int_param(params, "days")
-        if not ok_hours or not ok_days:
-            return None, "hours and days must be integers"
-        if hours is not None and not 1 <= hours <= 24 * 365 * 5:
-            return None, "hours must be between 1 and %d" % (24 * 365 * 5)
-        if days is not None and not 1 <= days <= 365 * 5:
-            return None, "days must be between 1 and %d" % (365 * 5)
         since = until - (days * 86400 if days is not None else (hours * 3600 if hours is not None else 86400))
     if until <= since:
         return None, "until must be later than since"
@@ -1058,6 +1060,7 @@ def payload(params, config, now_ts=None):
 
     # The summary describes the percentages: a money balance has no percent and must not pull
     # the average or the peak toward a number it never carried.
+    kept_keys = {entry["key"] for entry in kept}
     percent_series = [entry for entry in kept if entry["kind"] != "balance"]
     weighted_all = [(entry["mean"], entry["samples"]) for entry in percent_series if entry["mean"] is not None and entry["samples"]]
     return {
@@ -1073,7 +1076,7 @@ def payload(params, config, now_ts=None):
         # storing a reset flag in every rollup would roughly double that table for a marker.
         "resets": [
             {"key": key, "at": at}
-            for key in sorted(resets)
+            for key in sorted(resets) if key in kept_keys
             for at in sorted(resets[key])
         ],
         "summary": {
