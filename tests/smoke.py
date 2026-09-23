@@ -432,6 +432,43 @@ def main():
               and b"\ufe0f" not in body)
         status, _, _ = get(base + "/no-such-route")
         check("an unknown path is a 404, not a 500 or a hang", status == 404, str(status))
+        # ---- the two degraded states, and a concurrent burst -----------------
+        # /api/health reports the POLLER's liveness, not per-provider success: a fresh cycle in
+        # which every account fails is still "ok", and ok_accounts carries the failure count.
+        bad_cfg = write_config(os.path.join(scratch, "allbad.json"),
+                               dict(base_cfg, accounts=[{"id": "bad-1", "provider": "deepseek", "token": "t"}]))
+        bproc, bbase, benv, _ = boot(bad_cfg, stub, scratch)
+        try:
+            hstatus, _, hbody = get(bbase + "/api/health")
+            health = json.loads(hbody)
+            check("/api/health reports poller liveness, not per-provider success",
+                  hstatus == 200 and health.get("accounts") == 1 and health.get("ok_accounts") == 0,
+                  "%s %s" % (hstatus, hbody[:120]))
+        finally:
+            stop(bproc, benv)
+
+        # An unreadable store is a 503 with the store's own message, not a 500.
+        broken_dir = os.path.join(scratch, "not-a-db")
+        os.makedirs(broken_dir, exist_ok=True)
+        hcfg = write_config(os.path.join(scratch, "histbroken.json"),
+                            dict(base_cfg, accounts=[dict(base_cfg["accounts"][0])],
+                                 history=dict(base_cfg.get("history") or {},
+                                              enabled=True, path=broken_dir)))
+        hproc, hbase, henv, _ = boot(hcfg, stub, scratch)
+        try:
+            hb_status, _, _ = get(hbase + "/api/history?hours=24")
+            check("/api/history answers 503 for an unreadable store, not 500",
+                  hb_status == 503, str(hb_status))
+        finally:
+            stop(hproc, henv)
+
+        # A burst of concurrent readers must all be served: the state lock is released before
+        # the socket write, so one slow reader cannot stall the poller or the rest.
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor(max_workers=12) as pool:
+            codes = list(pool.map(lambda _: get(base + "/api/quota")[0], range(24)))
+        check("a burst of concurrent readers is all served", codes == [200] * 24,
+              str(sorted(set(codes))))
 
         status, ctype, body = get(base + "/static/favicon.svg")
         check("GET /static/favicon.svg", status == 200 and "image/svg" in ctype, "%s %s" % (status, ctype))

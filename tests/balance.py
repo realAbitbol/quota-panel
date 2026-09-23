@@ -582,6 +582,34 @@ def main():
         check("opencode_go success: the three window percentages are read verbatim",
               go["state"] == "ok" and go_percents == [2, 22, 84],
               "%s %s" % (go.get("state"), go_percents))
+        # ---- the HTTP boundary and the response cap ---------------------------
+        # An exception inside a route must become a 500 with a JSON body, not a dropped
+        # connection. Exercised in-process: no HTTP-surface input can make a route raise on demand.
+        saved_log = app.log
+        app.log = lambda msg: None
+        try:
+            handler = object.__new__(app.Handler)
+            handler.path = "/boom"
+
+            def boom():
+                raise RuntimeError("boom")
+
+            handler._route = boom
+            seen = []
+            handler._json = lambda status, obj: seen.append((status, obj))
+            handler.do_GET()
+        finally:
+            app.log = saved_log
+        check("a handler exception becomes a 500, not a dropped connection",
+              seen == [(500, {"error": "internal error"})], str(seen))
+
+        # A response larger than the cap must be refused, not buffered whole.
+        ROUTES.clear()
+        ROUTES["/huge"] = (200, b"x" * (app.MAX_RESPONSE_BYTES + 1024))
+        cap_status, cap_body, cap_err = app.http_get_json(base + "/huge", {})
+        check("a response over the cap is refused, not buffered",
+              cap_body is None and cap_err and "exceeded" in cap_err,
+              "%s %s %s" % (cap_status, cap_body, cap_err))
 
         # ---- the guard that matters: never fabricate a zero -------------------
         for provider, path, junk, expect in (
