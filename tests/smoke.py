@@ -221,6 +221,11 @@ def ui_checks():
           and "background:rgba(var(--accent-rgb),.14)" in page
           and ".nav:hover{color:#fff;border-color:var(--accent)}" in page,
           "the header link must read as a pill and light up on hover")
+    check("both pages carry the calmer micro-label token",
+          "--dim:#8b95ab" in page
+          and "--dim:#8b95ab" in open(os.path.join(ROOT, "static", "history.html"),
+                                      encoding="utf-8").read(),
+          "the refined chrome steps micro-labels back with one shared token")
     # One flag from /api/quota reveals the entry point, and that is the whole cost of an
     # optional feature on the live page: a second feed here would make every install pay for a
     # layer most of them leave off.
