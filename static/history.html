@@ -36,6 +36,9 @@
     --card-alpha:.72; --card-blur:14px;
   }
   *{box-sizing:border-box}
+  /* The page's custom chart control is the only keyboard stop, and a UA ring on an
+     SVG rect is unreliable: port the live panel's rule so focus is always visible. */
+  :focus-visible{outline:2px solid var(--accent);outline-offset:2px}
   html,body{min-height:100%}
   body{margin:0;color:var(--fg);
        font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
@@ -172,6 +175,9 @@
   .kofi span{font-weight:600}
   @media (prefers-reduced-motion:no-preference){ .kofi{transition:color .15s,border-color .15s} }
   @media (prefers-reduced-motion:reduce){ .skel::after{animation:none} }
+  .render-error{margin-top:10px;font-size:12px;color:#ffb4b4}
+  /* The support pill is fixed: on a narrow screen it used to come to rest over the last panel. */
+  @media (max-width:640px){ body{padding:14px 14px 68px} }
 </style>
 </head>
 <body>
@@ -658,6 +664,28 @@ async function fetchJson(url, attempt){
   }
 }
 
+// One panel's failure must not take the rest with it. Each render runs in its own guard, and a
+// panel that throws (or rejects, for the async ones) says so in place rather than leaving stale
+// charts beside an unhandled rejection.
+function reportRenderError(name, e){
+  const text = 'this panel could not be drawn: ' + ((e && e.message) || e);
+  const host = document.getElementById(name + '-panel');
+  if(host){
+    let note = host.querySelector('.render-error');
+    if(!note){ note = document.createElement('div'); note.className = 'render-error'; host.appendChild(note); }
+    note.textContent = text;
+  }else{
+    console.error('history panel %s failed: %s', name, text);
+  }
+}
+
+function safeRender(name, fn){
+  try{
+    const out = fn();
+    if(out && typeof out.catch === 'function') out.catch(e => reportRenderError(name, e));
+  }catch(e){ reportRenderError(name, e); }
+}
+
 async function load(){
   // A monotonic token: a response from a superseded request must not overwrite the readings the
   // controls now describe (rapid account+range changes, or a refresh racing a manual change).
@@ -693,17 +721,17 @@ async function load(){
   renderControls();
   await loadDaily(token);
   if(token !== state.requestId) return;
-  renderStats();
-  renderStore();
-  renderChart();
-  renderReadout(null);
-  renderHeatmap();
-  renderWeekly();
-  renderDonut();
-  renderScatter();
-  renderRadar();
-  renderInsights();
-  renderBreakdown();
+  safeRender('stats', renderStats);
+  safeRender('store', renderStore);
+  safeRender('readout', () => renderReadout(null));
+  safeRender('trend', renderChart);
+  safeRender('heat', renderHeatmap);
+  safeRender('weekly', renderWeekly);
+  safeRender('donut', renderDonut);
+  safeRender('scatter', renderScatter);
+  safeRender('radar', renderRadar);
+  safeRender('insights', renderInsights);
+  safeRender('breakdown', renderBreakdown);
   document.getElementById('feed').textContent = 'sampled every ' + sampleSeconds() + 's';
 }
 

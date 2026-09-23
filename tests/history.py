@@ -950,6 +950,16 @@ def page_checks():
           ".panel{background:rgba(var(--card),var(--card-alpha));border:1px solid var(--line);border-radius:16px;" in page
           and ".stat{background:var(--card-2);border:1px solid var(--line);border-radius:12px;" in page,
           "the panels and stat tiles must share the refined radii")
+    check("the history page has a focus ring",
+          ":focus-visible{outline:2px solid var(--accent)" in page,
+          "the page's custom controls must show where the keyboard is")
+    check("the history page clears the fixed support pill on a phone",
+          "@media (max-width:640px){ body{padding:14px 14px 68px} }" in page,
+          "the pill covers the last panel under 640px otherwise")
+    check("one failed panel does not abort the rest",
+          "function safeRender" in page and "function reportRenderError" in page
+          and "out.catch(e => reportRenderError(name, e))" in page,
+          "a malformed series used to abort every later panel")
     check("the page remembers the three controls client-side",
           "localStorage" in page and "quota-panel:history" in page
           and "function applyStoredSettings" in page and "function saveSettings" in page,
