@@ -14,6 +14,8 @@ had costs the panel its image and nothing else.
 
 Runs in about half a minute and needs nothing but the standard library.
 """
+import base64
+import hashlib
 import json
 import os
 import re
@@ -392,17 +394,22 @@ def main():
         status, ctype, body = get(base + "/")
         status, headers = head_headers(base + "/")
         csp = headers.get("Content-Security-Policy", "")
+        # The hash must match the script the browser will actually parse: compute it from the
+        # served body rather than trusting that some sha256 token is present.
+        inline = "".join(re.findall(r"<script(?:\s[^>]*)?>(.*?)</script>", body.decode("utf-8"), re.S))
+        want = "'sha256-" + base64.b64encode(hashlib.sha256(inline.encode("utf-8")).digest()).decode() + "'"
         check("the pages are served under a content security policy",
               status == 200 and "default-src 'self'" in csp and "script-src 'self' " in csp
-              and "sha256-" in csp and "'unsafe-inline'" not in csp.split("style-src")[0],
-              "csp=%r" % csp[:160])
+              and want in csp and "'unsafe-inline'" not in csp.split("style-src")[0],
+              "csp=%r want=%s" % (csp[:160], want))
         check("the pages refuse framing and referrer leakage",
               headers.get("X-Frame-Options") == "DENY"
               and headers.get("Referrer-Policy") == "no-referrer",
               "frame=%r referrer=%r" % (headers.get("X-Frame-Options"), headers.get("Referrer-Policy")))
+        inline_attr = re.compile(r"\son[a-z]+\s*=")
         check("no page ships an inline event handler",
-              "onerror=" not in open(os.path.join(ROOT, "static", "index.html"), encoding="utf-8").read()
-              and "onerror=" not in open(os.path.join(ROOT, "static", "history.html"), encoding="utf-8").read(),
+              not inline_attr.search(open(os.path.join(ROOT, "static", "index.html"), encoding="utf-8").read())
+              and not inline_attr.search(open(os.path.join(ROOT, "static", "history.html"), encoding="utf-8").read()),
               "an inline handler defeats the script policy")
         check("GET / is HTML", status == 200 and "text/html" in ctype, "%s %s" % (status, ctype))
         check("GET / renders the panel", b"Quota Panel" in body)

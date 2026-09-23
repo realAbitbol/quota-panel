@@ -517,6 +517,18 @@ def main():
         finally:
             app.STATE = saved_state
         check("a non-string currency does not 500 /api/homepage", ok, detail)
+        # An empty explicit id falls back to the positional default, and must not be rejected by
+        # the charset rule for a provider whose name carries an underscore.
+        import tempfile
+        fd, cfg_path = tempfile.mkstemp(suffix=".json")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                json.dump({"accounts": [{"id": "", "provider": "opencode_go", "token": "t"}]}, fh)
+            loaded = app.load_accounts(cfg_path)
+            check("an empty explicit id falls back instead of being rejected",
+                  bool(loaded) and loaded[0]["id"] == "opencode_go-1", str(loaded))
+        finally:
+            os.unlink(cfg_path)
 
         # ---- a 404 is not a diagnosis the adapter is entitled to make ---------
         res = run("commandcode", {"/alpha/whoami": (404, {"error": "not found"})}, base)

@@ -21,7 +21,8 @@ permissions:
 
 # Two pushes to main can overlap, and an older build finishing last would publish itself as
 # :latest. A newer PULL REQUEST run cancels an older one; a push to main is not cancelled,
-# because cancelling mid-publish can leave a tag pushed while the job reports cancelled.
+# because cancelling mid-publish can leave a tag pushed while the job reports cancelled. The
+# residual :latest race on overlapping main pushes is accepted for that reason.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}

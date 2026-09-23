@@ -646,6 +646,7 @@ def maintain(conn, config, now_ts=None):
         "malformed": 0,
         "balance_kept_unrolled": 0,
         "alerts_deleted": 0,
+        "series_deleted": 0,
     }
 
     frontier = iso_to_epoch(_meta_get(conn, "rollup_frontier"))
