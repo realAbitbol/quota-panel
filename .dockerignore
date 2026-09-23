@@ -6,13 +6,17 @@ docs
 tests
 *.md
 *.db
+*.db-*
 __pycache__
+.ruff_cache
+.cortexkit
+.superpowers
 .gitignore
 
 # Credential SHAPES, not the two names someone happened to think of — `accounts.local.json` was
 # listed while `my-accounts.json` and `accounts.json.bak` were not, and this is a public repo.
 # accounts.example.json is the one accounts file meant to be public.
-accounts*.json
+accounts*
 !accounts.example.json
 .env*
 *.env

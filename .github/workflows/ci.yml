@@ -87,6 +87,14 @@ jobs:
       - name: Balance providers, registry and icons
         run: python tests/balance.py
 
+      - name: Background image shrink (Pillow)
+        # Before the screenshot step, not after: the screenshot harness only exercises the
+        # artwork path when Pillow can generate a backdrop, so installing it later made that
+        # check silently vacuous in CI. Pinned to match the Dockerfile.
+        run: |
+          pip install --quiet pillow==12.3.0
+          python tests/background.py
+
       - name: Screenshot harness (real render, real Chromium)
         id: browser
         # py_compile only proved the harness parses. The DOM contract it depends on
@@ -126,13 +134,6 @@ jobs:
           SCREENSHOT_BROWSER: ${{ steps.browser.outputs.path }}
           QUOTA_POLL_SECONDS: "10"
         run: python tests/tab_switch.py
-
-      - name: Background image shrink (Pillow)
-        run: |
-          # Pinned and matching the Dockerfile: this script asserts exact re-encoded
-          # dimensions and byte sizes, so a Pillow major must not arrive unannounced.
-          pip install --quiet pillow==12.3.0
-          python tests/background.py
 
   docker:
     name: build and push image

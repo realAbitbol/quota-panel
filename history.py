@@ -13,7 +13,7 @@ The shape is the one this repository already shipped and then removed (commit 4a
 kept because each part was measured, with the two defects that killed it addressed:
 
   * **Growth is bounded, and the rollup IS the record.** Measured on the removed layer: a
-    60 s cadence over twelve series is ~6.3 M rows and ~350-400 MB a year. Raw samples are
+    60 s cadence over twelve series is ~1.7 GB a year (~0.35 GB at the 300 s default). Raw samples are
     therefore kept `raw_days`, and older history survives as pre-aggregated buckets kept
     `rollup_days`. Buckets store n / sum / min / max, so re-aggregating a rollup is exact
     instead of an average of averages.

@@ -47,11 +47,15 @@ docker run -d \
   --restart unless-stopped \
   -p 127.0.0.1:8080:8080 \
   -v "$PWD/accounts.json:/config/accounts.json:ro" \
+  -v quota-panel-data:/data \
   ghcr.io/realabitbol/quota-panel:latest
 ```
 
 Write the config first: the container polls nothing without it, and a bind mount onto a missing path
-leaves a *directory* in its place. Then open <http://localhost:8080>.
+leaves a *directory* in its place. The `/data` volume is where the shipped example's usage history
+writes; without it the store lands in the container's ephemeral layer and is lost on recreate. Turn
+that layer off with `"history": { "enabled": false }` if you do not want it. Then open
+<http://localhost:8080>.
 
 There is no built-in login and the page shows labels, plan names and spend, so the port stays on
 loopback — put it behind an authenticating proxy. A LAN dashboard (Homepage, Dashy, Glance) is the
@@ -137,7 +141,7 @@ docker run -d -p 127.0.0.1:8080:8080 \
 | `provider` | yes | One of the providers above. Anything else is refused at startup. |
 | `label` | no | Card title, defaults to `id`. |
 | `token` / `token_env` / `token_file` | one of the three | The key, the *name* of an env var holding it, or a path to a file holding it. Precedence: `token` → `token_env` → `token_file`; none at all is a non-fatal `auth_error`. |
-| `poll_seconds` | no | Seconds between polls, `10`–`3600`. Default `60`. |
+| `poll_seconds` | no | Seconds between polls, `10`–`3600`. Default `60`. Top level of the file, not per account. |
 | `background_url` | no | Page artwork: an `http(s)` URL (top level of the file), `"none"` for no artwork, or absent for the default wallpaper (hotlinked). Fetched once, capped at 4K, re-encoded as WebP. |
 
 `id` keys everything (`/api/quota`, the Homepage map, the error list). Set it explicitly — omitting it
@@ -151,7 +155,7 @@ falls back to a positional `<provider>-<index>`, and duplicates are fatal.
 | Variable | Default | Meaning |
 |---|---|---|
 | `PORT` | `8080` | Listen port. |
-| `QUOTA_CONFIG` | `/config/accounts.json` | Config path. |
+| `QUOTA_CONFIG` | `/config/accounts.json` | Config path (inside the image; outside it, `./accounts.json`). |
 | `QUOTA_POLL_SECONDS` | `60` | Poll interval **fallback** — `poll_seconds` in the config file wins. |
 | `QUOTA_HTTP_TIMEOUT` | `20` | Per-request timeout, in seconds. |
 | `QUOTA_CURRENCY` | `USD` | Currency reported for a multi-currency balance. |
@@ -159,7 +163,7 @@ falls back to a positional `<provider>-<index>`, and duplicates are fatal.
 | `QUOTA_BACKGROUND_DIR` | `/tmp/quota-panel` | Where the fetched artwork is stored. |
 | `QUOTA_BACKGROUND_TIMEOUT` | `20` | Artwork fetch timeout, in seconds. |
 
-Every provider also has a `*_API_BASE` override so the test suite can point an adapter at a local stub; nothing in production needs them.
+Every provider also has a base-URL override (`COMMANDCODE_API_BASE`, `OPENCODE_GO_USAGE_URL`, `Z_AI_API_BASE`, …) so the test suite can point an adapter at a local stub; nothing in production needs them.
 
 ### Usage history
 
@@ -175,7 +179,7 @@ days; the window that stands for an account is the widest its label names. A mon
 (its own tables, shown as a balance, drawdown-from-peak as the radar's **cost burn**), and the page
 states under the controls what the store keeps and what the range is made of.
 
-It ships on, in `accounts.example.json` and `docker-compose.yml`:
+It ships on in `accounts.example.json` (`docker-compose.yml` mounts the `/data` volume it writes to):
 
 ```json
 "history": { "enabled": true, "path": "/data/quota.db", "sample_seconds": 300,
@@ -230,12 +234,12 @@ Each item also carries `percent` and `resets_at`, so a tile can render a progres
 
 ## Security
 
-* Read-only, outbound only: one `GET` per provider plus one artwork fetch at startup. No write path.
+* Read-only, outbound only: a `GET` per provider call (CommandCode issues up to four), a startup artwork fetch that retries until it succeeds, and — only when `alert_url` is set — a `POST` per alert. No write path.
 * Credentials are read at startup, held in memory, never logged or returned by any endpoint, and sent
   only to the provider that owns them. The suite's stub echoes the `Authorization` header it received;
   no served body may contain it.
 * No built-in login — run it behind something that authenticates, keep the port on loopback, and keep
-  an inline-token `accounts.json` at mode `600`/`640`.
+  an inline-token `accounts.json` at mode `600`/`640` **owned by uid 10001** (`chown 10001 accounts.json`): the container's user cannot read a `600` file owned by someone else.
 * The container runs unprivileged (uid 10001); `docker-compose.yml` also sets a read-only rootfs,
   `cap_drop: ALL` and `no-new-privileges`. For a bare `docker run`, add
   `--read-only --tmpfs /tmp:rw,size=32m,noexec,nosuid,nodev --cap-drop ALL --security-opt no-new-privileges:true`.
