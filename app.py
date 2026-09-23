@@ -572,7 +572,16 @@ def iso_from_reset(value):
         if not text:
             return None
         if text.endswith("Z") or "T" in text:
-            return text
+            # An offset-bearing stamp is normalised to UTC: history's iso_to_epoch only parses a
+            # trailing Z, so anything else was silently dropped from the reset markers.
+            try:
+                parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+            except ValueError:
+                return None
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return (parsed.astimezone(timezone.utc).replace(microsecond=0)
+                    .isoformat().replace("+00:00", "Z"))
         value = num(text)
         if value is None:
             return None
@@ -581,7 +590,13 @@ def iso_from_reset(value):
         return None
     if ts > 1e12:  # milliseconds
         ts = ts / 1000.0
-    return datetime.fromtimestamp(ts, timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    if ts > 253402300799:  # beyond year 9999: no plan resets there
+        return None
+    try:
+        return (datetime.fromtimestamp(ts, timezone.utc).replace(microsecond=0)
+                .isoformat().replace("+00:00", "Z"))
+    except (ValueError, OSError, OverflowError):
+        return None
 
 
 def window_entry(key, label, percent, used=None, cap=None, resets_at=None, note=None):

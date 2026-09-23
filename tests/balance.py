@@ -475,6 +475,20 @@ def main():
         scrubbed_key = list(app._scrub_result({LONG_KEY: "x"}, LONG_KEY))[0]
         check("a credential-shaped dict key is scrubbed too", scrubbed_key == "***",
               repr(scrubbed_key))
+        # A provider can send any epoch it likes. An out-of-range stamp must read as "no window",
+        # not raise inside the adapter and degrade the whole account to internal_error.
+        for bad in (1000000000000, 1700000000000000, 253402300800):
+            try:
+                got = app.iso_from_reset(bad)
+            except Exception as e:                    # noqa: BLE001 - the failure is the point
+                got = "%s: %s" % (type(e).__name__, e)
+            check("iso_from_reset(%s) is None, not an exception" % bad, got is None, repr(got))
+        check("iso_from_reset normalises an offset stamp to UTC Z",
+              app.iso_from_reset("2026-01-01T00:00:00+02:00") == "2025-12-31T22:00:00Z",
+              repr(app.iso_from_reset("2026-01-01T00:00:00+02:00")))
+        check("iso_from_reset still accepts a plain Z stamp",
+              app.iso_from_reset("2026-01-01T00:00:00Z") == "2026-01-01T00:00:00Z",
+              repr(app.iso_from_reset("2026-01-01T00:00:00Z")))
 
         # ---- a 404 is not a diagnosis the adapter is entitled to make ---------
         res = run("commandcode", {"/alpha/whoami": (404, {"error": "not found"})}, base)
