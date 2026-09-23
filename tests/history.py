@@ -931,6 +931,10 @@ def page_checks():
     check("the page has one honest scale: the real percent, no scale selector",
           "scale-select" not in page and "Own scale" not in page,
           "a second scale is a second story about the same numbers")
+    check("the history panels carry the calmer chrome",
+          ".panel{background:rgba(var(--card),var(--card-alpha));border:1px solid var(--line);border-radius:16px;" in page
+          and ".stat{background:var(--card-2);border:1px solid var(--line);border-radius:12px;" in page,
+          "the panels and stat tiles must share the refined radii")
 
     heat = page.split("async function renderHeatmap()")[1].split("// ---")[0] if \
         "async function renderHeatmap()" in page else ""

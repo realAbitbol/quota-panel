@@ -48,11 +48,11 @@
   @media (prefers-reduced-motion:no-preference){ body{background-attachment:fixed} }
   header{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:18px;
        background:rgba(var(--card),var(--card-alpha));
-       border:1px solid var(--line);border-radius:14px;padding:14px 16px;
+       border:1px solid var(--line);border-radius:16px;padding:12px 16px;
        backdrop-filter:blur(var(--card-blur));-webkit-backdrop-filter:blur(var(--card-blur))}
   h1{font-size:19px;margin:0;letter-spacing:.2px}
   h2{font-size:14px;margin:0 0 4px;letter-spacing:.2px}
-  .sub{font-size:11.5px;color:var(--muted);margin-bottom:12px}
+  .sub{font-size:11.5px;color:var(--dim);margin-bottom:12px}
   .logo{width:28px;height:28px;border-radius:8px;flex:0 0 auto;align-self:center;display:block}
   .muted{color:var(--muted);font-size:12.5px}
   /* Same position as the live panel's entry point: the last thing in the header, flush right. */
@@ -71,30 +71,31 @@
     .nav:hover{background:rgba(var(--accent-rgb),.26);box-shadow:0 0 0 3px rgba(var(--accent-rgb),.09)}
   }
   .nav:active{transform:translateY(1px)}
+  .nav.on{color:#fff;background:rgba(var(--accent-rgb),.22);border-color:var(--accent);cursor:default}
   @media (prefers-reduced-motion:no-preference){
     .nav{transition:color .15s,border-color .15s,background .15s,box-shadow .15s}
   }
   main{display:flex;flex-direction:column;gap:16px}
-  .panel{background:rgba(var(--card),var(--card-alpha));border:1px solid var(--line);border-radius:14px;
-       padding:16px;backdrop-filter:blur(var(--card-blur));-webkit-backdrop-filter:blur(var(--card-blur))}
+  .panel{background:rgba(var(--card),var(--card-alpha));border:1px solid var(--line);border-radius:16px;
+       padding:18px;backdrop-filter:blur(var(--card-blur));-webkit-backdrop-filter:blur(var(--card-blur))}
   .controls{display:flex;flex-wrap:wrap;gap:14px 18px;align-items:center;margin-bottom:16px}
   .controls label{font-size:12px;color:var(--muted);display:flex;gap:6px;align-items:center}
-  select{background:var(--card-2);color:var(--fg);border:1px solid var(--line);border-radius:8px;
+  select{background:var(--card-2);color:var(--fg);border:1px solid var(--line);border-radius:9px;
        padding:5px 8px;font:inherit;font-size:12.5px}
   .stats{display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));margin-bottom:16px}
-  .stat{background:var(--card-2);border:1px solid var(--line);border-radius:11px;padding:11px 13px}
-  .stat .k{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px}
-  .stat .v{font-size:21px;font-weight:600;margin-top:3px;font-variant-numeric:tabular-nums}
+  .stat{background:var(--card-2);border:1px solid var(--line);border-radius:12px;padding:12px 14px}
+  .stat .k{font-size:10.5px;color:var(--dim);text-transform:uppercase;letter-spacing:.5px}
+  .stat .v{font-size:22px;font-weight:700;margin-top:3px;letter-spacing:-.02em;font-variant-numeric:tabular-nums}
   .stat .s{font-size:11.5px;color:var(--muted);margin-top:2px}
   .chart-wrap{position:relative;width:100%}
   svg{display:block;width:100%;height:auto;overflow:visible}
   /* AIMeter's legend: a dot, a name, and a click that shows that line alone. */
   .legend{display:flex;flex-wrap:wrap;gap:6px 16px;margin-top:12px}
-  .legend button{background:none;border:0;color:var(--muted);font:inherit;font-size:12px;cursor:pointer;
+  .legend button{background:none;border:0;color:var(--dim);font:inherit;font-size:12px;cursor:pointer;
        padding:0;display:flex;align-items:center;gap:7px}
   .legend button.off{opacity:.35}
   .legend .dot{width:8px;height:8px;border-radius:50%;flex:0 0 auto}
-  .readout{margin-top:10px;font-size:12.5px;color:var(--muted);min-height:20px;
+  .readout{margin-top:10px;font-size:12.5px;color:var(--dim);min-height:20px;
        font-variant-numeric:tabular-nums;border-top:1px dashed var(--line);padding-top:9px}
   .readout b{color:var(--fg);font-weight:600}
   /* The intensity map, laid out like AIMeter's: a fixed name column, then one equal column per day,
@@ -111,7 +112,7 @@
        font-size:11.5px;color:var(--muted)}
   .heat-legend .row{display:flex;gap:3px}
   .heat-legend .sw{width:12px;height:12px;border-radius:3px;background:var(--accent)}
-  .note{font-size:12px;color:var(--muted);margin-top:12px;line-height:1.45}
+  .note{font-size:12px;color:var(--dim);margin-top:12px;line-height:1.45}
   /* A link inside a sentence is a link, not a button: the pill is the header's one control. */
   .note a{color:var(--accent)}
   .empty{padding:22px 4px;color:var(--muted)}
@@ -123,7 +124,7 @@
   @media (min-width:980px){ .grid-2{grid-template-columns:1fr 1fr} }
   .panel-head{display:flex;align-items:center;gap:8px}
   .panel-head .bar{width:3px;height:15px;border-radius:2px;background:var(--accent);flex:0 0 auto}
-  .panel-head h2{font-size:13.5px}
+  .panel-head h2{font-size:13.5px;font-weight:650}
   .skel{position:relative;overflow:hidden;background:rgba(255,255,255,.06);border-radius:8px}
   .skel::after{content:"";position:absolute;inset:0;transform:translateX(-100%);
        background:linear-gradient(90deg,transparent,rgba(255,255,255,.09),transparent);
@@ -136,7 +137,7 @@
   .insight-grid{display:grid;grid-template-columns:1fr;gap:12px}
   @media (min-width:700px){ .insight-grid{grid-template-columns:1fr 1fr} }
   @media (min-width:1200px){ .insight-grid{grid-template-columns:1fr 1fr 1fr} }
-  .insight{border:1px solid var(--line);border-radius:11px;padding:12px;background:var(--card-2)}
+  .insight{border:1px solid var(--line);border-radius:12px;padding:12px;background:var(--card-2)}
   .insight .top{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:9px}
   .insight .tiles{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:9px}
   .insight .tile{background:rgba(0,0,0,.18);border-radius:8px;padding:6px 8px;display:flex;
@@ -164,7 +165,8 @@
   <img class="logo" src="/static/favicon.svg" width="28" height="28" alt="">
   <h1>Usage history</h1>
   <span class="muted" id="feed"></span>
-  <a class="nav spacer" href="/"><svg viewBox="0 0 320 512" aria-hidden="true"><path d="M9.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l192 192c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L77.3 256 246.6 86.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-192 192z"/></svg>Live panel</a>
+  <a class="nav spacer" href="/"><svg viewBox="0 0 320 512" aria-hidden="true"><path d="M9.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l192 192c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L77.3 256 246.6 86.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-192 192z"/></svg>Dashboard</a>
+  <span class="nav on" aria-current="page">History</span>
 </header>
 
 <main>
