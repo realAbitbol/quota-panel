@@ -139,6 +139,25 @@ def storage_checks():
     loaded, notes = history.load_config(ok_cfg, env={})
     check("an http(s) alert_url is kept", loaded["alert_url"] == "https://example.test/hook",
           "alert_url=%r" % loaded["alert_url"])
+    # A retired account/window leaves its `series` row behind. It is a label cache, not a record,
+    # so it must be pruned with the rollups rather than growing forever.
+    prune_path = fresh(os.path.join(WORK, "series_prune.db"))
+    conn = history.connect(prune_path)
+    old_iso = history.epoch_to_iso(NOW - 400 * 86400)
+    new_iso = history.epoch_to_iso(NOW - 10 * 86400)
+    for account_id, stamp in (("retired", old_iso), ("live", new_iso)):
+        conn.execute(
+            "INSERT INTO series (account_id, window_key, account_label, provider, window_label, "
+            "kind, first_ts, last_ts) VALUES (?,?,?,?,?,?,?,?)",
+            (account_id, "w", account_id, "zai", "W", "window", stamp, stamp),
+        )
+    conn.commit()
+    report = history.maintain(conn, config(rollup_days=365), now_ts=NOW)
+    remaining = {row["account_id"] for row in conn.execute("SELECT account_id FROM series")}
+    conn.close()
+    check("a retired series row is pruned with the rollups",
+          "retired" not in remaining and "live" in remaining and report.get("series_deleted") == 1,
+          "remaining=%s report=%s" % (remaining, report.get("series_deleted")))
     refused, message = history.resolve_range(
         {"since": ["2026-01-01T00:00:00Z"], "days": ["abc"]}, NOW)
     check("a malformed hours/days is refused even when since is given",

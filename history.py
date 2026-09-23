@@ -782,6 +782,11 @@ def maintain(conn, config, now_ts=None):
         # is not a record anyone can act on.
         alerts_cursor = conn.execute("DELETE FROM alerts WHERE at < ?", (epoch_to_iso(now_ts - int(config["rollup_days"]) * 86400),))
         report["alerts_deleted"] = max(0, alerts_cursor.rowcount or 0)
+        # The series map is a label cache, not a record: a row whose last sample is older than the
+        # rollup window belongs to an account or window that no longer reports. Without this it grew
+        # forever, one row per retired account/window pair.
+        series_cursor = conn.execute("DELETE FROM series WHERE last_ts < ?", (epoch_to_iso(now_ts - int(config["rollup_days"]) * 86400),))
+        report["series_deleted"] = max(0, series_cursor.rowcount or 0)
         _meta_set(conn, "pruned_at", now_ts)
         conn.commit()
     return report
