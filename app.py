@@ -1123,7 +1123,8 @@ def homepage_widgets():
                 # A gethomepage customapi tile shows text, so a balance becomes the
                 # value: "$12.40" reads correctly in a tile where "40% used" would not.
                 amount = win.get("amount")
-                currency = win.get("currency") or "USD"
+                currency = win.get("currency")
+                currency = currency if isinstance(currency, str) and currency else "USD"
                 symbol = {"USD": "$", "CNY": "¥", "EUR": "€"}.get(currency, "")
                 if amount is None:
                     value = win.get("note") or "—"

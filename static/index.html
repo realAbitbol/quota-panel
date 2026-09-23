@@ -707,7 +707,8 @@ async function load(){
     // own age and make every payload look permanently fresh (dataAge() would read 0 and isStale()
     // could never fire). A server that sends no `now` gets no offset.
     const serverClock = fresh.now;
-    clockSkew = serverClock ? (Date.parse(serverClock) - Date.now()) : 0;
+    const skewAt = serverClock ? Date.parse(serverClock) : NaN;
+    clockSkew = isNaN(skewAt) ? 0 : skewAt - Date.now();
     lastOkAt = Date.now();
     failStreak = 0;
     lastError = '';

@@ -240,6 +240,9 @@ def ui_checks():
     check("the status strip omits the reset clause when no reset parses",
           "isFinite(soonest)" in page,
           "an unparseable resets_at must not print NaN")
+    check("a malformed server clock does not become NaN",
+          "clockSkew = isNaN(skewAt) ? 0 : skewAt - Date.now();" in page,
+          "a non-empty but unparseable `now` must fall back to 0, not NaN")
     # One flag from /api/quota reveals the entry point, and that is the whole cost of an
     # optional feature on the live page: a second feed here would make every install pay for a
     # layer most of them leave off.

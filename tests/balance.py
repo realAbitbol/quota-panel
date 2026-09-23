@@ -497,6 +497,26 @@ def main():
               "sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))" in pb_src
               and "os.path.dirname(os.path.dirname(os.path.abspath(__file__)))" not in pb_src,
               "the extra dirname put the project's parent on sys.path")
+        # A provider's `currency` is remote text: a list/dict made the symbol lookup raise and the
+        # whole /api/homepage 500 until the next poll. It must degrade to a plain string, not crash.
+        saved_state = app.STATE
+        app.STATE = {
+            "generated_at": "2026-01-01T00:00:00Z",
+            "accounts": [{
+                "id": "x-1", "label": "X", "state": "ok", "error": None,
+                "windows": [{"key": "bal", "label": "Balance", "kind": "balance", "percent": None,
+                             "amount": 12.5, "currency": ["USD"], "resets_at": ""}],
+            }],
+        }
+        try:
+            widgets = app.homepage_widgets()["widgets"]
+            ok = any(w.get("value") == "$12.50" for w in widgets)
+            detail = str(widgets)[:120]
+        except Exception as e:                        # noqa: BLE001 - the failure is the point
+            ok, detail = False, "%s: %s" % (type(e).__name__, e)
+        finally:
+            app.STATE = saved_state
+        check("a non-string currency does not 500 /api/homepage", ok, detail)
 
         # ---- a 404 is not a diagnosis the adapter is entitled to make ---------
         res = run("commandcode", {"/alpha/whoami": (404, {"error": "not found"})}, base)
