@@ -525,6 +525,51 @@ def main():
         err = res.get("error") or ""
         check("CommandCode 404: does not assert a plan cause from a 404",
               "route was not found" in err and "plan" in err and "moved or renamed" in err, err)
+        # ---- the window adapters' SUCCESS paths ------------------------------
+        # Before this, only the 404 branch was driven: a wrong percent formula or a dropped window
+        # shipped green, because the success shape lived only in the screenshot stub.
+        cc = run("commandcode", {
+            "/alpha/whoami": {"success": True, "user": {"id": "u", "name": "Ada"}, "org": None},
+            "/alpha/billing/credits": {
+                "credits": {"belowThreshold": False, "creditThreshold": 0, "monthlyCredits": 62.13,
+                            "purchasedCredits": 0, "freeCredits": 0},
+                "windowLimits": {"limited": True, "exceeded": None,
+                                 "fiveHour": {"used": 0.35, "cap": 14, "exceeded": False,
+                                              "resetAt": 1790004492475},
+                                 "weekly": {"used": 7.87, "cap": 35, "exceeded": False,
+                                            "resetAt": 1790352668025}}},
+            "/alpha/billing/subscriptions": {"success": True, "data": {
+                "status": "active", "planId": "individual-goat", "quantity": 1,
+                "currentPeriodStart": "2026-09-18T09:30:47.000Z",
+                "currentPeriodEnd": "2026-10-18T09:30:47.000Z"}},
+            "/alpha/usage/summary": {"totalCount": 3008, "totalCost": 7.73, "successRate": 100,
+                                     "completedCount": 3008, "failedCount": 0,
+                                     "totalTokensIn": 379798851, "totalTokensOut": 4718163,
+                                     "totalCredits": 7.73, "periodBasis": "billing-period"},
+        }, base)
+        cc_percents = sorted(round(w["percent"], 2) for w in cc.get("windows") or []
+                             if w.get("percent") is not None)
+        check("commandcode success: state is ok with the three windows",
+              cc["state"] == "ok" and len(cc.get("windows") or []) == 3,
+              "%s %s" % (cc.get("state"), cc.get("windows")))
+        check("commandcode success: the window percentages come from used/cap",
+              2.5 in cc_percents and 22.49 in cc_percents, str(cc_percents))
+
+        # OpenCode Go's base is a full URL, not a `*_BASE`, so it is redirected explicitly.
+        saved_go_url = app.OG_USAGE_URL
+        app.OG_USAGE_URL = base + "/zen/go/v1/usage"
+        try:
+            go = run("opencode_go", {"/zen/go/v1/usage": {"usage": {
+                "rolling": {"percent": 2, "resetsAt": 1790004492},
+                "weekly": {"percent": 22, "resetsAt": 1790352668},
+                "monthly": {"percent": 84, "resetsAt": 1792320000}}}}, base)
+        finally:
+            app.OG_USAGE_URL = saved_go_url
+        go_percents = sorted(w["percent"] for w in go.get("windows") or []
+                             if w.get("percent") is not None)
+        check("opencode_go success: the three window percentages are read verbatim",
+              go["state"] == "ok" and go_percents == [2, 22, 84],
+              "%s %s" % (go.get("state"), go_percents))
 
         # ---- the guard that matters: never fabricate a zero -------------------
         for provider, path, junk, expect in (

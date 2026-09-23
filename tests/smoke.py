@@ -423,6 +423,8 @@ def main():
               all(ch.encode("utf-8") not in body for ch in ("\u23f0", "\U0001f504", "\u26a0",
                                                               "\u26d4"))
               and b"\ufe0f" not in body)
+        status, _, _ = get(base + "/no-such-route")
+        check("an unknown path is a 404, not a 500 or a hang", status == 404, str(status))
 
         status, ctype, body = get(base + "/static/favicon.svg")
         check("GET /static/favicon.svg", status == 200 and "image/svg" in ctype, "%s %s" % (status, ctype))
