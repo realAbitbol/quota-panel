@@ -936,13 +936,12 @@ def main():
                 rising: Array.from(document.querySelectorAll('#chart svg path'))
                           .filter(p => p.getAttribute('stroke') !== 'none')
                           .map(p => {
-                            const len = p.getTotalLength();
-                            if (!len) return 1;
+                            const nums = (p.getAttribute('d') || '').match(/-?\\d+(?:\\.\\d+)?/g) || [];
                             const ys = [];
-                            for (let i = 0; i <= 60; i++) ys.push(p.getPointAtLength(len * i / 60).y);
+                            for (let i = 1; i < nums.length; i += 2) ys.push(parseFloat(nums[i]));
                             let up = 0, moves = 0;
                             for (let i = 1; i < ys.length; i++) {
-                              if (Math.abs(ys[i] - ys[i - 1]) < 0.01) continue;
+                              if (ys[i] === ys[i - 1]) continue;
                               moves++;
                               if (ys[i] < ys[i - 1]) up++;
                             }
@@ -994,6 +993,11 @@ def main():
         # that was committed once drew a five-minute ripple on a monthly window. A counter rises on
         # nearly every step between renewals, so a drawn line that falls as often as it climbs is a
         # fixture artefact, whichever page-level check else passes.
+        # Measured on the path's own vertices, not on arc-length-sampled pixels: sampling by arc
+        # length spreads one renewal drop over many points, so a legitimate step-down read as a
+        # ripple and the ratio moved with the browser's path geometry (it failed on CI Chrome,
+        # passed on local Helium, on identical data). A vertex is a reading; a renewal drop is one
+        # down-step.
         rising = [round(value, 3) for value in (state.get("rising") or [])]
         check("the trend climbs between renewals rather than rippling",
               bool(rising) and min(rising) >= 0.6, str(rising))
