@@ -489,6 +489,14 @@ def main():
         check("iso_from_reset still accepts a plain Z stamp",
               app.iso_from_reset("2026-01-01T00:00:00Z") == "2026-01-01T00:00:00Z",
               repr(app.iso_from_reset("2026-01-01T00:00:00Z")))
+        check("a query string is stripped from a logged request path",
+              app.scrub_path("/api/history?token=secret&x=1") == "/api/history",
+              repr(app.scrub_path("/api/history?token=secret&x=1")))
+        pb_src = open(os.path.join(ROOT, "providers_balance.py"), encoding="utf-8").read()
+        check("providers_balance adds its own directory, not its parent, to sys.path",
+              "sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))" in pb_src
+              and "os.path.dirname(os.path.dirname(os.path.abspath(__file__)))" not in pb_src,
+              "the extra dirname put the project's parent on sys.path")
 
         # ---- a 404 is not a diagnosis the adapter is entitled to make ---------
         res = run("commandcode", {"/alpha/whoami": (404, {"error": "not found"})}, base)

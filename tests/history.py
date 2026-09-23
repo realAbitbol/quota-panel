@@ -124,6 +124,21 @@ def storage_checks():
     check("the environment can turn it on",
           env_only["enabled"] is True and env_only["path"] == os.path.join(WORK, "a.db") and not notes,
           "%s %s" % (env_only["enabled"], notes))
+    alert_cfg = os.path.join(WORK, "alert_url.json")
+    with open(alert_cfg, "w", encoding="utf-8") as fh:
+        json.dump({"history": {"enabled": True, "path": os.path.join(WORK, "store.db"),
+                               "alert_url": "file:///etc/hosts"}}, fh)
+    loaded, notes = history.load_config(alert_cfg, env={})
+    check("a non-http(s) alert_url is refused, not followed",
+          loaded["alert_url"] == "" and any("http" in n for n in notes),
+          "alert_url=%r notes=%r" % (loaded["alert_url"], notes))
+    ok_cfg = os.path.join(WORK, "alert_url_ok.json")
+    with open(ok_cfg, "w", encoding="utf-8") as fh:
+        json.dump({"history": {"enabled": True, "path": os.path.join(WORK, "store.db"),
+                               "alert_url": "https://example.test/hook"}}, fh)
+    loaded, notes = history.load_config(ok_cfg, env={})
+    check("an http(s) alert_url is kept", loaded["alert_url"] == "https://example.test/hook",
+          "alert_url=%r" % loaded["alert_url"])
 
     cfg = os.path.join(WORK, "cfg.json")
     with open(cfg, "w", encoding="utf-8") as fh:

@@ -250,6 +250,11 @@ def load_config(config_path=None, env=None):
                 parsed = value.strip() if isinstance(value, str) else None
                 if parsed is None:
                     notes.append("%s.alert_url must be a string — ignored" % source)
+                elif parsed and urllib.parse.urlparse(parsed).scheme not in ("http", "https"):
+                    # It is fetched with urlopen, so anything but http(s) is a local read or a
+                    # blind SSRF with no upside. Refuse it rather than follow it.
+                    notes.append("%s.alert_url must be http(s) — ignored (%r)" % (source, parsed))
+                    parsed = ""
             else:
                 parsed = as_int(value, key, "%s.%s" % (source, key))
             if parsed is not None:

@@ -163,6 +163,11 @@ def log(msg):
     print("[quota-panel] %s" % msg, flush=True)
 
 
+def scrub_path(path):
+    """A request path without its query string: a key in a query must not reach a log."""
+    return re.sub(r"\?[^ ]*", "", path) if isinstance(path, str) else path
+
+
 def now_iso():
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
@@ -1430,7 +1435,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             self._route()
         except Exception:  # noqa: BLE001 - the boundary is the point
-            log("handler error on %s:\n%s" % (self.path, traceback.format_exc()))
+            log("handler error on %s:\n%s" % (scrub_path(self.path), traceback.format_exc()))
             try:
                 self._json(500, {"error": "internal error"})
             except Exception:  # noqa: BLE001 - the client is already gone
@@ -1507,7 +1512,7 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 payload = module.payload(parse_qs(urlparse(self.path).query), HISTORY_CONFIG)
             except Exception as exc:  # noqa: BLE001 - the store is the only thing here that can fail
-                log("history query failed on %s: %s" % (self.path, exc))
+                log("history query failed on %s: %s" % (scrub_path(self.path), exc))
                 self._json(503, {"error": "history store unavailable", "detail": str(exc)})
                 return
             if payload.get("error"):
@@ -1590,7 +1595,7 @@ class Handler(BaseHTTPRequestHandler):
             # string must not write it into a log the container retains.
             cleaned = list(args)
             if cleaned and isinstance(cleaned[0], str):
-                cleaned[0] = re.sub(r"\?[^ ]*", "", cleaned[0])
+                cleaned[0] = scrub_path(cleaned[0])
             cleaned = tuple(cleaned)
             log("%s - %s" % (self.address_string(), fmt % cleaned))
 
