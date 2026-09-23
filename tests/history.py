@@ -949,6 +949,10 @@ def page_checks():
     check("a restored interval the range cannot afford falls back to Auto",
           "if(state.bucket && state.bucket < floor) state.bucket = 0;" in page,
           "an over-fine bucket would ask the server for more points than it allows")
+    check("the square charts draw into one square box",
+          "const SQUARE = 236" in page and "function scatterLegendHtml" in page
+          and 'id="radar-values"' in page,
+          "a radar or donut floating in a wide tile is unreadable")
 
     heat = page.split("async function renderHeatmap()")[1].split("// ---")[0] if \
         "async function renderHeatmap()" in page else ""

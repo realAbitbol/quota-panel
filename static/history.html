@@ -88,6 +88,20 @@
   .stat .v{font-size:22px;font-weight:700;margin-top:3px;letter-spacing:-.02em;font-variant-numeric:tabular-nums}
   .stat .s{font-size:11.5px;color:var(--muted);margin-top:2px}
   .chart-wrap{position:relative;width:100%}
+  .sq-side{display:flex;align-items:center;gap:18px;margin-top:12px}
+  .sq-side .chart-wrap{flex:0 0 236px;width:236px;max-width:100%;aspect-ratio:1/1}
+  .sq-side .legend{flex:1;margin-top:0;flex-direction:column;gap:8px}
+  .legend button .val{color:var(--dim);margin-left:6px;font-variant-numeric:tabular-nums}
+  .sq-list{list-style:none;margin:0;padding:0;flex:1}
+  .sq-list li{display:flex;align-items:center;justify-content:space-between;gap:12px;
+       padding:5px 0;border-bottom:1px solid var(--line);font-size:12px;color:var(--dim)}
+  .sq-list li:last-child{border-bottom:0}
+  .sq-list li b{color:var(--fg);font-weight:600;font-variant-numeric:tabular-nums}
+  .sq-list .dot{width:8px;height:8px;border-radius:50%;display:inline-block;margin-right:7px}
+  @media (max-width:700px){
+    .sq-side{flex-direction:column}
+    .sq-side .chart-wrap{flex:0 0 auto}
+  }
   svg{display:block;width:100%;height:auto;overflow:visible}
   /* AIMeter's legend: a dot, a name, and a click that shows that line alone. */
   .legend{display:flex;flex-wrap:wrap;gap:6px 16px;margin-top:12px}
@@ -208,8 +222,10 @@
     <section class="panel" id="donut-panel">
       <div class="panel-head"><span class="bar"></span><h2>Share of consumption</h2></div>
       <div class="sub">Average consumption share to identify dominant accounts.</div>
-      <div class="chart-wrap" id="donut"><div class="skel skel-chart"></div></div>
-      <div class="legend" id="donut-legend"></div>
+      <div class="sq-side">
+        <div class="chart-wrap" id="donut"><div class="skel skel-chart"></div></div>
+        <div class="legend" id="donut-legend"></div>
+      </div>
     </section>
   </div>
 
@@ -217,13 +233,18 @@
     <section class="panel" id="scatter-panel">
       <div class="panel-head"><span class="bar"></span><h2>Intensity vs volatility</h2></div>
       <div class="sub">X = average usage, Y = volatility, bubble size = active days.</div>
-      <div class="chart-wrap" id="scatter"><div class="skel skel-chart"></div></div>
-      <div class="legend" id="scatter-legend"></div>
+      <div class="sq-side">
+        <div class="chart-wrap" id="scatter"><div class="skel skel-chart"></div></div>
+        <div class="legend" id="scatter-legend"></div>
+      </div>
     </section>
     <section class="panel" id="radar-panel">
       <div class="panel-head"><span class="bar"></span><h2>Radar matrix</h2></div>
       <div class="sub">Average load, latest snapshot, peak pressure, volatility, cost burn.</div>
-      <div class="chart-wrap" id="radar"><div class="skel skel-chart"></div></div>
+      <div class="sq-side">
+        <div class="chart-wrap" id="radar"><div class="skel skel-chart"></div></div>
+        <ul class="sq-list" id="radar-values"></ul>
+      </div>
       <div class="note" id="radar-note"></div>
     </section>
   </div>
@@ -275,6 +296,9 @@ const REFRESH_MS = 60000;
 // number in both. Provider colours are for the trend, where identity is what a line has to carry.
 const HEAT_HUE = [0x5b, 0x8d, 0xff];     // the mix's own channels; --card-2 is what it mixes into
 const HEAT_CARD = [27, 33, 48];
+// The three charts whose natural shape is a square. Drawn into a square viewBox so the shape fills
+// its tile and every circle stays round, rather than floating in a half-width panel.
+const SQUARE = 236;
 
 const state = {hours:24, bucket:0, account:'', catalogue:null, primary:{}, data:null,
                daily:null, isolate:null, stale:null, clipped:null, requestId:0,
@@ -1349,9 +1373,9 @@ function renderDonut(){
     legend.innerHTML = '';
     return;
   }
-  const width = Math.max(280, host.clientWidth || 420), height = 210;
+  const width = SQUARE, height = SQUARE;
   const cx = width / 2, cy = height / 2;
-  const outer = Math.min(width, height) * 0.42, inner = outer * 0.62;
+  const outer = SQUARE * 0.42, inner = outer * 0.62;
   const R = (outer + inner) / 2, W = outer - inner, C = 2 * Math.PI * R;
   const total = metrics.reduce((sum, m) => sum + Math.max(0, m.mean || 0), 0) || 1;
   let offset = 0;
@@ -1381,6 +1405,21 @@ function renderDonut(){
   bindLegend('donut', renderDonut);
 }
 
+// The scatter's own legend: the same isolate-on-click buttons, each carrying the account's mean and
+// volatility, because a bubble's position is only useful next to its numbers.
+function scatterLegendHtml(metrics){
+  const active = state.panels.scatter;
+  return metrics.map(m =>
+    '<button type="button" data-key="' + esc(m.key) + '" class="'
+    + (active && active !== m.key ? 'off' : '')
+    + '" aria-pressed="' + (active === m.key ? 'true' : 'false')
+    + '" title="Click to show this one alone">'
+    + '<span class="dot" style="background:' + m.color + '"></span>'
+    + badgeHtml(m.provider, m.label)
+    + '<span class="val">' + fmtPercent(m.mean) + ' · vol ' + fmtPercent(m.volatility || 0) + '</span>'
+    + '</button>').join('');
+}
+
 function renderScatter(){
   const host = document.getElementById('scatter');
   const legend = document.getElementById('scatter-legend');
@@ -1392,8 +1431,8 @@ function renderScatter(){
     if(legend) legend.innerHTML = '';
     return;
   }
-  const width = Math.max(320, host.clientWidth || 460), height = 210;
-  const pad = {left: 38, right: 12, top: 10, bottom: 24};
+  const width = SQUARE, height = SQUARE;
+  const pad = {left: 34, right: 14, top: 14, bottom: 26};
   const plotW = width - pad.left - pad.right, plotH = height - pad.top - pad.bottom;
   const x = value => pad.left + (Math.max(0, Math.min(value, 100)) / 100) * plotW;
   const y = value => pad.top + plotH - (Math.max(0, Math.min(value, 100)) / 100) * plotH;
@@ -1415,7 +1454,7 @@ function renderScatter(){
   svg += '</svg>';
   host.innerHTML = svg;
   if(legend){
-    legend.innerHTML = legendHtml(metrics, 'scatter');
+    legend.innerHTML = scatterLegendHtml(metrics);
     bindLegend('scatter', renderScatter);
   }
 }
@@ -1431,8 +1470,8 @@ function renderRadar(){
     note.textContent = '';
     return;
   }
-  const width = Math.max(300, host.clientWidth || 420), height = 210;
-  const cx = width / 2, cy = height / 2, R = Math.min(width, height) * 0.36;
+  const width = SQUARE, height = SQUARE;
+  const cx = width / 2, cy = height / 2, R = SQUARE * 0.40;
   const dims = [
     {label: 'Average', value: m => m.mean || 0},
     {label: 'Latest', value: m => m.latest || 0},
@@ -1463,6 +1502,15 @@ function renderRadar(){
   });
   svg += '</svg>';
   host.innerHTML = svg;
+  const values = document.getElementById('radar-values');
+  if(values){
+    values.innerHTML = metrics.length === 1
+      ? '<li><b>' + esc(metrics[0].label) + '</b></li>'
+        + dims.map(d => '<li><span>' + esc(d.label) + '</span><b>'
+            + fmtPercent(d.value(metrics[0]) || 0) + '</b></li>').join('')
+      : metrics.map(m => '<li><span><span class="dot" style="background:' + m.color + '"></span>'
+            + esc(m.label) + '</span><b>' + fmtPercent(m.mean || 0) + '</b></li>').join('');
+  }
   const hasBalance = metrics.some(m => m.costBurn !== null && m.costBurn !== undefined);
   note.textContent = hasBalance
     ? 'Cost burn is the drawdown from each account’s own peak balance in range; an account with no balance record shows 0.'
