@@ -230,8 +230,12 @@ def ui_checks():
           'id="status-strip"' in page and 'class="card" id="status-strip"' not in page
           and "function setStatusStrip" in page,
           "the one-line summary must not be counted as an account card")
+    # Scoped to worstPercent's own body: the same guard lives in cardState, so a bare
+    # "the string exists somewhere" check would pass even with the strip's guard removed.
+    worst_body = (page.split("function worstPercent(acc){", 1)[1][:400]
+                  if "function worstPercent(acc){" in page else "")
     check("the status strip counts a missing percent as no pressure",
-          "function worstPercent" in page and "numericPercent(w.percent)" in page,
+          "let worst = -1;" in worst_body and "if(p !== null && p > worst) worst = p;" in worst_body,
           "a null percent must not read as 0% or 100%")
     check("the status strip omits the reset clause when no reset parses",
           "isFinite(soonest)" in page,

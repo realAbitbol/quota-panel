@@ -45,7 +45,7 @@
        background:rgba(var(--card),var(--card-alpha));
        border:1px solid var(--line);border-radius:16px;padding:12px 16px;
        backdrop-filter:blur(var(--card-blur));-webkit-backdrop-filter:blur(var(--card-blur))}
-  h1{font-size:19px;margin:0;letter-spacing:.2px}
+  h1{font-size:20px;margin:0;letter-spacing:-.01em;font-weight:650}
   .logo{width:28px;height:28px;border-radius:8px;flex:0 0 auto;align-self:center;display:block}
   .muted{color:var(--muted);font-size:12.5px}
   /* Inline Font Awesome Free 7.3.1 solid marks (icons CC BY 4.0, Fonticons Inc. — see License in
@@ -66,8 +66,8 @@
   .card.watch{border-color:#4b4021}
   .card.urgent{border-color:#5a2a26;box-shadow:inset 3px 0 0 var(--hot)}
   .card.broken{border-color:#5c2020;box-shadow:inset 3px 0 0 #8a3a32}
-  /* min() keeps the 310px track from forcing a horizontal scroll on a 320-338px viewport, where
-     the content box is narrower than the track's own minimum. */
+  /* Three columns on a wide monitor, two on a laptop, one on a phone. Explicit breakpoints rather
+     than auto-fill, so a 1440px viewport does not quietly become four narrow cards. */
   .grid{display:grid;gap:18px;grid-template-columns:1fr}
   @media (min-width:700px){ .grid{grid-template-columns:1fr 1fr} }
   @media (min-width:1100px){ .grid{grid-template-columns:1fr 1fr 1fr} }
@@ -107,7 +107,7 @@
   .bal-amount .cur{font-size:14px;font-weight:500;color:var(--muted);margin-left:4px}
   .bal-amount.empty{color:var(--warn)}
   .bal-note{font-size:11.5px;color:var(--muted);margin-top:3px}
-  .label{font-weight:600;font-size:15px;margin:0}   /* an h2: the card's title, for a reader */
+  .label{font-weight:650;font-size:15px;margin:0}   /* an h2: the card's title, for a reader */
   .plan{font-size:11.5px;color:var(--muted);margin-top:2px}
   /* A status light: a dot and one word about the reading on this card. Not a verdict on how the
      adapter that produced it was written — that is a maintainer's question, and answering it in
