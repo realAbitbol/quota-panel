@@ -236,12 +236,6 @@ const RETRY_MS = 15000;             // a failed fetch is retried sooner than a w
 const FRESH_MS = 900;               // how long the header mark turns after a payload lands
 const SOON_MS = 24 * 3600 * 1000;   // a refill this close is worth noticing on the card
 const FETCH_TIMEOUT_MS = 8000;      // below MIN_POLL_MS: a fetch must settle before the next one
-// The client polls exactly the interval the user configured, and the server republishes slightly
-// inside it. The other direction -- client waits a cadence and a bit -- is what made a 30s setting
-// refresh every 33s, and then forced the header to choose between printing 33 (not the number the
-// user set) or printing 30 (a number it did not wait). Neither is acceptable: the panel says the
-// configured interval and refreshes on it.
-const SERVER_MARGIN = 0.9;          // the server's own republish interval, as a fraction
 const RELOAD_AFTER = 3;          // consecutive failed fetches before the page attempts a reload
 const MAX_RELOADS = 3;           // …and never more than this many in one document
 
@@ -313,7 +307,7 @@ function setStatusStrip(accounts){
 }
 
 function esc(s){ return String(s === null || s === undefined ? '' : s)
-  .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+  .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
 
 // Font Awesome Free 7.3.1 solid, inlined: the icons are CC BY 4.0 (Fonticons, Inc.), and the
 // paths are pasted rather than fetched so the page keeps making no request of its own. `clock`
@@ -335,9 +329,6 @@ const ICON = {
   warning: '<span class="ic" aria-hidden="true"><svg viewBox="0 0 512 512"><path d="M256 0c14.7 0 28.2 8.1 35.2 21l216 400c6.7 12.4 6.4 27.4-.8 39.5S486.1 480 472 480L40 480c-14.1 0-27.2-7.4-34.4-19.5s-7.5-27.1-.8-39.5l216-400c7-12.9 20.5-21 35.2-21zm0 352a32 32 0 1 0 0 64 32 32 0 1 0 0-64zm0-192c-18.2 0-32.7 15.5-31.4 33.7l7.4 104c.9 12.5 11.4 22.3 23.9 22.3 12.6 0 23-9.7 23.9-22.3l7.4-104c1.3-18.2-13.1-33.7-31.4-33.7z"/></svg></span>',
   down: '<span class="ic" aria-hidden="true"><svg viewBox="0 0 512 512"><path d="M256 512a256 256 0 1 0 0-512 256 256 0 1 0 0 512zM167 167c9.4-9.4 24.6-9.4 33.9 0l55 55 55-55c9.4-9.4 24.6-9.4 33.9 0s9.4 24.6 0 33.9l-55 55 55 55c9.4 9.4 9.4 24.6 0 33.9s-24.6 9.4-33.9 0l-55-55-55 55c-9.4 9.4-24.6 9.4-33.9 0s-9.4-24.6 0-33.9l55-55-55-55c-9.4-9.4-9.4-24.6 0-33.9z"/></svg></span>',
 };
-
-// Paint the placeholder before the first poll lands, so the mark is there from the first frame
-// instead of appearing with the first payload.
 
 // clockSkew is (server clock - client clock), measured once per fetch. It exists ONLY to read
 // server-side stamps correctly (the age of the data, the reset countdowns) and deliberately plays

@@ -454,7 +454,7 @@ function fmtMoney(amount, currency){
 }
 
 function esc(s){ return String(s === null || s === undefined ? '' : s)
-  .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+  .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
 
 function fmtPercent(v){
   // A reading is never rounded into a different reading: 0.09% stays visible, and a missing
@@ -568,14 +568,6 @@ function requestKeys(){
     }
   });
   return keys;
-}
-
-// The map keeps one row per account whatever the trend is showing: a day is a day, and the row that
-// stands for an account is its standing window.
-function heatKeys(){
-  // The daily grid is the trend's own selection: one standing window per account, or every
-  // window of the one account that was asked for. Sharing it keeps every panel on one story.
-  return trendKeys();
 }
 
 function paramsFor(keys, extra){

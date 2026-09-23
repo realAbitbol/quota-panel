@@ -960,6 +960,12 @@ def page_checks():
           "function safeRender" in page and "function reportRenderError" in page
           and "out.catch(e => reportRenderError(name, e))" in page,
           "a malformed series used to abort every later panel")
+    check("the history page escapes the single quote too",
+          ".replace(/'/g,'&#39;')" in page,
+          "a future single-quoted attribute would become an injection point")
+    check("the history page carries no dead helper",
+          "function heatKeys" not in page,
+          "unused code reads as load-bearing")
     check("the page remembers the three controls client-side",
           "localStorage" in page and "quota-panel:history" in page
           and "function applyStoredSettings" in page and "function saveSettings" in page,

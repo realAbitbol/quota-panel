@@ -243,6 +243,12 @@ def ui_checks():
     check("a malformed server clock does not become NaN",
           "clockSkew = isNaN(skewAt) ? 0 : skewAt - Date.now();" in page,
           "a non-empty but unparseable `now` must fall back to 0, not NaN")
+    check("the live page escapes the single quote too",
+          ".replace(/'/g,'&#39;')" in page,
+          "a future single-quoted attribute would become an injection point")
+    check("the live page carries no dead constants or orphan comment",
+          "SERVER_MARGIN" not in page and "Paint the placeholder before the first poll" not in page,
+          "unused code reads as load-bearing")
     # One flag from /api/quota reveals the entry point, and that is the whole cost of an
     # optional feature on the live page: a second feed here would make every install pay for a
     # layer most of them leave off.
