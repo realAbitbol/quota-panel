@@ -39,6 +39,13 @@ BROWSER = os.environ.get(
     "SCREENSHOT_BROWSER", "/Applications/Helium.app/Contents/MacOS/Helium"
 )
 WIDTH, HEIGHT, SCALE = 1440, 900, 2
+# The capture is a fixed photograph, so the clock the page draws is pinned too. Without it the
+# README image shows whatever the CI machine's wall clock happens to be — an all-green bar on a
+# weekend or a Chinese public holiday, which is not what the panel usually looks like. Wednesday
+# 14 October 2026, 18:30 UTC = 20:30 in Europe/Paris: a normal weekday evening, off-peak with the
+# day's two peak bands behind it and the next peak at 03:00.
+CAPTURE_TZ = "Europe/Paris"
+CAPTURE_EPOCH_MS = 1792002600000          # 2026-10-14T18:30:00Z
 
 # The history capture needs a store with history in it, and a store filled by waiting would take
 # days. So this seeds one through the module's own write path — the same `record()` the poller
@@ -676,6 +683,25 @@ def main():
         cdp.call("Runtime.enable")
         cdp.call("Emulation.setDeviceMetricsOverride", width=WIDTH, height=HEIGHT,
                  deviceScaleFactor=SCALE, mobile=False)
+        # Pin the zone and the clock for the dashboard capture (see CAPTURE_EPOCH_MS). Only
+        # Date.now() and the no-argument constructor are shifted; new Date(fixed) is untouched, so
+        # the stubbed reset deadlines still render. The shim is removed before /history, whose
+        # ranges are computed from the real clock.
+        cdp.call("Emulation.setTimezoneOverride", timezoneId=CAPTURE_TZ)
+        clock_shim = cdp.call("Page.addScriptToEvaluateOnNewDocument", source="""
+          (function(){
+            const Real = Date;
+            const SKEW = %d - Real.now();
+            class Shifted extends Real {
+              constructor(...args){
+                if(args.length === 0) super(Real.now() + SKEW);
+                else super(...args);
+              }
+              static now(){ return Real.now() + SKEW; }
+            }
+            window.Date = Shifted;
+          })();
+        """ % CAPTURE_EPOCH_MS)
 
         # wait for the app to answer, then navigate
         deadline = time.time() + 20
@@ -874,6 +900,234 @@ def main():
         check("the redundant 'updated' stamp is gone", icons.get("generated") == 0, str(icons))
         check("the page requests nothing off-origin", not icons.get("external"), str(icons))
 
+        # The schedule arithmetic, pinned at fixed instants rather than left to the wall clock —
+        # which is exactly how the marker lost its minutes. dcZone is forced to UTC so the display
+        # offset is zero and the numbers are the schedule's own; it is restored before returning.
+        sched = cdp.call("Runtime.evaluate", expression="""(() => {
+          const wasZone = dcZone; dcZone = 'utc';
+          const kind = t => dcKindAt(new Date(t));
+          const next = (t, n) => dcNextSwitches(new Date(t), n).map(s => s.date.getTime());
+          const out = {
+            weekdayPeak: kind(Date.UTC(2026, 9, 8, 1, 30)),      // Thu 01:30 UTC -> peak
+            weekdayOff: kind(Date.UTC(2026, 9, 8, 5, 0)),        // Thu 05:00 UTC -> off
+            plainSaturday: kind(Date.UTC(2026, 9, 17, 12, 0)),   // a weekend -> off all day
+            nationalDay: kind(Date.UTC(2026, 9, 1, 2, 0)),       // 国庆, statutory -> off
+            nationalDay2: kind(Date.UTC(2026, 9, 2, 2, 0)),      // 国庆, statutory -> off
+            restDay: kind(Date.UTC(2026, 9, 5, 2, 0)),           // 调休 rest day -> PEAK
+            restDay2: kind(Date.UTC(2026, 9, 7, 2, 0)),          // 调休 rest day -> PEAK
+            makeUpSaturday: kind(Date.UTC(2026, 9, 10, 3, 0)),   // China s make-up workday -> off
+            afterHoliday: next(Date.UTC(2026, 9, 1, 12, 0), 1)[0],
+            afterHolidayAt: Date.UTC(2026, 9, 5, 1, 0),          // peak resumes Mon 01:00
+            friNext: next(Date.UTC(2026, 9, 9, 10, 30), 1)[0],   // -> Monday 01:00
+            mondayAt: Date.UTC(2026, 9, 12, 1, 0),
+            start: dcWindowStart(new Date(Date.UTC(2026, 9, 8, 5, 0))).getTime(),
+            startAt: Date.UTC(2026, 9, 8, 4, 0),                 // window opened Thu 04:00
+            marker: dcMarkerPct(new Date(Date.UTC(2026, 9, 8, 13, 30, 0))),  // 13:30 -> 56.25
+            clockShort: dcClock(2 * 3600 + 3 * 60 + 4),
+            clockDays: dcClock(6 * 86400 + 4 * 3600 + 41 * 60 + 58),
+            labelToday: dcRangeLabel(new Date(Date.UTC(2026, 9, 8, 1, 0)),
+                                     new Date(Date.UTC(2026, 9, 8, 4, 0)), 20261008),
+            labelFuture: dcRangeLabel(new Date(Date.UTC(2026, 9, 9, 1, 0)),
+                                      new Date(Date.UTC(2026, 9, 9, 4, 0)), 20261008)
+          };
+          dcZone = wasZone;
+          return out;
+        })()""", returnByValue=True).get("result", {}).get("value") or {}
+
+        check("the clock reads DeepSeek's schedule, not the wall clock",
+              sched.get("weekdayPeak") == "peak" and sched.get("weekdayOff") == "off"
+              and sched.get("plainSaturday") == "off"
+              and sched.get("friNext") == sched.get("mondayAt")
+              and sched.get("start") == sched.get("startAt"), str(sched))
+        check("China's statutory holidays are off-peak in full",
+              sched.get("nationalDay") == "off" and sched.get("nationalDay2") == "off"
+              and sched.get("afterHoliday") == sched.get("afterHolidayAt"), str(sched))
+        # The rule is 法定节假日, not the 放假 period: the 调休 rest days inside a holiday are
+        # ordinary weekdays and DeepSeek charges peak on them.
+        check("the 调休 rest days are peak, not holidays",
+              sched.get("restDay") == "peak" and sched.get("restDay2") == "peak", str(sched))
+        check("a make-up workday on a weekend stays off-peak",
+              sched.get("makeUpSaturday") == "off", str(sched))
+        check("the timeline marker counts minutes, not just hours",
+              abs((sched.get("marker") or 0) - 56.25) < 0.001,
+              "marker=%r, expected 56.25" % sched.get("marker"))
+
+        # The statutory dates themselves, pinned to the State Council notices for 2025 and 2026 —
+        # the ground truth the server used to carry, now that the page computes them for any year.
+        holidays = cdp.call("Runtime.evaluate", expression="""(() => {
+          const iso = y => Array.from(dcStatutoryHolidays(y)).sort().join(' ');
+          return { y2025: iso(2025), y2026: iso(2026), y1901: dcStatutoryHolidays(1901).size };
+        })()""", returnByValue=True).get("result", {}).get("value") or {}
+        check("the page computes the statutory holidays the notices list",
+              holidays.get("y2025") == ("2025-01-01 2025-01-28 2025-01-29 2025-01-30 2025-01-31 "
+                                        "2025-04-04 2025-05-01 2025-05-02 2025-05-31 2025-10-01 "
+                                        "2025-10-02 2025-10-03 2025-10-06")
+              and holidays.get("y2026") == ("2026-01-01 2026-02-16 2026-02-17 2026-02-18 2026-02-19 "
+                                            "2026-04-05 2026-05-01 2026-05-02 2026-06-19 2026-09-25 "
+                                            "2026-10-01 2026-10-02 2026-10-03")
+              and holidays.get("y1901") == 13,
+              str(holidays))
+        check("a countdown past a day rolls into days",
+              sched.get("clockShort") == "02:03:04" and sched.get("clockDays") == "6d 04:41:58",
+              str(sched))
+        check("a window on another day carries its weekday, today's rows stay bare",
+              bool(sched.get("labelFuture")) and sched.get("labelFuture") != sched.get("labelToday")
+              and len(str(sched.get("labelFuture"))) > len(str(sched.get("labelToday"))),
+              str(sched))
+
+        # The bar's own colour keys off #clock-bar's class, not the head button inside it, so render
+        # the clock at a pinned PEAK instant and require the class to actually flip: a render that
+        # toggled it on the wrong element left the always-visible bar green right through peak.
+        def bar_at(ms):
+            expr = """(() => {
+              const Real = window.Date;
+              const SKEW = @MS@ - Real.now();
+              class Shifted extends Real {
+                constructor(...a){ if (a.length === 0) super(Real.now() + SKEW); else super(...a); }
+                static now(){ return Real.now() + SKEW; }
+              }
+              window.Date = Shifted;
+              dcRender();
+              const bar = document.getElementById('clock-bar');
+              const out = { cls: bar.className,
+                            kind: getComputedStyle(document.getElementById('clock-kind')).color };
+              window.Date = Real;
+              dcRender();
+              return out;
+            })()""".replace("@MS@", str(ms))
+            return cdp.call("Runtime.evaluate", expression=expr,
+                            returnByValue=True).get("result", {}).get("value") or {}
+
+        peak_bar = bar_at(1791961200000)   # 2026-10-14T07:00:00Z, inside the 06:00-10:00 UTC peak
+        off_bar = bar_at(1791982200000)     # 2026-10-14T12:50:00Z, the afternoon off-peak
+        peak_cls = (peak_bar.get("cls") or "").split()
+        off_cls = (off_bar.get("cls") or "").split()
+        check("the bar wears peak when it is peak, and off-peak when it is not",
+              "peak" in peak_cls and "off" not in peak_cls
+              and "off" in off_cls and "peak" not in off_cls
+              and peak_bar.get("kind") != off_bar.get("kind"),
+              "peak=%r off=%r" % (peak_bar, off_bar))
+
+        # The clock unwraps from its bar, and the wrap state is remembered across a reload. It
+        # was not: at init the server flag is still unknown, so the panel was forced closed and a
+        # remembered "open" was lost until the next click — which then read as a close. Seed the
+        # remembered state, reload the way a reader would, and require it back unwrapped.
+        def clock_state():
+            return cdp.call("Runtime.evaluate", expression="""(() => {
+              const head = document.getElementById('clock');
+              const bar = document.getElementById('clock-bar');
+              const panel = document.getElementById('clock-panel');
+              if (!head || !panel) return null;
+              return { expanded: head.getAttribute('aria-expanded'),
+                       open: panel.hidden === false,
+                       visible: bar ? bar.hidden === false : null };
+            })()""", returnByValue=True).get("result", {}).get("value")
+
+        cdp.call("Runtime.evaluate", expression="""
+          localStorage.setItem('quota-panel:deepseek',
+            JSON.stringify({ v:1, zone:'local', notify:false, open:true }));
+        """)
+        seeded = cdp.call("Runtime.evaluate",
+                          expression="localStorage.getItem('quota-panel:deepseek')",
+                          returnByValue=True).get("result", {}).get("value")
+        check("the remembered clock state is seeded before the reload",
+              bool(seeded) and '"open":true' in str(seeded), str(seeded))
+
+        # Reloaded with Page.navigate, the way this harness reaches /history, and retried: a
+        # reload issued mid-settle comes back with an errorText and silently leaves the old page.
+        state = None
+        for attempt in range(3):
+            nav = cdp.call("Page.navigate", url=base + "/") or {}
+            if nav.get("errorText"):
+                print("  clock reload attempt %d: %s" % (attempt + 1, nav.get("errorText")))
+                time.sleep(1.0)
+                continue
+            deadline = time.time() + 25
+            while time.time() < deadline:
+                state = clock_state()
+                if state and state.get("visible") and state.get("open") \
+                        and state.get("expanded") == "true":
+                    break
+                time.sleep(0.3)
+            if state and state.get("open") and state.get("expanded") == "true":
+                break
+        check("a clock remembered open comes back unwrapped after a reload",
+              bool(state) and state.get("open") and state.get("expanded") == "true", str(state))
+
+        # And the bar alone wraps it shut again: there is no separate Hide button to click.
+        cdp.call("Runtime.evaluate", expression="document.getElementById('clock').click()")
+        closed = clock_state()
+        check("the bar alone wraps the clock shut again",
+              bool(closed) and not closed.get("open") and closed.get("expanded") == "false",
+              str(closed))
+
+        # The switch transition is the core of the notification requirement, and it can be driven
+        # rather than waited for: a stub Notification grants permission and records what the page
+        # raises, installed before the load so dcInit sees it. The switch is turned on in the
+        # script rather than seeded, so the capture still shows the default (off).
+        note_stub = cdp.call("Page.addScriptToEvaluateOnNewDocument", source="""
+          window.__notes = [];
+          class StubNotification {
+            constructor(title, options){
+              window.__notes.push({ title: title, tag: (options || {}).tag });
+            }
+          }
+          StubNotification.permission = 'granted';
+          StubNotification.requestPermission = function(){ return Promise.resolve('granted'); };
+          window.Notification = StubNotification;
+          try {
+            localStorage.setItem('quota-panel:deepseek',
+              JSON.stringify({ v:1, zone:'local', notify:false, open:false }));
+          } catch (e) {}
+        """)
+        cdp.call("Page.navigate", url=base + "/")
+        ready = False
+        deadline = time.time() + 25
+        while time.time() < deadline:
+            ready = bool(cdp.call("Runtime.evaluate",
+                                  expression="typeof dcRender === 'function' && dcEnabled === true",
+                                  returnByValue=True).get("result", {}).get("value"))
+            if ready:
+                break
+            time.sleep(0.3)
+        check("the clock is up before the switch is driven", ready)
+
+        notes = cdp.call("Runtime.evaluate", expression="""
+          (() => {
+            const Real = window.Date;
+            function at(ms){
+              const SKEW = ms - Real.now();
+              class Shifted extends Real {
+                constructor(...a){ if (a.length === 0) super(Real.now() + SKEW); else super(...a); }
+                static now(){ return Real.now() + SKEW; }
+              }
+              window.Date = Shifted;
+            }
+            const out = {};
+            dcNotify = true;
+            at(@OFF@); dcRender(); dcRender();   // settle inside the off-peak window
+            window.__notes.length = 0;           // ignore anything raised before the boundary
+            at(@PEAK@); dcRender();              // the kind changes -> exactly one
+            out.fired = window.__notes.map(n => n.tag + '|' + n.title);
+            window.__notes.length = 0;
+            dcRender(); dcRender();              // same kind -> none
+            out.steady = window.__notes.length;
+            window.Date = Real; dcRender();
+            dcNotify = false;                    // hand the page back as the capture expects it
+            return out;
+          })()
+        """.replace("@OFF@", str(1791982200000))    # 2026-10-14T12:50:00Z
+           .replace("@PEAK@", str(1791961200000)),   # 2026-10-14T07:00:00Z
+                               returnByValue=True).get("result", {}).get("value") or {}
+        cdp.call("Page.removeScriptToEvaluateOnNewDocument",
+                 identifier=note_stub.get("identifier"))
+
+        check("a price switch fires one desktop notification, tagged and titled",
+              (notes.get("fired") or []) == ["quota-panel-deepseek|DeepSeek pricing: Peak"],
+              str(notes))
+        check("a render with no kind change fires none",
+              notes.get("steady") == 0, str(notes))
+
         # freeze animations/transitions so the capture is deterministic
         cdp.call("Runtime.evaluate", expression="""
           document.querySelectorAll('.fill').forEach(e => e.style.transition = 'none');
@@ -897,6 +1151,10 @@ def main():
         # the previous full-page screenshot is still settling comes back with an errorText and
         # silently leaves the old page in place, which is exactly how the first version of this
         # check measured the live panel and called it the history page.
+        # Unpin the clock: /history draws a real time range from the real now, and a shifted clock
+        # would ask the store for a window it does not have.
+        cdp.call("Page.removeScriptToEvaluateOnNewDocument",
+                 identifier=clock_shim.get("identifier"))
         navigate_result = None
         for attempt in range(3):
             navigate_result = cdp.call("Page.navigate", url=base + "/history") or {}

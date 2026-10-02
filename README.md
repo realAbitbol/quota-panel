@@ -100,6 +100,7 @@ positional fallback is `<provider>-<index>`, and duplicates are fatal.
 | `QUOTA_BACKGROUND_URL` | the default wallpaper URL (hotlinked) | Artwork URL, or `none`/`off`. The config file wins. |
 | `QUOTA_BACKGROUND_DIR` | `/tmp/quota-panel` | Where the fetched artwork is stored. |
 | `QUOTA_BACKGROUND_TIMEOUT` | `20` | Artwork fetch timeout, in seconds. |
+| `QUOTA_DEEPSEEK_CLOCK` | `on` | The dashboard's DeepSeek peak/off-peak price clock (and the per-token rates on a `deepseek` card). `off`/`0`/`false`/`no` hides it. |
 
 Every provider also has a base-URL override (`COMMANDCODE_API_BASE`, `OPENCODE_GO_USAGE_URL`,
 `Z_AI_API_BASE`, …) for pointing an adapter at a local stub; production never needs them.
@@ -126,6 +127,19 @@ The store needs a **directory**, not a file (sqlite writes its journal beside th
 writable `/data` (`install -d -o 10001 -g 10001 ./data`). CIFS/NFS is refused. At 300 s sampling it is
 ~0.35 GB/year plus rollups, and a failed poll or unreadable window leaves a **gap**, never a zero.
 `enabled: false` keeps no state — `/api/history` answers `404`.
+
+### DeepSeek price clock
+
+A one-line **DeepSeek** price clock sits under the status strip: DeepSeek charges half price off-peak,
+and peak is 01:00–04:00 and 06:00–10:00 UTC on Beijing weekdays, **excluding China's statutory public
+holidays** — which, like weekends, are off-peak in full. It counts down to the next switch in your time
+and opens onto the day's windows, a 24-hour timeline, a **Local / UTC** toggle, and a checkbox for
+desktop notifications the moment the price switches (the browser's own, fired by the open page; nothing
+leaves the machine).
+
+The 13 statutory days are computed in the page from the lunar calendar, for whatever year its own clock
+is in — nothing is sent from the server and nothing goes stale. `QUOTA_DEEPSEEK_CLOCK=off` hides it
+and the `deepseek` card's per-token rates.
 
 ## Endpoints
 
@@ -175,7 +189,9 @@ python3 tests/smoke.py                  # the HTTP surface
 python3 tests/history.py                # the optional store: config, sampling, rollups, alert log
 python3 tests/balance.py                # registry, balance adapters, error branches
 python3 tests/background.py             # artwork shrink (needs Pillow)
-python3 tests/screenshot.py             # renders both pages in Chromium, re-shoots docs/*.png
+python3 tests/screenshot.py             # renders both pages in Chromium, rewrites docs/*.png
+SCREENSHOT_OUT=/tmp/shot.png SCREENSHOT_HISTORY_OUT=/tmp/hist.png \
+  python3 tests/screenshot.py           # …or write elsewhere, leaving docs/ alone
 python3 tests/tab_switch.py             # a burst of tab switches must keep refreshing
 QUOTA_POLL_SECONDS=10 python3 tests/cadence_soak.py   # the countdown must not decay
 ```

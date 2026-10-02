@@ -59,6 +59,32 @@ def _env_int(name, default):
         return default
 
 
+def _env_flag(name, default):
+    """An environment boolean, or the default.
+
+    Same rationale as _env_int: an operator's typo must not silently flip a feature. An
+    empty value means "no opinion" and falls through to the default; a recognised word
+    answers; anything else is reported and ignored, not guessed.
+    """
+    raw = os.environ.get(name)
+    if raw is None or raw.strip() == "":
+        return default
+    text = raw.strip().lower()
+    if text in ("0", "off", "false", "no", "none"):
+        return False
+    if text in ("1", "on", "true", "yes"):
+        return True
+    print("[quota-panel] %s=%r is not a boolean — using %s" % (name, raw, default), flush=True)
+    return default
+
+
+# The DeepSeek peak/off-peak price clock on the dashboard. On by default (DeepSeek pricing
+# applies to anyone calling DeepSeek models, not only to an account this panel tracks); the
+# one switch that hides it, and the per-card API rates, is this environment variable.
+# ...and the schedule itself — the peak windows and China's statutory holidays — is computed in
+# the page from its own clock, so nothing here has to guess a window of years to send along.
+DEEPSEEK_CLOCK_ENABLED = _env_flag("QUOTA_DEEPSEEK_CLOCK", True)
+
 POLL_SECONDS = _env_int("QUOTA_POLL_SECONDS", 60)
 HTTP_TIMEOUT = _env_int("QUOTA_HTTP_TIMEOUT", 20)
 PORT = _env_int("PORT", 8080)
@@ -1491,9 +1517,15 @@ class Handler(BaseHTTPRequestHandler):
             self._serve_static(path)
             return
         if path == "/history":
-            # Served whether or not the layer is on: the page reads /api/quota's history block
-            # and says "off, and here is how to turn it on" rather than 404ing at someone who
-            # followed a link. The link itself only appears once the layer is enabled.
+            # The header link only exists while the layer is on, so a request here without it is a
+            # stale bookmark or a hand-typed URL. Answer it as absent, the same way /api/history
+            # does, with the reason — an enabled-but-unopenable store still serves the page, which
+            # is where its error and the fix are printed.
+            if not history_status().get("enabled"):
+                self._send(404, "history is not enabled "
+                           "(set history.enabled in accounts.json, or QUOTA_HISTORY_ENABLED=1)",
+                           "text/plain; charset=utf-8")
+                return
             try:
                 with open(os.path.join(STATIC_DIR, "history.html"), "rb") as fh:
                     self._send(200, fh.read(), "text/html; charset=utf-8")
@@ -1527,6 +1559,11 @@ class Handler(BaseHTTPRequestHandler):
                     # hides its own entry point until this says so: a default install serves no
                     # history route, and the UI must not offer a link that 404s.
                     "history": history,
+                    # Whether the dashboard draws the DeepSeek peak/off-peak price clock. Its
+                    # schedule — peak windows and China's statutory holidays — is computed in the
+                    # page, so there is no window of years to send. QUOTA_DEEPSEEK_CLOCK=off is
+                    # the single switch that hides the clock (and the per-card API rates).
+                    "deepseek_clock": {"enabled": DEEPSEEK_CLOCK_ENABLED},
                 }
             self._json(200, payload)
             return

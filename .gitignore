@@ -14,3 +14,6 @@ docs/superpowers/
 .cortexkit/
 .superpowers/
 *.db-*
+
+# OpenChamber in-app browser scratch (captures, screenshots): a tool artifact, not source.
+.openchamber/

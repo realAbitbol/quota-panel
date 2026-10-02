@@ -49,7 +49,11 @@
   body::before{content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;
        background:linear-gradient(180deg,rgba(11,13,18,.62) 0%,rgba(11,13,18,.46) 45%,rgba(11,13,18,.70) 100%)}
   @media (prefers-reduced-motion:no-preference){ body{background-attachment:fixed} }
-  header{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:18px;
+  /* The header floats: it sticks to the top of the viewport while the page scrolls, so the
+     panel's identity and the way to the other page never scroll out of reach. Translucent plus
+     blurred, so content passing under it stays legible rather than vanishing. */
+  header{position:sticky;top:20px;z-index:20;display:flex;align-items:center;gap:14px;
+       flex-wrap:wrap;margin-bottom:18px;
        background:rgba(var(--card),var(--card-alpha));
        border:1px solid var(--line);border-radius:16px;padding:12px 16px;
        backdrop-filter:blur(var(--card-blur));-webkit-backdrop-filter:blur(var(--card-blur))}
@@ -60,23 +64,20 @@
   .muted{color:var(--muted);font-size:12.5px}
   /* Same position as the live panel's entry point: the last thing in the header, flush right. */
   .spacer{margin-left:auto}
-  /* The way back: the live panel's own entry point, mirrored -- same declarations, chevron on the
-     other side -- so the two pages read as one control with a direction, not two stray links. */
-  .nav{font-size:12.5px;color:var(--fg);text-decoration:none;display:inline-flex;align-items:center;
-       gap:6px;
-       border:1px solid rgba(var(--accent-rgb),.38);
-       border-radius:999px;padding:4px 12px;background:rgba(var(--accent-rgb),.14);font-weight:600}
-  /* This page stretches every svg with a bare `svg{width:100%}` rule; the glyph's own box is
-     320x512, so its height sets its width and this selector keeps the stretch off it. */
-  .nav svg{width:.55em;height:.9em;fill:currentColor;display:block;flex:0 0 auto}
-  .nav:hover{color:#fff;border-color:var(--accent)}
-  @media (hover:hover){
-    .nav:hover{background:rgba(var(--accent-rgb),.26);box-shadow:0 0 0 3px rgba(var(--accent-rgb),.09)}
-  }
-  .nav:active{transform:translateY(1px)}
-  .nav.on{color:#fff;background:rgba(var(--accent-rgb),.22);border-color:var(--accent);cursor:default}
+  /* The Dashboard/History switch: one segmented control, the same shape as the live panel's --
+     the active page filled, the other a quiet label you can leave for. */
+  /* inline-grid with equal columns: both halves are the same width whatever the labels, so the
+     control reads as one switch rather than two labels of different length. */
+  .navseg{display:inline-grid;grid-auto-flow:column;grid-auto-columns:1fr;
+       border:1px solid var(--line);border-radius:9px;overflow:hidden;font-size:12.5px}
+  .navseg-item{display:inline-flex;align-items:center;justify-content:center;gap:6px;font-weight:600;
+       color:var(--muted);text-decoration:none;padding:4px 14px;cursor:pointer}
+  .navseg-item+.navseg-item{border-left:1px solid var(--line)}
+  .navseg-item.on{background:var(--accent);color:#fff;cursor:default}
+  .navseg-item:not(.on):hover{color:var(--fg);background:rgba(var(--accent-rgb),.10)}
+  .navseg-item:active{transform:translateY(1px)}
   @media (prefers-reduced-motion:no-preference){
-    .nav{transition:color .15s,border-color .15s,background .15s,box-shadow .15s}
+    .navseg-item{transition:color .15s,background .15s}
   }
   main{display:flex;flex-direction:column;gap:16px}
   .panel{background:rgba(var(--card),var(--card-alpha));border:1px solid var(--line);border-radius:16px;
@@ -167,17 +168,24 @@
   /* The support link: fixed, small, and out of the reading column. It is an anchor, not a
      resource load, so it stays same-origin for the page's own requests. */
   .kofi{position:fixed;right:16px;bottom:16px;z-index:60;display:inline-flex;align-items:center;
-       gap:7px;padding:7px 12px;border-radius:999px;text-decoration:none;font-size:12.5px;
+       gap:0;padding:8px;border-radius:999px;text-decoration:none;font-size:12.5px;
        color:var(--fg);background:rgba(var(--card),.8);border:1px solid var(--line);
        backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);box-shadow:0 4px 16px rgba(0,0,0,.35)}
   .kofi:hover{color:#fff;border-color:var(--accent)}
   .kofi svg{width:15px;height:15px;fill:#ff5e5b;flex:0 0 auto}
-  .kofi span{font-weight:600}
-  @media (prefers-reduced-motion:no-preference){ .kofi{transition:color .15s,border-color .15s} }
+  .kofi span{font-weight:600;max-width:0;opacity:0;overflow:hidden;white-space:nowrap}
+  .kofi:hover span,.kofi:focus-visible span{max-width:5em;opacity:1;margin-left:7px}
+  @media (prefers-reduced-motion:no-preference){
+    .kofi{transition:color .15s,border-color .15s}
+    .kofi span{transition:max-width .18s ease,opacity .18s ease,margin-left .18s ease}
+  }
   @media (prefers-reduced-motion:reduce){ .skel::after{animation:none} }
   .render-error{margin-top:10px;font-size:12px;color:#ffb4b4}
   /* The support pill is fixed: on a narrow screen it used to come to rest over the last panel. */
   @media (max-width:640px){ body{padding:14px 14px 68px} }
+  /* A separate rule: the line above is string-matched by tests/history.py, so the floating
+     header's offset lives where it cannot disturb it. */
+  @media (max-width:640px){ header{top:14px} }
 </style>
 </head>
 <body>
@@ -185,8 +193,10 @@
   <img class="logo" src="/static/favicon.svg" width="28" height="28" alt="">
   <h1>Usage history</h1>
   <span class="muted" id="feed"></span>
-  <a class="nav spacer" href="/"><svg viewBox="0 0 320 512" aria-hidden="true"><path d="M9.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l192 192c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L77.3 256 246.6 86.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-192 192z"/></svg>Dashboard</a>
-  <span class="nav on" aria-current="page">History</span>
+  <span class="navseg spacer" role="group" aria-label="View">
+    <a class="navseg-item" href="/">Dashboard</a>
+    <span class="navseg-item on" aria-current="page">History</span>
+  </span>
 </header>
 
 <main>

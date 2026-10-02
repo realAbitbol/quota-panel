@@ -225,11 +225,10 @@ def ui_checks():
     check("the page carries the support link to Ko-fi",
           "https://ko-fi.com/realAbitbol" in page and 'rel="noopener noreferrer"' in page,
           "the funding link is part of the live page too")
-    check("the history link reads as a button and lights up on hover",
-          ".nav{font-size:12.5px;color:var(--fg)" in page
-          and "background:rgba(var(--accent-rgb),.14)" in page
-          and ".nav:hover{color:#fff;border-color:var(--accent)}" in page,
-          "the header link must read as a pill and light up on hover")
+    check("the Dashboard/History switch reads as one segmented control",
+          ".navseg{display:inline-grid;grid-auto-flow:column;grid-auto-columns:1fr" in page
+          and ".navseg-item.on{background:var(--accent);color:#fff" in page,
+          "the header switch must read as a segmented control, not two stray links")
     check("both pages carry the calmer micro-label token",
           "--dim:#8b95ab" in page
           and "--dim:#8b95ab" in open(os.path.join(ROOT, "static", "history.html"),
@@ -251,6 +250,13 @@ def ui_checks():
     check("the status strip omits the reset clause when no reset parses",
           "isFinite(soonest)" in page,
           "an unparseable resets_at must not print NaN")
+
+    # A fully spent window is exhausted, not "approaching" it: the two shared one bucket, so a
+    # maxed-out plan read as "approaching limits" and the only signal it was spent was its card.
+    check("the status strip tells a spent plan apart from one approaching its limit",
+          "worst >= 100" in page and "worst >= 70" in page
+          and "exhausted" in page and ".strip .bad{color:var(--hot)}" in page,
+          "a fully used window must count as exhausted, not approaching")
     check("a malformed server clock does not become NaN",
           "clockSkew = isNaN(skewAt) ? 0 : skewAt - Date.now();" in page,
           "a non-empty but unparseable `now` must fall back to 0, not NaN")
@@ -264,6 +270,21 @@ def ui_checks():
           '"/static/logos/" + provider_logo(key)'
           in open(os.path.join(ROOT, "app.py"), encoding="utf-8").read(),
           "a missing bundled file must not advertise a broken URL")
+    # The DeepSeek price clock: a page-level bar that a reader who wants DeepSeek pricing gets
+    # by default, and that QUOTA_DEEPSEEK_CLOCK turns off. Asserted on the pieces that matter —
+    # the bar, the flag it reads, and the provider name it must show (DeepSeek is also served by
+    # providers this panel does not track, so "whose prices are these" has to be on the bar).
+    check("the dashboard carries the DeepSeek price clock",
+          'id="clock"' in page and "deepseek_clock" in page and 'class="clock' in page
+          and "DC_SWITCH_MINUTES" in page and "DC_LUNAR_INFO" in page and "DeepSeek" in page,
+          "the price clock is missing from the live page")
+
+    # It wraps and unwraps the panel from the bar itself: aria-expanded plus a chevron that
+    # turns over, and no separate Details/Hide buttons that could drift out of step with it.
+    check("the clock bar wraps the panel in place",
+          'aria-expanded="false"' in page and "dc-chev" in page
+          and 'id="clock-close"' not in page and ">Details</span>" not in page,
+          "the clock must expand and collapse from the bar alone")
     # One flag from /api/quota reveals the entry point, and that is the whole cost of an
     # optional feature on the live page: a second feed here would make every install pay for a
     # layer most of them leave off.
@@ -274,11 +295,25 @@ def ui_checks():
     # because the tempting version — wait for `!error` too — hides the only route to the answer
     # exactly when it is needed (seen in production: enabled, store unopenable, no link anywhere).
     check("the history entry point does not wait for a healthy store",
-          "historyLink.hidden = !history.enabled;" in page
+          "navToggle.hidden = !history.enabled;" in page
           and "!(history.enabled && !history.error)" not in page,
           "a broken store would hide the only page that explains the breakage")
     check("the vendored chart library is gone",
           not os.path.exists(os.path.join(ROOT, "static", "vendor", "uplot")))
+    # The image ships an explicit file list, so a module app.py imports is in the image only if it
+    # is COPYed — and a missing COPY is not a build error. Nothing else catches it: CI builds the
+    # image but never runs it, so the first symptom would be a crash on a user's first start.
+    app_src = open(os.path.join(ROOT, "app.py"), encoding="utf-8").read()
+    dockerfile = open(os.path.join(ROOT, "Dockerfile"), encoding="utf-8").read()
+    local_modules = sorted({name
+                            for name in re.findall(r"^\s*(?:import|from)\s+([a-z_][a-z0-9_]*)",
+                                                   app_src, re.M)
+                            if os.path.exists(os.path.join(ROOT, name + ".py"))})
+    missing = [n for n in local_modules
+               if ("COPY --chown=quota:quota %s.py /app/%s.py" % (n, n)) not in dockerfile]
+    check("every local module app.py imports is copied into the image",
+          bool(local_modules) and not missing,
+          "local modules %s, missing from the image: %s" % (local_modules, missing or "none"))
 
     history_page = open(os.path.join(ROOT, "static", "history.html"), encoding="utf-8").read()
     check("the history page asks the history route", "/api/history" in history_page)
@@ -295,9 +330,9 @@ def ui_checks():
     # page reaches the same edge with .spacer. Asserted because "put it in the same place" was a
     # request, and moving an element back in front of the feed would quietly undo it.
     check("the history link sits where the live panel's link sits",
-          page.index('id="feed"') < page.index('id="historyLink"')
-          and 'class="nav spacer"' in history_page
-          and 'class="nav" id="historyLink"' in page,
+          page.index('id="feed"') < page.index('id="navToggle"')
+          and 'class="navseg spacer"' in history_page
+          and 'class="navseg-item" id="historyLink"' in page,
           "the entry point and the way back must occupy the same slot on both pages")
 
 
@@ -429,7 +464,7 @@ def main():
         check("the header marks are inline icons, not emoji",
               all(ch.encode("utf-8") not in body for ch in ("\u23f0", "\U0001f504", "\u26a0",
                                                               "\u26d4"))
-              and b"\ufe0f" not in body)
+              and b"\xef\xb8\x8f" not in body)   # U+FE0F, the emoji variation selector
         status, _, _ = get(base + "/no-such-route")
         check("an unknown path is a 404, not a 500 or a hang", status == 404, str(status))
         # ---- the two degraded states, and a concurrent burst -----------------
@@ -575,16 +610,32 @@ def main():
         status, _, _ = get(base + "/api/history?hours=24&max_points=400")
         check("GET /api/history is absent with a query too", status == 404, "HTTP %s" % status)
 
-        # The page itself is served either way: it reads the flag and says "off, here is how to
-        # turn it on" instead of 404ing at someone who followed a link.
-        status, ctype, _ = get(base + "/history")
-        check("GET /history serves the history page", status == 200 and "text/html" in ctype,
-              "%s %s" % (status, ctype))
+        # And the page is absent too: the header switch only exists while the layer is on, so a
+        # request here is a stale bookmark and gets the same plain 404 as /api/history.
+        status, _, raw = get(base + "/history")
+        check("GET /history is absent while the layer is off", status == 404, "HTTP %s" % status)
+        check("…and its 404 names the switch too", b"history.enabled" in raw,
+              raw[:120].decode("utf-8", "replace"))
 
         _, _, quota_raw = get(base + "/api/quota")
         check("a default install is told history is off",
               json.loads(quota_raw).get("history") == {"enabled": False},
               "%s" % json.loads(quota_raw).get("history"))
+
+        # DeepSeek pricing applies to anyone calling its models, not only to an account this
+        # panel tracks, so the clock is on by default — and the one switch that turns it off.
+        dc_served = json.loads(quota_raw).get("deepseek_clock") or {}
+        check("a default install draws the DeepSeek price clock",
+              dc_served.get("enabled") is True, "%s" % dc_served)
+        # The schedule — holidays included — is computed in the page from its own clock. It used to
+        # be sent as a window of years around the server's "now", which could only ever be wrong for
+        # a client in another year. The dates themselves are pinned by the browser suite.
+        index_src = open(PAGE, encoding="utf-8").read()
+        check("the clock computes its own holidays, with no window of years to send",
+              "holidays" not in dc_served
+              and "DC_LUNAR_INFO" in index_src
+              and "function dcStatutoryHolidays(year)" in index_src,
+              "payload=%s" % dc_served)
 
         status, _, _ = get(base + "/static/vendor/uplot/uPlot.iife.min.js")
         check("the vendored chart library is not served", status == 404, "HTTP %s" % status)
@@ -741,6 +792,19 @@ def main():
                   get(base6 + "/")[0] == 200)
         finally:
             stop(proc6, env6)
+
+        # ---- QUOTA_DEEPSEEK_CLOCK: the single switch that hides the price clock ----
+        # README documents it, so it is exercised: off must reach the payload the UI reads, and
+        # a value that is neither on nor off must fall back to the default rather than guess.
+        for value, expected in (("off", False), ("maybe", True)):
+            cfg_dc = write_config(os.path.join(scratch, "dc-%s.json" % value), base_cfg)
+            proc8, base8, env8, _ = boot(cfg_dc, dict(stub, QUOTA_DEEPSEEK_CLOCK=value), scratch)
+            try:
+                served = json.loads(get(base8 + "/api/quota")[2]).get("deepseek_clock") or {}
+                check("QUOTA_DEEPSEEK_CLOCK=%s -> clock %s" % (value, "on" if expected else "off"),
+                      served.get("enabled") is expected, "%s" % served)
+            finally:
+                stop(proc8, env8)
 
         # ---- background_url: the config file wins over the env var ----
         # Both set, and the file's URL is unreachable while the env one is good: if the env
