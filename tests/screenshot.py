@@ -246,12 +246,17 @@ RESPONSES = {
              "nextResetTime": 1790352668000}]}},
     "/v2/quotas": {"subscription": {"limit": 135, "requests": 41,
                                     "renewsAt": "2026-09-21T20:36:14.288Z"}},
-    # OpenCode Go: the two accounts differ so the screenshot shows a healthy range
-    # rather than four identical bars.
-    "/zen/go/v1/usage": {"usage": {
-        "rolling": {"percent": 2, "resetsAt": 1790004492},
-        "weekly": {"percent": 22, "resetsAt": 1790352668},
-        "monthly": {"percent": 84, "resetsAt": 1792320000}}},
+    # OpenCode Go: the Console meters route is what the adapter reads, so the fixture serves
+    # micro-cents — the same 2 / 22 / 84 % spread the older route published.
+    "/console/api/go/status": {
+        "product": "go",
+        "access": {"meters": {
+            "fiveHour": {"limitMicroCents": "1200000000", "usedMicroCents": "24000000",
+                         "resetsAt": "2026-09-21T15:28:12Z"},
+            "week": {"limitMicroCents": "3000000000", "usedMicroCents": "660000000",
+                     "resetsAt": "2026-09-25T16:11:08Z"},
+            "month": {"limitMicroCents": "6000000000", "usedMicroCents": "5040000000",
+                      "resetsAt": "2026-10-18T10:40:00Z"}}}},
 }
 
 CONFIG = {
@@ -284,8 +289,9 @@ ADAPTER_ENV = (
     "MOONSHOT_API_BASE",
     "Z_AI_API_BASE",
     "SYNTHETIC_API_BASE",
-    # A full URL, not a base: the OpenCode Go usage route lives on a fixed path.
-    # Served at /zen/go/v1/usage by the stub.
+    # Full URLs, not bases: both OpenCode Go routes live on fixed paths.
+    # Served at /console/api/go/status (meters) and /zen/go/v1/usage (fallback) by the stub.
+    "OPENCODE_GO_METERS_URL",
     "OPENCODE_GO_USAGE_URL",
 )
 
@@ -531,6 +537,7 @@ def main():
     for var in ADAPTER_ENV:
         env[var] = "http://127.0.0.1:%d" % stub_port
     env["COMMANDCODE_API_BASE"] = "http://127.0.0.1:%d" % stub_port
+    env["OPENCODE_GO_METERS_URL"] = "http://127.0.0.1:%d/console/api/go/status" % stub_port
     env["OPENCODE_GO_USAGE_URL"] = "http://127.0.0.1:%d/zen/go/v1/usage" % stub_port
 
     # Seed the history store BEFORE the app that will be captured has ever written to it.

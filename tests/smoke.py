@@ -136,6 +136,8 @@ def serve(routes):
 def stub_env(port):
     """Point every adapter base at the stub, so no request leaves this machine."""
     env = {var: "http://127.0.0.1:%d" % port for var in PROVIDER_BASE_ENV}
+    # Both OpenCode Go routes, so no poll can reach the real surface from this suite.
+    env["OPENCODE_GO_METERS_URL"] = "http://127.0.0.1:%d/meters" % port
     env["OPENCODE_GO_USAGE_URL"] = "http://127.0.0.1:%d/usage" % port
     return env
 

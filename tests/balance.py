@@ -567,21 +567,56 @@ def main():
         check("commandcode success: the window percentages come from used/cap",
               2.5 in cc_percents and 22.49 in cc_percents, str(cc_percents))
 
-        # OpenCode Go's base is a full URL, not a `*_BASE`, so it is redirected explicitly.
+        # OpenCode Go has two routes, and both are driven here: the Console meters route (what a
+        # service-account key reaches) and the older proxy route (what a legacy key answers).
+        # A change that wired only one of them would otherwise ship green.
+        saved_meters_url = app.OG_METERS_URL
         saved_go_url = app.OG_USAGE_URL
+        app.OG_METERS_URL = base + "/console/api/go/status"
         app.OG_USAGE_URL = base + "/zen/go/v1/usage"
         try:
-            go = run("opencode_go", {"/zen/go/v1/usage": {"usage": {
+            go = run("opencode_go", {"/console/api/go/status": {
+                "product": "go",
+                "access": {"meters": {
+                    "fiveHour": {"limitMicroCents": "1200000000", "usedMicroCents": "0",
+                                 "resetsAt": None},
+                    "week": {"limitMicroCents": "3000000000", "usedMicroCents": "247542797",
+                             "resetsAt": "2026-10-19T00:00:00.000Z"},
+                    "month": {"limitMicroCents": "6000000000", "usedMicroCents": "341241962",
+                              "resetsAt": "2026-11-07T12:41:11.000Z"}}}}}, base)
+            legacy = run("opencode_go", {"/zen/go/v1/usage": {"usage": {
                 "rolling": {"percent": 2, "resetsAt": 1790004492},
                 "weekly": {"percent": 22, "resetsAt": 1790352668},
                 "monthly": {"percent": 84, "resetsAt": 1792320000}}}}, base)
+            # Both routes refused: the card must name both, and must not claim a plan cause.
+            refused = run("opencode_go", {
+                "/console/api/go/status": (403, {"_tag": "Forbidden"}),
+                "/zen/go/v1/usage": (403, {"type": "error", "error": {"message": "denied"}}),
+            }, base)
         finally:
+            app.OG_METERS_URL = saved_meters_url
             app.OG_USAGE_URL = saved_go_url
         go_percents = sorted(w["percent"] for w in go.get("windows") or []
                              if w.get("percent") is not None)
-        check("opencode_go success: the three window percentages are read verbatim",
-              go["state"] == "ok" and go_percents == [2, 22, 84],
+        check("opencode_go success: the windows are the console's micro-cent ratio",
+              go["state"] == "ok" and go_percents == [0.0, 5.69, 8.25],
               "%s %s" % (go.get("state"), go_percents))
+        check("opencode_go success: the plan is the one the console names",
+              go.get("plan") == "OpenCode Go", str(go.get("plan")))
+        check("opencode_go: a window that has not started carries no countdown",
+              all(w["resets_at"] is None for w in go["windows"] if not w["percent"]),
+              str(go.get("windows")))
+        legacy_percents = sorted(w["percent"] for w in legacy.get("windows") or []
+                                 if w.get("percent") is not None)
+        check("opencode_go fallback: the older route's percentages are read verbatim",
+              legacy["state"] == "ok" and legacy_percents == [2, 22, 84],
+              "%s %s" % (legacy.get("state"), legacy_percents))
+        check("opencode_go refusal: names both routes and invents no plan cause",
+              refused["state"] == "auth_error"
+              and "meters HTTP 403" in (refused.get("error") or "")
+              and "usage HTTP 403" in (refused.get("error") or "")
+              and "plan" not in (refused.get("error") or ""),
+              "%s %s" % (refused.get("state"), refused.get("error")))
         # ---- the HTTP boundary and the response cap ---------------------------
         # An exception inside a route must become a 500 with a JSON body, not a dropped
         # connection. Exercised in-process: no HTTP-surface input can make a route raise on demand.

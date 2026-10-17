@@ -161,9 +161,17 @@ CC_PLANS = {
     "teams-pro": ("Teams Pro", 40),
 }
 
+OG_METERS_URL = os.environ.get(
+    "OPENCODE_GO_METERS_URL", "https://opencode.ai/console/api/go/status"
+)
+# The older proxy route. It still answers for a legacy `sk-` key, which is the only key kind
+# that reaches it, so it is tried second rather than dropped.
 OG_USAGE_URL = os.environ.get(
     "OPENCODE_GO_USAGE_URL", "https://opencode.ai/zen/go/v1/usage"
 )
+OG_PLAN_LABEL = "OpenCode Go"
+# The Console names the subscription it is reporting; Go Plus has its own, larger limits.
+OG_PLAN_LABELS = {"go": OG_PLAN_LABEL, "go-plus": "OpenCode Go Plus"}
 
 STATE_LOCK = threading.Lock()
 STATE = {"accounts": [], "generated_at": None, "errors": []}
@@ -812,27 +820,32 @@ def fetch_commandcode(account):
     }
 
 
-def fetch_opencode_go(account):
-    headers = {
-        "Authorization": "Bearer %s" % account["token"],
-        "Accept": "application/json",
-        "User-Agent": BROWSER_UA,
-    }
-    status, body, err = http_get_json(OG_USAGE_URL, headers)
-    if err and status in (401, 403):
-        return _fail(
-            account,
-            "auth_error",
-            "OpenCode Go rejected the key (HTTP %s). 403 = key valid but no Go plan on this "
-            "workspace; 401 = key invalid." % status,
-            status=status,
-        )
-    if err and status is None:
-        return _fail(account, "network_error", err)
-    usage = unwrap(body, "usage")
-    if usage is None:
-        return _fail(account, "provider_error", err or "no 'usage' object in response", status=status)
+def _og_windows_from_meters(meters):
+    """Windows from the Console meters: micro-cent limits and usage, with their reset stamps.
 
+    A window that has not started yet carries `resetsAt: null`, so the countdown is dropped
+    whenever the reading is zero — the same rule the older route needed for its placeholder
+    stamp, and the reason a 0 % card never shows a countdown it cannot honour.
+    """
+    windows = []
+    for key, label, src_key in (
+        ("five_hour", "5 h", "fiveHour"),
+        ("weekly", "Week", "week"),
+        ("monthly", "Month", "month"),
+    ):
+        block = meters.get(src_key)
+        if not isinstance(block, dict):
+            continue
+        limit = num(block.get("limitMicroCents"))
+        used = num(block.get("usedMicroCents"))
+        percent = used * 100.0 / limit if limit and limit > 0 and used is not None else None
+        resets_at = iso_from_reset(block.get("resetsAt")) if percent else None
+        windows.append(window_entry(key, label, percent, None, None, resets_at))
+    return windows
+
+
+def _og_windows_from_usage(usage):
+    """Windows from the older proxy route, which publishes the percentages already rounded."""
     windows = []
     for key, label, src_key in (
         ("five_hour", "5 h", "rolling"),
@@ -843,20 +856,19 @@ def fetch_opencode_go(account):
         if not isinstance(block, dict):
             continue
         percent = num(block.get("percent"))
-        # percent == 0 carries a placeholder reset (now + window length): showing a
-        # countdown there would be a fiction, so it is dropped.
         resets_at = iso_from_reset(block.get("resetsAt")) if percent else None
         windows.append(window_entry(key, label, percent, None, None, resets_at))
+    return windows
 
-    if not windows:
-        return _fail(account, "shape_unknown", "unrecognised OpenCode Go response shape")
+
+def _og_ok(account, plan, windows):
     return {
         "id": account["id"],
         "provider": account["provider"],
         "label": account["label"],
         "state": "ok",
         "error": None,
-        "plan": "OpenCode Go",
+        "plan": plan,
         "account_name": None,
         "monthly_remaining": None,
         "period_end": None,
@@ -864,6 +876,62 @@ def fetch_opencode_go(account):
         "windows": windows,
         "fetched_at": now_iso(),
     }
+
+
+def fetch_opencode_go(account):
+    headers = {
+        "Authorization": "Bearer %s" % account["token"],
+        "Accept": "application/json",
+        "User-Agent": BROWSER_UA,
+    }
+    # The Console meters route is what the Console itself reads, and the only one of the two
+    # that a Console service-account key reaches. The older proxy route is tried second: it
+    # is closed to those keys, but it is the one a legacy `sk-` key answers.
+    meters_status, meters_body, meters_err = http_get_json(OG_METERS_URL, headers)
+    if not meters_err:
+        meters = unwrap(meters_body, "access", "meters")
+        if meters is None:
+            meters_err = "no 'access.meters' object in response"
+        else:
+            windows = _og_windows_from_meters(meters)
+            if windows:
+                product = meters_body.get("product") if isinstance(meters_body, dict) else None
+                plan = OG_PLAN_LABELS.get(product, OG_PLAN_LABEL) if isinstance(product, str) \
+                    else OG_PLAN_LABEL
+                return _og_ok(account, plan, windows)
+            meters_err = "the meters object carries no window"
+
+    usage_status, usage_body, usage_err = http_get_json(OG_USAGE_URL, headers)
+    if not usage_err:
+        usage = unwrap(usage_body, "usage")
+        if usage is None:
+            usage_err = "no 'usage' object in response"
+        else:
+            windows = _og_windows_from_usage(usage)
+            if windows:
+                return _og_ok(account, OG_PLAN_LABEL, windows)
+            usage_err = "the usage object carries no window"
+
+    if meters_status in (401, 403) or usage_status in (401, 403):
+        return _fail(
+            account,
+            "auth_error",
+            "OpenCode refused the key on both routes (meters HTTP %s, usage HTTP %s). The meters "
+            "route is read by a service-account key whose permissions are 'All'; a read-only key "
+            "is refused there, and the older usage route refuses these keys altogether."
+            % (meters_status, usage_status),
+            status=meters_status if meters_status in (401, 403) else usage_status,
+        )
+    if meters_status is None and usage_status is None:
+        return _fail(account, "network_error", meters_err or usage_err)
+    if meters_status == 200 and usage_status == 200:
+        return _fail(account, "shape_unknown", "meters: %s | usage: %s" % (meters_err, usage_err))
+    return _fail(
+        account,
+        "provider_error",
+        "meters: %s | usage: %s" % (meters_err, usage_err),
+        status=usage_status or meters_status,
+    )
 
 
 # ----------------------------------------------------------------------------- redaction

@@ -102,8 +102,9 @@ positional fallback is `<provider>-<index>`, and duplicates are fatal.
 | `QUOTA_BACKGROUND_TIMEOUT` | `20` | Artwork fetch timeout, in seconds. |
 | `QUOTA_DEEPSEEK_CLOCK` | `on` | The dashboard's DeepSeek peak/off-peak price clock (and the per-token rates on a `deepseek` card). `off`/`0`/`false`/`no` hides it. |
 
-Every provider also has a base-URL override (`COMMANDCODE_API_BASE`, `OPENCODE_GO_USAGE_URL`,
-`Z_AI_API_BASE`, …) for pointing an adapter at a local stub; production never needs them.
+Every provider also has a base-URL override (`COMMANDCODE_API_BASE`, `OPENCODE_GO_METERS_URL`,
+`OPENCODE_GO_USAGE_URL`, `Z_AI_API_BASE`, …) for pointing an adapter at a local stub; production
+never needs them.
 
 ### Usage history
 
@@ -207,6 +208,8 @@ and `v*` tags. A release is a tag.
 **Docker created a directory where `accounts.json` should be.** The bind mount pointed at a missing path. Remove the directory, write the file, start again.
 
 **One card says the provider rejected the key.** `401` is a bad or revoked key; `403` is usually a valid key missing a scope or a plan. `python3 app.py --check` gives the same answer without the UI.
+
+**An OpenCode Go card is `auth_error` with the key working elsewhere.** OpenCode Go reads its windows from the Console meters route, which wants a service-account key with permissions **All** — a read-only key is refused there with `403`, and the older `/zen/go/v1/usage` route refuses Console service-account keys altogether. The card names both codes it got.
 
 **Everything is red after moving host and the config looks right.** Check the path *inside* the container, and the permissions: the process runs as uid 10001 and cannot read a `600` file owned by someone else.
 
