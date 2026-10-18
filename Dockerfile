@@ -1,8 +1,8 @@
-# Pinned by digest rather than by tag: `python:3.12-alpine` is mutable, so two builds of the same
+# Pinned by digest rather than by tag: `python:3.14-alpine` is mutable, so two builds of the same
 # commit could ship different interpreters — and the interpreter's patch level is published in
 # the Server header of every response. This is the multi-arch index digest (verified:
 # content-type application/vnd.oci.image.index.v1+json), so it still resolves per platform.
-# To bump: docker buildx imagetools inspect python:3.12-alpine
+# To bump: docker buildx imagetools inspect python:3.14-alpine
 FROM python:3.14-alpine@sha256:9e9fde4d32eedce0b661d9ab91e826b62dddf28e928c230ec55f1866cac66b01
 
 WORKDIR /app
