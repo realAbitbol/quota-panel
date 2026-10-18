@@ -32,6 +32,7 @@ import threading
 import time
 import traceback
 import urllib.error
+import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -57,6 +58,23 @@ def _env_int(name, default):
     except (TypeError, ValueError):
         print("[quota-panel] %s=%r is not an integer — using %d" % (name, raw, default), flush=True)
         return default
+
+
+def _env_int_bounded(name, default, low, high):
+    """An environment integer inside a documented range, or the default.
+
+    `poll_seconds` in the config file is bounded to 10..3600, but the environment fallback was
+    only type-checked: `QUOTA_POLL_SECONDS=0` became a one-second poll loop against every
+    provider, and a negative or absurd value was accepted as-is. Refuse and report, the way the
+    file path does, rather than turn a typo into a rate-limit. The lower bound is 1, not 10,
+    because the suites boot a real app at a one-second cadence on purpose.
+    """
+    value = _env_int(name, default)
+    if not low <= value <= high:
+        print("[quota-panel] %s=%d is out of range %d..%d — using %d"
+              % (name, value, low, high, default), flush=True)
+        return default
+    return value
 
 
 def _env_flag(name, default):
@@ -85,8 +103,11 @@ def _env_flag(name, default):
 # the page from its own clock, so nothing here has to guess a window of years to send along.
 DEEPSEEK_CLOCK_ENABLED = _env_flag("QUOTA_DEEPSEEK_CLOCK", True)
 
-POLL_SECONDS = _env_int("QUOTA_POLL_SECONDS", 60)
-HTTP_TIMEOUT = _env_int("QUOTA_HTTP_TIMEOUT", 20)
+# The file's `poll_seconds` is the documented 10..3600; the environment fallback allows down to 1
+# because the suites boot a real app at a one-second cadence on purpose. Zero, a negative or an
+# absurd value is refused, not turned into a one-second poll loop against every provider.
+POLL_SECONDS = _env_int_bounded("QUOTA_POLL_SECONDS", 60, 1, 3600)
+HTTP_TIMEOUT = _env_int_bounded("QUOTA_HTTP_TIMEOUT", 20, 1, 600)
 PORT = _env_int("PORT", 8080)
 # Provider bodies are kilobytes. The timeout bounds latency, not size, so the read is capped
 # too: a host that streams forever must not be able to grow this process without bound.
@@ -115,7 +136,7 @@ BACKGROUND_URL_DEFAULT = (
 # answers and stay different.
 BACKGROUND_URL_OFF = ("none", "off")
 BACKGROUND_DIR = os.environ.get("QUOTA_BACKGROUND_DIR", "/tmp/quota-panel")
-BACKGROUND_TIMEOUT = _env_int("QUOTA_BACKGROUND_TIMEOUT", 20)
+BACKGROUND_TIMEOUT = _env_int_bounded("QUOTA_BACKGROUND_TIMEOUT", 20, 1, 600)
 BACKGROUND_MAX_BYTES = 8 * 1024 * 1024
 BACKGROUND_RETRY_SECONDS = 300
 # Content type -> the extension the download is stored under. What is *served* comes from
@@ -574,9 +595,15 @@ def iso_to_epoch(text):
 
 
 def http_get_json(url, headers, timeout=HTTP_TIMEOUT):
-    """Return (status, body_json_or_None, error_string_or_None). Never raises."""
-    req = urllib.request.Request(url, headers=headers, method="GET")
+    """Return (status, body_json_or_None, error_string_or_None). Never raises.
+
+    The Request is built inside the try as well: a URL that a provider's own data made malformed
+    (a space or a control character) raises out of Request() before urlopen is ever reached, and
+    that has to be a reported error like any other — not an exception out of a function that
+    promises not to raise one.
+    """
     try:
+        req = urllib.request.Request(url, headers=headers, method="GET")
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             raw = resp.read(MAX_RESPONSE_BYTES + 1)
             status = resp.status
@@ -710,7 +737,7 @@ def fetch_commandcode(account):
     org = unwrap(whoami, "org")
     if org:
         org_id = org.get("id")
-    qs = ("?orgId=%s" % org_id) if org_id else ""
+    qs = ("?orgId=%s" % urllib.parse.quote(str(org_id), safe="")) if org_id else ""
 
     _, credits, err_c = http_get_json(base + "/alpha/billing/credits" + qs, headers)
     _, subs, err_s = http_get_json(base + "/alpha/billing/subscriptions" + qs, headers)
@@ -1166,7 +1193,9 @@ def refresh_all(accounts, store=True):
     # not a fault, but a cycle that outlives its own budget is.
     with STATE_LOCK:
         STATE["poll_started_at"] = time.time()
+    poll_began = time.monotonic()
     results = [poll_account(account) for account in accounts]
+    poll_elapsed = time.monotonic() - poll_began
     bad = [r for r in results if r["state"] != "ok"]
     with STATE_LOCK:
         STATE["accounts"] = results
@@ -1181,10 +1210,8 @@ def refresh_all(accounts, store=True):
             for r in bad
         ]
     FIRST_POLL.set()
-    log(
-        "polled %d account(s), %d ok"
-        % (len(results), len(results) - len(bad))
-    )
+    log("polled %d account(s), %d ok in %.1fs"
+        % (len(results), len(results) - len(bad), poll_elapsed))
     # After the state is published, not before: a page asking for data must never wait on a
     # database write, and history is best-effort by contract.
     if store:
@@ -1198,6 +1225,12 @@ def refresh_all(accounts, store=True):
 # the publication it is waiting for is bought here, on the server, where it is invisible -- the
 # server has fresh data ready marginally before anyone asks. Paying for it on the client instead
 # (client waits 1.1x) is what turned a 30s panel into a 33s one.
+
+# How many cadences a stale publication is tolerated before /api/health answers 503. The client
+# uses the same factor (isStale() in index.html), so the panel and the probe agree on "stale". It
+# must NOT scale with the account count: with 30 accounts the old account-derived budget reported a
+# poller that had stopped as healthy for ~40 minutes, and Docker stayed put.
+SERVER_STALE_CYCLES = 3
 SERVER_REPUBLISH_MARGIN = 0.9
 
 
@@ -1214,6 +1247,47 @@ def poller_loop(accounts, stop_event):
             log("poll cycle failed: %s" % exc)
         elapsed = time.monotonic() - started
         stop_event.wait(max(1.0, interval - elapsed))
+
+
+def health_report():
+    """(status, payload) for /api/health: the POLLER's liveness, not a provider's success.
+
+    Two different clocks. A completed poll leaves `generated_at`, and the panel is stale once that
+    is older than a few cadences — bounded, whatever the account count, so a wedged poller is
+    reported and Docker-restarted in minutes rather than tens of minutes. A cycle that is still
+    RUNNING gets its own account-derived budget instead: a serial loop of HTTP calls legitimately
+    outlasts a fixed multiple of the cadence (3 accounts x 4 calls x HTTP_TIMEOUT is 240s), and
+    flagging a healthy long cycle is what pulled a working panel out of rotation before.
+    """
+    with STATE_LOCK:
+        generated_at = STATE["generated_at"]
+        accounts = list(STATE["accounts"])
+    age = None
+    born = iso_to_epoch(generated_at)
+    if born is not None:
+        age = round(time.time() - born, 1)
+    started = STATE.get("poll_started_at")
+    in_flight = started is not None and (born is None or started > born)
+    cycle_budget = max(POLL_SECONDS, len(accounts) * 4 * HTTP_TIMEOUT)
+    ok = bool(age is not None and age < POLL_SECONDS * SERVER_STALE_CYCLES)
+    if not ok and in_flight and started is not None:
+        ok = time.time() - started < cycle_budget
+    with BACKGROUND_LOCK:
+        # The URL itself is deliberately absent: it may carry a signature.
+        background = {
+            "configured": bool(BACKGROUND["url"]),
+            "served": BACKGROUND["served"],
+            "bytes": BACKGROUND["bytes"] or None,
+            "error": BACKGROUND["error"],
+        }
+    return (200 if ok else 503), {
+        "status": "ok" if ok else "stale",
+        "accounts": len(accounts),
+        "ok_accounts": len([a for a in accounts if a["state"] == "ok"]),
+        "last_poll_age_s": age,
+        "poll_in_flight": in_flight,
+        "background": background,
+    }
 
 
 def homepage_widgets():
@@ -1470,6 +1544,31 @@ class Server(ThreadingHTTPServer):
 
     daemon_threads = True
     request_queue_size = 64
+    # A thread per connection with no cap lets a client that opens connections and trickles bytes
+    # hold one thread (and its fd) each until the timeout, until the process runs out of them.
+    # Bound the concurrency: excess connections wait in the accept backlog instead of each
+    # allocating a thread, and one page load's couple of dozen requests is never throttled.
+    MAX_CONCURRENT_REQUESTS = 64
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._request_slots = threading.BoundedSemaphore(self.MAX_CONCURRENT_REQUESTS)
+
+    def process_request(self, request, client_address):
+        # Acquired before the thread is spawned and released when that thread ends, so the pair is
+        # balanced even when the thread never starts and the cap cannot drift.
+        self._request_slots.acquire()
+        try:
+            super().process_request(request, client_address)
+        except BaseException:
+            self._request_slots.release()
+            raise
+
+    def process_request_thread(self, request, client_address):
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self._request_slots.release()
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -1478,12 +1577,15 @@ class Handler(BaseHTTPRequestHandler):
     # a client that connects and sends nothing pins that thread (and its fd) forever.
     timeout = 15
 
-    def _send(self, status, payload, content_type):
+    def _send(self, status, payload, content_type, cache="no-store"):
         body = payload if isinstance(payload, bytes) else payload.encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-store")
+        # The pages and the JSON must be fresh on every load, so `no-store` is the default. The two
+        # asset routes opt into caching: the artwork changes only when it is re-fetched, and a logo
+        # never changes, so re-downloading them on every navigation is pure waste.
+        self.send_header("Cache-Control", cache)
         # /background takes its content type from the remote host's Content-Type header, so the
         # browser must not second-guess it into something executable on this origin.
         self.send_header("X-Content-Type-Options", "nosniff")
@@ -1533,7 +1635,7 @@ class Handler(BaseHTTPRequestHandler):
         except OSError:
             self._send(404, "not found", "text/plain; charset=utf-8")
             return
-        self._send(200, body, ctype)
+        self._send(200, body, ctype, cache="public, max-age=86400")
 
     def _serve_background(self):
         """Serve the artwork when there is one, and answer 404 when there is not.
@@ -1558,7 +1660,7 @@ class Handler(BaseHTTPRequestHandler):
         except OSError:
             self._send(404, "not found", "text/plain; charset=utf-8")
             return
-        self._send(200, body, ctype)
+        self._send(200, body, ctype, cache="public, max-age=3600")
 
     def do_GET(self):
         # A data bug must not read as an outage: an unexpected shape in state used to escape as a
@@ -1686,44 +1788,8 @@ class Handler(BaseHTTPRequestHandler):
             )
             return
         if path == "/api/health":
-            with STATE_LOCK:
-                generated_at = STATE["generated_at"]
-                accounts = list(STATE["accounts"])
-            age = None
-            born = iso_to_epoch(generated_at)
-            if born is not None:
-                age = round(time.time() - born, 1)
-            # A poll is a serial loop of HTTP calls, so a legitimate cycle outlasts any fixed
-            # multiple of the cadence: 3 accounts x 4 calls x HTTP_TIMEOUT(20s) = 240s against a
-            # 180s tolerance, i.e. a working panel reported unhealthy for most of its wall time
-            # and Docker pulled it out of rotation. Budget from the account count, and treat a
-            # poll that is still running inside its own budget as healthy — a genuinely wedged
-            # poller still goes stale once that budget expires.
-            cycle_budget = max(POLL_SECONDS, len(accounts) * 4 * HTTP_TIMEOUT)
-            started = STATE.get("poll_started_at")
-            in_flight = started is not None and (born is None or started > born)
-            ok = bool(age is not None and age < POLL_SECONDS + cycle_budget)
-            if not ok and in_flight and started is not None:
-                ok = time.time() - started < cycle_budget
-            with BACKGROUND_LOCK:
-                # The URL itself is deliberately absent: it may carry a signature.
-                background = {
-                    "configured": bool(BACKGROUND["url"]),
-                    "served": BACKGROUND["served"],
-                    "bytes": BACKGROUND["bytes"] or None,
-                    "error": BACKGROUND["error"],
-                }
-            self._json(
-                200 if ok else 503,
-                {
-                    "status": "ok" if ok else "stale",
-                    "accounts": len(accounts),
-                    "ok_accounts": len([a for a in accounts if a["state"] == "ok"]),
-                    "last_poll_age_s": age,
-                    "poll_in_flight": in_flight,
-                    "background": background,
-                },
-            )
+            status, payload = health_report()
+            self._json(status, payload)
             return
         self._json(404, {"error": "not found"})
 

@@ -94,7 +94,7 @@ positional fallback is `<provider>-<index>`, and duplicates are fatal.
 |---|---|---|
 | `PORT` | `8080` | Listen port. |
 | `QUOTA_CONFIG` | `/config/accounts.json` | Config path (inside the image; outside it, `./accounts.json`). |
-| `QUOTA_POLL_SECONDS` | `60` | Poll interval **fallback** — `poll_seconds` in the config file wins. |
+| `QUOTA_POLL_SECONDS` | `60` | Poll interval **fallback**, `1`–`3600` — `poll_seconds` in the config file wins, and is bounded `10`–`3600`. |
 | `QUOTA_HTTP_TIMEOUT` | `20` | Per-request timeout, in seconds. |
 | `QUOTA_CURRENCY` | `USD` | Currency reported for a multi-currency balance. |
 | `QUOTA_BACKGROUND_URL` | the default wallpaper URL (hotlinked) | Artwork URL, or `none`/`off`. The config file wins. |
@@ -186,13 +186,14 @@ Each item also carries `percent` and `resets_at`, so a tile can render a progres
 cp accounts.example.json accounts.json
 python3 app.py --check                  # one poll, prints JSON, non-zero if any account is not ok
 PORT=8080 python3 app.py
+QUOTA_DB=./quota.db python3 app.py     # the example config's history path is /data
 python3 tests/smoke.py                  # the HTTP surface
 python3 tests/history.py                # the optional store: config, sampling, rollups, alert log
 python3 tests/balance.py                # registry, balance adapters, error branches
 python3 tests/background.py             # artwork shrink (needs Pillow)
-python3 tests/screenshot.py             # renders both pages in Chromium, rewrites docs/*.png
-SCREENSHOT_OUT=/tmp/shot.png SCREENSHOT_HISTORY_OUT=/tmp/hist.png \
-  python3 tests/screenshot.py           # …or write elsewhere, leaving docs/ alone
+python3 tests/screenshot.py             # renders both pages in Chromium, into a temp dir
+SCREENSHOT_OUT=docs/screenshot.png SCREENSHOT_HISTORY_OUT=docs/history.png \
+  python3 tests/screenshot.py           # …or re-shoot the committed docs/ images
 python3 tests/tab_switch.py             # a burst of tab switches must keep refreshing
 QUOTA_POLL_SECONDS=10 python3 tests/cadence_soak.py   # the countdown must not decay
 ```

@@ -306,6 +306,12 @@ def ui_checks():
     # is COPYed — and a missing COPY is not a build error. Nothing else catches it: CI builds the
     # image but never runs it, so the first symptom would be a crash on a user's first start.
     app_src = open(os.path.join(ROOT, "app.py"), encoding="utf-8").read()
+    # The server bounds its concurrency: a client that opens connections and trickles bytes must
+    # not be able to allocate a thread per connection without limit (the handler timeout only reaps
+    # an idle one).
+    check("the server bounds its concurrent connections",
+          "MAX_CONCURRENT_REQUESTS" in app_src and "BoundedSemaphore" in app_src,
+          "a thread-per-connection server with no cap")
     dockerfile = open(os.path.join(ROOT, "Dockerfile"), encoding="utf-8").read()
     local_modules = sorted({name
                             for name in re.findall(r"^\s*(?:import|from)\s+([a-z_][a-z0-9_]*)",
@@ -656,6 +662,16 @@ def main():
         status, _, _ = get(base + "/static/app.py")
         check("static disallowed type is 403", status == 403, "HTTP %s" % status)
 
+        # Cache policy: the pages and the JSON must never be cached (freshness is the product), but
+        # the artwork and the static assets must be, or every navigation re-downloads the wallpaper
+        # and one logo per card.
+        _, cache_html = head_headers(base + "/")
+        check("the HTML is served no-store",
+              "no-store" in cache_html.get("Cache-Control", ""), str(cache_html.get("Cache-Control")))
+        _, cache_static = head_headers(base + "/static/favicon.svg")
+        check("a static asset is cacheable",
+              "max-age" in cache_static.get("Cache-Control", ""), str(cache_static.get("Cache-Control")))
+
         # Freshness is the whole point of /api/health, and Docker restarts the container on
         # a 503 (Dockerfile HEALTHCHECK). The old check accepted 200 OR 503, so a
         # permanently-stale panel — restarted forever — passed the suite.
@@ -717,6 +733,10 @@ def main():
             magic = b"\x89PNG\r\n\x1a\n" if ctype == "image/png" else b"RIFF"
             check("the artwork served is an image of the type it claims",
                   body.startswith(magic), "served %d bytes starting %r" % (len(body), body[:8]))
+
+            _, cache_bg = head_headers(base2 + "/background")
+            check("the artwork is cacheable",
+                  "max-age" in cache_bg.get("Cache-Control", ""), str(cache_bg.get("Cache-Control")))
         finally:
             stop(proc2, env2)
 
@@ -794,6 +814,19 @@ def main():
                   get(base6 + "/")[0] == 200)
         finally:
             stop(proc6, env6)
+
+        # The environment fallback is bounded too: a zero used to become a one-second poll loop
+        # against every provider (the file's own poll_seconds was already bounded 10..3600).
+        for value, expected in (("0", 60), ("15", 15)):
+            cfgv = write_config(os.path.join(scratch, "envpoll-%s.json" % value),
+                                {k: v for k, v in base_cfg.items() if k != "poll_seconds"})
+            procv, basev, envv, _ = boot(cfgv, dict(stub, QUOTA_POLL_SECONDS=value), scratch)
+            try:
+                served = json.loads(get(basev + "/api/quota")[2])["poll_seconds"]
+                check("QUOTA_POLL_SECONDS=%s serves poll_seconds=%s" % (value, expected),
+                      served == expected, "poll_seconds=%s" % served)
+            finally:
+                stop(procv, envv)
 
         # ---- QUOTA_DEEPSEEK_CLOCK: the single switch that hides the price clock ----
         # README documents it, so it is exercised: off must reach the payload the UI reads, and

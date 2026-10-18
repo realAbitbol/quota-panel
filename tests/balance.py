@@ -23,6 +23,7 @@ import os
 import socket
 import sys
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -677,6 +678,39 @@ def main():
         check("a provider with no logo file falls back instead of breaking",
               ghost["logo"] == app.LOGO_FALLBACK, ghost["logo"])
         del app.PROVIDERS["__ghost__"]
+
+        # ---- /api/health: a wedged poller must go stale in cadence-bounded time ----------------
+        # The budget used to scale with the account count, so with 30 accounts a poller that had
+        # stopped read healthy for ~40 minutes: no 503, so Docker never restarted it. Ten minutes
+        # after a wedge is stale now, and was healthy before.
+        saved_poll, saved_state = app.POLL_SECONDS, app.STATE
+        try:
+            app.POLL_SECONDS = 60
+            app.STATE = {"accounts": [{"id": "a", "state": "ok"}] * 30, "errors": [],
+                         "generated_at": app.now_iso()}
+            fresh_status = app.health_report()[0]
+            app.STATE = {"accounts": [{"id": "a", "state": "ok"}] * 30, "errors": [],
+                         "generated_at": app.iso_from_reset(time.time() - 600)}
+            wedged_status = app.health_report()[0]
+        finally:
+            app.POLL_SECONDS, app.STATE = saved_poll, saved_state
+        check("/api/health reports a fresh poller healthy", fresh_status == 200, str(fresh_status))
+        check("/api/health reports a wedged poller stale whatever the account count",
+              wedged_status == 503, str(wedged_status))
+
+        # A malformed URL must be reported, not raised: Request() throws InvalidURL for a space
+        # before urlopen is reached, and it used to be built outside the try.
+        try:
+            bad_url = app.http_get_json("http://127.0.0.1:9/a b", {})
+        except Exception as exc:                       # noqa: BLE001 - the failure is the point
+            bad_url = "%s: %s" % (type(exc).__name__, exc)
+        check("http_get_json reports a malformed URL instead of raising",
+              isinstance(bad_url, tuple) and len(bad_url) == 3 and bad_url[1] is None and bad_url[2],
+              repr(bad_url))
+        app_src_txt = open(os.path.join(ROOT, "app.py"), encoding="utf-8").read()
+        check("the CommandCode orgId is URL-encoded",
+              "urllib.parse.quote(str(org_id)" in app_src_txt,
+              "an org id carrying a space made the whole URL malformed")
 
     finally:
         srv.shutdown()

@@ -1102,10 +1102,17 @@ def page_checks():
           '"window-select"' not in page and 'id="account-select"' in page
           and 'id="range-select"' in page and 'id="bucket-select"' in page,
           "a window selector asks the reader to answer the question the page exists to answer")
-    check("the window that stands for an account is the widest its label names",
+    # The rule is EXECUTED in tests/screenshot.py, in the real page (via CDP), because a grep
+    # cannot tell an inverted sentinel from a correct one -- which is exactly how the `Infinity`
+    # that made every unnameable window win got in here in the first place.
+    check("the window that stands for an account never beats one that names a period",
           "function choosePrimary" in page
-          and "position > ranked[entry.account_id].position" in page and "Infinity" in page,
-          "a label that names no period cannot be ranked, so it must never stand for an account")
+          and "const position = seconds === null ? -1 : seconds;" in page
+          and "position > ranked[entry.account_id].position" in page,
+          "an unnameable label must lose to a nameable one, not win")
+    check("a window label's unit is matched whole, never as a prefix",
+          "new RegExp('\\\\b' + token + '\\\\b')" in page,
+          "a bare prefix scored 'Web searches' as a week")
     check("one account selected draws every window that account publishes",
           "s.account_id === state.account" in page,
           "with an account chosen, identity is the window; with all of them, it is the account")

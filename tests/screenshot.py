@@ -33,8 +33,14 @@ import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-OUT = os.environ.get("SCREENSHOT_OUT", os.path.join(ROOT, "docs", "screenshot.png"))
-HISTORY_OUT = os.environ.get("SCREENSHOT_HISTORY_OUT", os.path.join(ROOT, "docs", "history.png"))
+# The default outputs are the RENDERED artefact, not the committed one: a plain run used to
+# rewrite docs/*.png and leave two 0.5-1 MB binaries modified in the working tree. Re-shooting the
+# committed images is explicit:
+#   SCREENSHOT_OUT=docs/screenshot.png SCREENSHOT_HISTORY_OUT=docs/history.png python3 tests/screenshot.py
+_DEFAULT_OUT_DIR = tempfile.gettempdir()
+OUT = os.environ.get("SCREENSHOT_OUT", os.path.join(_DEFAULT_OUT_DIR, "quota-panel-screenshot.png"))
+HISTORY_OUT = os.environ.get("SCREENSHOT_HISTORY_OUT",
+                             os.path.join(_DEFAULT_OUT_DIR, "quota-panel-history.png"))
 BROWSER = os.environ.get(
     "SCREENSHOT_BROWSER", "/Applications/Helium.app/Contents/MacOS/Helium"
 )
@@ -66,19 +72,25 @@ def label_seconds(label):
     text = str(label or "").strip().lower()
     if not text:
         return None
-    units = [("hours", 3600), ("hour", 3600), ("hrs", 3600), ("hr", 3600), ("h", 3600),
-             ("days", 86400), ("day", 86400), ("d", 86400),
-             ("weeks", 604800), ("week", 604800), ("w", 604800),
-             ("months", 2592000), ("month", 2592000), ("mo", 2592000),
-             ("minutes", 60), ("minute", 60), ("mins", 60), ("min", 60), ("m", 60),
-             ("years", 31536000), ("year", 31536000), ("y", 31536000)]
+    # Mirrors windowSeconds() in static/history.html, whole-word rule included: a unit is a token,
+    # never a prefix (`\bw` also matched "Web searches"), and the -ly adjectives are listed because
+    # "Daily" is not "Day" + "ly". The two must stay in step, or the harness checks a rule the page
+    # no longer follows.
+    units = [("h", 3600), ("hr", 3600), ("hrs", 3600), ("hour", 3600), ("hours", 3600),
+             ("hourly", 3600),
+             ("d", 86400), ("day", 86400), ("days", 86400), ("daily", 86400),
+             ("w", 604800), ("week", 604800), ("weeks", 604800), ("weekly", 604800),
+             ("mo", 2592000), ("month", 2592000), ("months", 2592000), ("monthly", 2592000),
+             ("m", 60), ("min", 60), ("mins", 60), ("minute", 60), ("minutes", 60),
+             ("minutely", 60),
+             ("y", 31536000), ("year", 31536000), ("years", 31536000), ("yearly", 31536000)]
     named = re.search(r"(\d+(?:\.\d+)?)\s*([a-z]+)", text)
     if named:
         for word, seconds in units:
             if word == named.group(2):
                 return float(named.group(1)) * seconds
     for word, seconds in units:
-        if re.search(r"\b" + word, text):
+        if re.search(r"\b" + word + r"\b", text):
             return seconds
     return None
 
@@ -846,9 +858,19 @@ def main():
                   cadence <= first <= step + 1,
                   "countdown says %ss, /api/quota publishes every %ss"
                   % (first, cadence))
-            time.sleep(2.4)
-            after = feed_text()
-            m2 = re.match(pattern, after.strip())
+            # Sample until it decreases instead of reading once after a fixed sleep. A single
+            # 2.4 s pair is flaky: a re-arm (a fetch landing, or the document being reported
+            # visible) resets nextFetchAt to the full cadence, and the two reads then both show it
+            # -- measured once in this repository as '60 seconds then 60 seconds' with a perfectly
+            # healthy countdown. cadence_soak.py owns the sawtooth; here the number only has to move.
+            after, m2 = feed, None
+            deadline = time.time() + 15
+            while time.time() < deadline:
+                after = feed_text()
+                m2 = re.match(pattern, after.strip())
+                if bool(m2) and int(m2.group(2)) < first:
+                    break
+                time.sleep(0.4)
             check("  -> and it actually ticks down",
                   bool(m2) and int(m2.group(2)) < first,
                   "%r then %r" % (feed, after))
@@ -1219,13 +1241,41 @@ def main():
             if state.get("ready") == "complete" and state.get("cells"):
                 break
             time.sleep(0.4)
-        # Rows are one per account that publishes the window the page picked to stand for an account:
-        # the widest window whose label names a period, which the page then says out loud. An account
-        # that publishes no such window has no row.
+        # Rows are one per account the page picked a window to stand for: the widest whose label
+        # names a period, which the page then says out loud. An account whose labels all name no
+        # period still gets a row (the page falls back to its first window).
+        # The window-ranking rule is EXECUTED, not grepped: tests/history.py can only assert the
+        # source text, where an inverted sentinel (every unnameable label winning) reads exactly
+        # like a correct one. A classic script puts top-level `function` declarations on the page's
+        # global, so the page's real functions are callable from here.
+        rank = cdp.call("Runtime.evaluate", returnByValue=True, expression=r"""
+          (function(){
+            const seconds = ['Session','Weekly','Web Searches','Window','Daily','5 h','Month','Tokens']
+              .map(windowSeconds);
+            const primary = choosePrimary([
+              {account_id:'z', window_key:'zsl', window_label:'Session', kind:'window'},
+              {account_id:'z', window_key:'zsw', window_label:'Weekly', kind:'window'},
+              {account_id:'z', window_key:'zsearch', window_label:'Web Searches', kind:'window'},
+              {account_id:'n', window_key:'only', window_label:'Mystery', kind:'window'},
+              {account_id:'c', window_key:'cmonth', window_label:'Month', kind:'window'},
+              {account_id:'c', window_key:'cfive', window_label:'5 h', kind:'window'}
+            ]);
+            return JSON.stringify({seconds: seconds, primary: primary});
+          })()
+        """)
+        try:
+            ranking = json.loads((rank.get("result") or {}).get("value") or "{}")
+        except ValueError:
+            ranking = {}
+        check("a label's unit is a whole word, so no label is ranked by its first letter",
+              ranking.get("seconds") == [None, 604800, None, None, 86400, 18000, 2592000, None],
+              "%s" % ranking.get("seconds"))
+        check("the window that stands for an account names a period",
+              ranking.get("primary") == {"z": "zsw", "n": "only", "c": "cmonth"},
+              "%s" % ranking.get("primary"))
         standing = standing_label(live["accounts"])
         accounts_with_standing = [a for a in live["accounts"] if any(
-            label_seconds(HISTORY_WINDOW_LABELS.get(w.get("key"), w.get("label"))) is not None
-            for w in (a.get("windows") or []) if w.get("kind") in (None, "window"))]
+            w.get("kind") in (None, "window") for w in (a.get("windows") or []))]
         if not state:
             print("  history probe never saw this page: %s" % json.dumps(last_probe)[:400])
         check("the history page renders its store", state.get("cells", 0) > 0,

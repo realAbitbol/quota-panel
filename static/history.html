@@ -513,19 +513,22 @@ function seriesLabel(entry){
 function windowSeconds(label){
   const text = String(label || '').trim().toLowerCase();
   if(!text) return null;
-  const units = [['hours',3600],['hour',3600],['hrs',3600],['hr',3600],['h',3600],
-                 ['days',86400],['day',86400],['d',86400],
-                 ['weeks',604800],['week',604800],['w',604800],
-                 ['months',2592000],['month',2592000],['mo',2592000],
-                 ['minutes',60],['minute',60],['mins',60],['min',60],['m',60],
-                 ['years',31536000],['year',31536000],['y',31536000]];
+  // A unit is a whole word, never a prefix: `\bw` also matched "Web searches", which names no
+  // period at all, and a window that cannot be ranked must not be ranked (see choosePrimary). The
+  // "-ly" adjectives are listed explicitly because "Daily" is not "Day" + "ly".
+  const UNITS = [
+    ['h',3600],['hr',3600],['hrs',3600],['hour',3600],['hours',3600],['hourly',3600],
+    ['d',86400],['day',86400],['days',86400],['daily',86400],
+    ['w',604800],['week',604800],['weeks',604800],['weekly',604800],
+    ['mo',2592000],['month',2592000],['months',2592000],['monthly',2592000],
+    ['m',60],['min',60],['mins',60],['minute',60],['minutes',60],['minutely',60],
+    ['y',31536000],['year',31536000],['years',31536000],['yearly',31536000],
+  ];
+  const byToken = new Map(UNITS);
   const named = text.match(/(\d+(?:\.\d+)?)\s*([a-z]+)/);
-  if(named){
-    const unit = units.find(entry => entry[0] === named[2]);
-    if(unit) return parseFloat(named[1]) * unit[1];
-  }
-  for(const [word, seconds] of units){
-    if(new RegExp('\\b' + word).test(text)) return seconds;
+  if(named && byToken.has(named[2])) return parseFloat(named[1]) * byToken.get(named[2]);
+  for(const [token, seconds] of UNITS){
+    if(new RegExp('\\b' + token + '\\b').test(text)) return seconds;
   }
   return null;
 }
@@ -538,7 +541,10 @@ function choosePrimary(series){
   for(const entry of series){
     if(entry.kind === 'balance') continue;   // a balance names no period, so it cannot stand for an account
     const seconds = windowSeconds(entry.window_label);
-    const position = seconds === null ? Infinity : seconds;
+    // A label that names no period is not ranked: `-1` loses to every real period. It also keeps
+    // the account's first window as a fallback, so an account whose windows all name no period
+    // still has a primary instead of vanishing from the "all accounts" view.
+    const position = seconds === null ? -1 : seconds;
     if(!ranked[entry.account_id] || position > ranked[entry.account_id].position){
       ranked[entry.account_id] = {key: entry.window_key, position: position};
     }
