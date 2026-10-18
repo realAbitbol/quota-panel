@@ -17,6 +17,7 @@ Runs in about half a minute and needs nothing but the standard library.
 """
 import importlib.util
 import json
+import math
 import sqlite3
 import os
 import shutil
@@ -480,6 +481,68 @@ def storage_checks():
     check("a bucket whose raw rows were pruned does not shadow its complete rollup",
           shadow_entry.get("avg", [None])[0] == 70.0 and shadow_entry.get("n", [0])[0] == 3,
           "avg=%s n=%s" % (shadow_entry.get("avg"), shadow_entry.get("n")))
+
+    # The read path summarises in the database. A month of samples is ~97 k rows in production,
+    # and walking them one at a time in Python cost seconds on a page that is redrawn while the
+    # reader looks at it. What keeps that cheap is an invariant, not a benchmark: Python sees one
+    # row per CELL and series — never one per sample. So count the rows the payload pulls out of
+    # sqlite and hold them to the grid it draws; a per-sample walk cannot satisfy this.
+    wide_path = fresh(os.path.join(WORK, "wide.db"))
+    wide_cfg = config(path=wide_path, sample_seconds=60)      # rollup_seconds = BUCKET (900)
+    wide_seconds, wide_step = 30 * DAY, 60
+    wide_rows = wide_seconds // wide_step                     # 43 200 samples in one series
+    conn = history.connect(wide_path)
+    try:
+        conn.executemany(
+            "INSERT INTO snapshots (ts, account_id, provider, window_key, percent) VALUES (?,?,?,?,?)",
+            [(history.epoch_to_iso(NOW - wide_seconds + wide_step * i), "cmd-perso", "synthetic",
+              "monthly", 40.0 + (i % 7)) for i in range(wide_rows)],
+        )
+        conn.execute(
+            "INSERT OR REPLACE INTO series (account_id, window_key, account_label, provider, "
+            "window_label, kind, first_ts, last_ts) VALUES (?,?,?,?,?,?,?,?)",
+            ("cmd-perso", "monthly", "CommandCode", "synthetic", "Month", "window",
+             history.epoch_to_iso(NOW - wide_seconds), history.epoch_to_iso(NOW)),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    wide_bucket = 3600
+    wide_grain = math.gcd(wide_bucket, BUCKET)
+    counted = {"rows": 0}
+    real_connect = history.connect
+
+    class CountingConnection:
+        """The handle payload() sees, counting every row sqlite hands over."""
+
+        def __init__(self, conn):
+            self._conn = conn
+
+        def execute(self, sql, args=()):
+            rows = self._conn.execute(sql, args).fetchall()
+            counted["rows"] += len(rows)
+            return iter(rows)
+
+        def close(self):
+            self._conn.close()
+
+    history.connect = lambda path, read_only=False: CountingConnection(
+        real_connect(path, read_only=read_only))
+    try:
+        wide = history.payload({"hours": [str(wide_seconds // 3600)],
+                                "bucket_seconds": [str(wide_bucket)], "max_points": ["1000"]},
+                               wide_cfg, now_ts=NOW)
+    finally:
+        history.connect = real_connect
+    wide_entry = {e["key"]: e for e in wide["series"]}.get("cmd-perso/monthly") or {}
+    wide_cells = len(wide.get("t") or [])
+    # One row per grain cell per series, plus one per drawn cell — and the reading itself has to
+    # still be whole, so the guard cannot be satisfied by reading nothing.
+    ceiling = wide_rows // (wide_grain // wide_step) + wide_cells + 8
+    check("a wide range is summarised by the database, not walked row by row",
+          wide_entry.get("samples") == wide_rows and counted["rows"] <= ceiling,
+          "samples=%s cells=%s rows_read=%s ceiling=%s" % (
+              wide_entry.get("samples"), wide_cells, counted["rows"], ceiling))
 
     # H7: the read path is write-proof. mode=ro when it opens, query_only on the fallback; either
     # way an INSERT must be refused.

@@ -33,6 +33,7 @@ way only (app.py imports this module lazily), so a broken history layer can neve
 panel from serving.
 """
 import json
+import math
 import os
 import sqlite3
 import urllib.parse
@@ -950,79 +951,113 @@ def payload(params, config, now_ts=None):
                 entry[3] = max(entry[3], high)
 
         raw_rows = 0
-        for row in conn.execute(
-            "SELECT ts, account_id, window_key, percent, resets_at FROM snapshots "
-            "WHERE ts >= ? AND ts < ?",
-            (epoch_to_iso(start), epoch_to_iso(end + bucket)),
+        # The rows are summarised by the database, not read one at a time. A month of samples at
+        # the default cadence is ~97 k rows, and parsing each stamp in Python cost seconds; the
+        # GROUP BY returns one row per (cell, series) instead, and sqlite's `strftime('%s', ts)`
+        # is the same epoch `iso_to_epoch` computes (measured equal on every row of a live store).
+        #
+        # The grain is the coarsest grid that divides BOTH the requested bucket and a rollup
+        # bucket, so a group never straddles a cell of the grid nor a rollup bucket: every row of
+        # it belongs to the same cell and to the same `answered` entry, which is why the sums,
+        # minima and maxima are the ones the per-row loop produced.
+        grain = math.gcd(bucket, rollup_seconds)
+        for cell, account_id, window_key, n, total, low, high in conn.execute(
+            "SELECT (CAST(strftime('%s', ts) AS INTEGER) / ?) * ? AS cell, account_id, window_key, "
+            "COUNT(*), SUM(percent), MIN(percent), MAX(percent) FROM snapshots "
+            "WHERE ts >= ? AND ts < ? GROUP BY cell, account_id, window_key",
+            (grain, grain, epoch_to_iso(start), epoch_to_iso(end + bucket)),
         ):
-            epoch = iso_to_epoch(row["ts"])
-            if epoch is None:
+            if cell is None:
                 continue
-            index = position.get(bucket_of(epoch, bucket))
+            index = position.get(bucket_of(cell, bucket))
             if index is None:
                 continue
-            key = "%s/%s" % (row["account_id"], row["window_key"])
-            accumulate(key, index, 1, row["percent"], row["percent"], row["percent"], totals)
-            answered.add((key, bucket_of(epoch, rollup_seconds)))
-            _add_reset(resets, key, row["resets_at"])
-            raw_rows += 1
+            key = "%s/%s" % (account_id, window_key)
+            accumulate(key, index, n, total, low, high, totals)
+            answered.add((key, bucket_of(cell, rollup_seconds)))
+            raw_rows += n
+
+        # Reset stamps are a set per series, not a per-cell figure: read them apart, so the
+        # thousands of rows that carry the same one are not walked in Python.
+        for account_id, window_key, resets_at in conn.execute(
+            "SELECT DISTINCT account_id, window_key, resets_at FROM snapshots "
+            "WHERE ts >= ? AND ts < ? AND resets_at IS NOT NULL",
+            (epoch_to_iso(start), epoch_to_iso(end + bucket)),
+        ):
+            _add_reset(resets, "%s/%s" % (account_id, window_key), resets_at)
 
         rollup_rows = 0
-        for row in conn.execute(
-            "SELECT bucket_ts, account_id, window_key, n, pct_sum, pct_min, pct_max FROM rollups "
+        for epoch, account_id, window_key, n, total, low, high in conn.execute(
+            "SELECT CAST(strftime('%s', bucket_ts) AS INTEGER), account_id, window_key, "
+            "n, pct_sum, pct_min, pct_max FROM rollups "
             "WHERE bucket_ts >= ? AND bucket_ts < ?",
             (epoch_to_iso(start), epoch_to_iso(end + bucket)),
         ):
-            epoch = iso_to_epoch(row["bucket_ts"])
             if epoch is None:
                 continue
             index = position.get(bucket_of(epoch, bucket))
             if index is None:
                 continue
-            key = "%s/%s" % (row["account_id"], row["window_key"])
+            key = "%s/%s" % (account_id, window_key)
             if (key, bucket_of(epoch, rollup_seconds)) in answered:
                 continue                      # raw is the finer record of that same rollup bucket
-            accumulate(key, index, row["n"], row["pct_sum"], row["pct_min"], row["pct_max"], totals)
+            accumulate(key, index, n, total, low, high, totals)
             rollup_rows += 1
 
         balance_rows = 0
-        for row in conn.execute(
-            "SELECT ts, account_id, window_key, amount, currency, resets_at FROM balances "
-            "WHERE ts >= ? AND ts < ?",
-            (epoch_to_iso(start), epoch_to_iso(end + bucket)),
+        # A money balance is summarised the same way, at the same grain — `amount` is summed, not
+        # a percent averaged, but the grouping and the `answered` rule are identical.
+        for cell, account_id, window_key, n, total, low, high in conn.execute(
+            "SELECT (CAST(strftime('%s', ts) AS INTEGER) / ?) * ? AS cell, account_id, window_key, "
+            "COUNT(*), SUM(amount), MIN(amount), MAX(amount) FROM balances "
+            "WHERE ts >= ? AND ts < ? GROUP BY cell, account_id, window_key",
+            (grain, grain, epoch_to_iso(start), epoch_to_iso(end + bucket)),
         ):
-            epoch = iso_to_epoch(row["ts"])
-            if epoch is None:
+            if cell is None:
                 continue
-            index = position.get(bucket_of(epoch, bucket))
+            index = position.get(bucket_of(cell, bucket))
             if index is None:
                 continue
-            key = "%s/%s" % (row["account_id"], row["window_key"])
-            accumulate(key, index, 1, row["amount"], row["amount"], row["amount"], balance_totals)
-            balance_answered.add((key, bucket_of(epoch, rollup_seconds)))
-            if row["currency"]:
-                currency[key] = row["currency"]
-            _add_reset(resets, key, row["resets_at"])
-            balance_rows += 1
+            key = "%s/%s" % (account_id, window_key)
+            accumulate(key, index, n, total, low, high, balance_totals)
+            balance_answered.add((key, bucket_of(cell, rollup_seconds)))
+            balance_rows += n
+
+        # The currency is a property of the series, and the reader is shown the one its newest
+        # reading carried: sqlite's bare column beside MAX(ts) is that row's value.
+        for account_id, window_key, cur, _newest in conn.execute(
+            "SELECT account_id, window_key, currency, MAX(ts) FROM balances "
+            "WHERE ts >= ? AND ts < ? AND currency IS NOT NULL "
+            "GROUP BY account_id, window_key",
+            (epoch_to_iso(start), epoch_to_iso(end + bucket)),
+        ):
+            currency["%s/%s" % (account_id, window_key)] = cur
+
+        for account_id, window_key, resets_at in conn.execute(
+            "SELECT DISTINCT account_id, window_key, resets_at FROM balances "
+            "WHERE ts >= ? AND ts < ? AND resets_at IS NOT NULL",
+            (epoch_to_iso(start), epoch_to_iso(end + bucket)),
+        ):
+            _add_reset(resets, "%s/%s" % (account_id, window_key), resets_at)
 
         balance_rollup_rows = 0
-        for row in conn.execute(
-            "SELECT bucket_ts, account_id, window_key, n, amt_sum, amt_min, amt_max, currency FROM "
-            "balance_rollups WHERE bucket_ts >= ? AND bucket_ts < ?",
+        for epoch, account_id, window_key, n, total, low, high, cur in conn.execute(
+            "SELECT CAST(strftime('%s', bucket_ts) AS INTEGER), account_id, window_key, "
+            "n, amt_sum, amt_min, amt_max, currency FROM balance_rollups "
+            "WHERE bucket_ts >= ? AND bucket_ts < ?",
             (epoch_to_iso(start), epoch_to_iso(end + bucket)),
         ):
-            epoch = iso_to_epoch(row["bucket_ts"])
             if epoch is None:
                 continue
             index = position.get(bucket_of(epoch, bucket))
             if index is None:
                 continue
-            key = "%s/%s" % (row["account_id"], row["window_key"])
+            key = "%s/%s" % (account_id, window_key)
             if (key, bucket_of(epoch, rollup_seconds)) in balance_answered:
                 continue
-            if row["currency"]:
-                currency[key] = row["currency"]
-            accumulate(key, index, row["n"], row["amt_sum"], row["amt_min"], row["amt_max"], balance_totals)
+            if cur:
+                currency[key] = cur
+            accumulate(key, index, n, total, low, high, balance_totals)
             balance_rollup_rows += 1
 
         for (key, index), (n, total, low, high) in totals.items():
