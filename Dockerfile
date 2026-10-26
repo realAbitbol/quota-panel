@@ -3,7 +3,7 @@
 # the Server header of every response. This is the multi-arch index digest (verified:
 # content-type application/vnd.oci.image.index.v1+json), so it still resolves per platform.
 # To bump: docker buildx imagetools inspect python:3.14-alpine
-FROM python:3.14-alpine@sha256:9e9fde4d32eedce0b661d9ab91e826b62dddf28e928c230ec55f1866cac66b01
+FROM python:3.15-alpine@sha256:d44b1254cb92329418d164b22b20d86bbd3869d48e80e09e476531a409a728bb
 
 WORKDIR /app
 
