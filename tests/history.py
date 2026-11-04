@@ -1040,7 +1040,7 @@ def page_checks():
           ":focus-visible{outline:2px solid var(--accent)" in page,
           "the page's custom controls must show where the keyboard is")
     check("the history page clears the fixed support pill on a phone",
-          "@media (max-width:640px){ body{padding:14px 14px 68px} }" in page,
+          "@media (max-width:640px){ body{padding:16px 16px 72px} }" in page,
           "the pill covers the last panel under 640px otherwise")
     check("one failed panel does not abort the rest",
           "function safeRender" in page and "function reportRenderError" in page

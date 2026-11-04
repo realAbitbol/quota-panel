@@ -34,6 +34,8 @@
     --fg:#e8ecf5; --muted:#b7c2d6; --dim:#8b95ab; --ok:#33d69f; --warn:#f5c451; --hot:#ff6b6b; --accent:#3568d6;
     --accent-rgb:53,104,214;
     --card-alpha:.72; --card-blur:14px;
+    --mono:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,"Roboto Mono",monospace;
+    --ease:cubic-bezier(.22,1,.36,1);
   }
   *{box-sizing:border-box}
   /* The page's custom chart control is the only keyboard stop, and a UA ring on an
@@ -42,7 +44,7 @@
   html,body{min-height:100%}
   body{margin:0;color:var(--fg);
        font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
-       padding:20px 22px 18px;
+       padding:24px 22px;
        background:var(--bg) url("/background") center / cover no-repeat}
   /* Readability scrim: the same curve as the live panel, so a card reads the same on both
      pages over the same artwork. Pointer-events off so it never swallows clicks. */
@@ -52,16 +54,16 @@
   /* The header floats: it sticks to the top of the viewport while the page scrolls, so the
      panel's identity and the way to the other page never scroll out of reach. Translucent plus
      blurred, so content passing under it stays legible rather than vanishing. */
-  header{position:sticky;top:20px;z-index:20;display:flex;align-items:center;gap:14px;
-       flex-wrap:wrap;margin-bottom:18px;
+  header{position:sticky;top:24px;z-index:20;display:flex;align-items:center;gap:16px;
+       flex-wrap:wrap;margin-bottom:16px;
        background:rgba(var(--card),var(--card-alpha));
-       border:1px solid var(--line);border-radius:16px;padding:12px 16px;
+       border:1px solid var(--line);border-radius:16px;padding:14px 16px;
        backdrop-filter:blur(var(--card-blur));-webkit-backdrop-filter:blur(var(--card-blur))}
-  h1{font-size:20px;margin:0;letter-spacing:-.01em;font-weight:650}
-  h2{font-size:14px;margin:0 0 4px;letter-spacing:.2px}
-  .sub{font-size:11.5px;color:var(--dim);margin-bottom:12px}
+  h1{font-size:20px;line-height:28px;margin:0;font-weight:600}
+  h2{font-size:14px;line-height:20px;margin:0 0 4px}
+  .sub{font-size:12px;color:var(--dim);margin-bottom:12px}
   .logo{width:28px;height:28px;border-radius:8px;flex:0 0 auto;align-self:center;display:block}
-  .muted{color:var(--muted);font-size:12.5px}
+  .muted{color:var(--muted);font-size:13px}
   /* Same position as the live panel's entry point: the last thing in the header, flush right. */
   .spacer{margin-left:auto}
   /* The Dashboard/History switch: one segmented control, the same shape as the live panel's --
@@ -69,7 +71,7 @@
   /* inline-grid with equal columns: both halves are the same width whatever the labels, so the
      control reads as one switch rather than two labels of different length. */
   .navseg{display:inline-grid;grid-auto-flow:column;grid-auto-columns:1fr;
-       border:1px solid var(--line);border-radius:9px;overflow:hidden;font-size:12.5px}
+       border:1px solid var(--line);border-radius:9px;overflow:hidden;font-size:13px}
   .navseg-item{display:inline-flex;align-items:center;justify-content:center;gap:6px;font-weight:600;
        color:var(--muted);text-decoration:none;padding:4px 14px;cursor:pointer}
   .navseg-item+.navseg-item{border-left:1px solid var(--line)}
@@ -77,20 +79,22 @@
   .navseg-item:not(.on):hover{color:var(--fg);background:rgba(var(--accent-rgb),.10)}
   .navseg-item:active{transform:translateY(1px)}
   @media (prefers-reduced-motion:no-preference){
-    .navseg-item{transition:color .15s,background .15s}
+    .navseg-item{transition:color .15s var(--ease),background .15s var(--ease)}
   }
   main{display:flex;flex-direction:column;gap:16px}
   .panel{background:rgba(var(--card),var(--card-alpha));border:1px solid var(--line);border-radius:16px;
-       padding:18px;backdrop-filter:blur(var(--card-blur));-webkit-backdrop-filter:blur(var(--card-blur))}
-  .controls{display:flex;flex-wrap:wrap;gap:14px 18px;align-items:center;margin-bottom:16px}
-  .controls label{font-size:12px;color:var(--muted);display:flex;gap:6px;align-items:center}
+       padding:20px;backdrop-filter:blur(var(--card-blur));-webkit-backdrop-filter:blur(var(--card-blur))}
+  .controls{display:flex;flex-wrap:wrap;gap:12px 16px;align-items:center;margin-bottom:16px}
+  .controls label{font-size:12px;color:var(--muted);display:flex;gap:8px;align-items:center}
   select{background:var(--card-2);color:var(--fg);border:1px solid var(--line);border-radius:9px;
-       padding:5px 8px;font:inherit;font-size:12.5px}
+       padding:4px 10px;font:inherit;font-size:13px}
   .stats{display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));margin-bottom:16px}
-  .stat{background:var(--card-2);border:1px solid var(--line);border-radius:12px;padding:12px 14px}
-  .stat .k{font-size:10.5px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em}
-  .stat .v{font-size:22px;font-weight:700;margin-top:3px;letter-spacing:-.02em;font-variant-numeric:tabular-nums}
-  .stat .s{font-size:11.5px;color:var(--muted);margin-top:2px}
+  .stat{background:var(--card-2);border:1px solid var(--line);border-radius:12px;padding:12px 16px}
+  /* The four stat labels were shouted in spaced capitals, 10.5px: the same sign the dashboard's
+     card labels had. Sentence case in the figures' mono, at the same step as every other label. */
+  .stat .k{font:500 11px/16px var(--mono);color:var(--dim);letter-spacing:0}
+  .stat .v{font-size:22px;font-weight:600;margin-top:4px;letter-spacing:0;font-variant-numeric:tabular-nums}
+  .stat .s{font-size:12px;color:var(--muted);margin-top:4px}
   .chart-wrap{position:relative;width:100%}
   .sq-side{display:flex;align-items:center;gap:18px;margin-top:12px}
   .sq-side .chart-wrap{flex:0 0 236px;width:236px;max-width:100%;aspect-ratio:1/1}
@@ -98,23 +102,23 @@
   .legend button .val{color:var(--dim);margin-left:6px;font-variant-numeric:tabular-nums}
   .sq-list{list-style:none;margin:0;padding:0;flex:1}
   .sq-list li{display:flex;align-items:center;justify-content:space-between;gap:12px;
-       padding:5px 0;border-bottom:1px solid var(--line);font-size:12px;color:var(--dim)}
+       padding:4px 0;border-bottom:1px solid var(--line);font-size:12px;color:var(--dim)}
   .sq-list li:last-child{border-bottom:0}
   .sq-list li b{color:var(--fg);font-weight:600;font-variant-numeric:tabular-nums}
-  .sq-list .dot{width:8px;height:8px;border-radius:50%;display:inline-block;margin-right:7px}
+  .sq-list .dot{width:8px;height:8px;border-radius:50%;display:inline-block;margin-right:8px}
   @media (max-width:700px){
     .sq-side{flex-direction:column}
     .sq-side .chart-wrap{flex:0 0 auto}
   }
   svg{display:block;width:100%;height:auto;overflow:visible}
   /* AIMeter's legend: a dot, a name, and a click that shows that line alone. */
-  .legend{display:flex;flex-wrap:wrap;gap:6px 16px;margin-top:12px}
+  .legend{display:flex;flex-wrap:wrap;gap:8px 16px;margin-top:12px}
   .legend button{background:none;border:0;color:var(--dim);font:inherit;font-size:12px;cursor:pointer;
-       padding:0;display:flex;align-items:center;gap:7px}
+       padding:0;display:flex;align-items:center;gap:8px}
   .legend button.off{opacity:.35}
   .legend .dot{width:8px;height:8px;border-radius:50%;flex:0 0 auto}
-  .readout{margin-top:10px;font-size:12.5px;color:var(--dim);min-height:20px;
-       font-variant-numeric:tabular-nums;border-top:1px dashed var(--line);padding-top:9px}
+  .readout{margin-top:12px;font-size:13px;color:var(--dim);min-height:20px;
+       font-variant-numeric:tabular-nums;border-top:1px solid var(--line);padding-top:8px}
   .readout b{color:var(--fg);font-weight:600}
   /* The intensity map, laid out like AIMeter's: a fixed name column, then one equal column per day,
      so a single day is a square and never a full-width bar. */
@@ -123,30 +127,30 @@
   .heat-grid{display:grid;align-items:center;gap:2px}
   .heat-head{font-size:10px;color:var(--muted);text-align:center;padding-bottom:4px;white-space:nowrap}
   .heat-corner{font-size:11px;color:var(--muted);padding:0 8px 4px 0}
-  .heat-name{font-size:11.5px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;
-       white-space:nowrap;padding-right:10px}
+  .heat-name{font-size:12px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;
+       white-space:nowrap;padding-right:12px}
   .heat-cell{height:18px;border-radius:4px;background:var(--card-2)}
-  .heat-legend{display:flex;align-items:center;justify-content:flex-end;gap:6px;margin-top:10px;
-       font-size:11.5px;color:var(--muted)}
+  .heat-legend{display:flex;align-items:center;justify-content:flex-end;gap:6px;margin-top:12px;
+       font-size:12px;color:var(--muted)}
   .heat-legend .row{display:flex;gap:3px}
   .heat-legend .sw{width:12px;height:12px;border-radius:3px;background:var(--accent)}
   .note{font-size:12px;color:var(--dim);margin-top:12px;line-height:1.45}
   /* A link inside a sentence is a link, not a button: the pill is the header's one control. */
   .note a{color:var(--accent)}
   .empty{padding:22px 4px;color:var(--muted)}
-  .stale{margin-top:12px;font-size:12.5px;color:var(--warn);background:#241f10;border:1px solid #4a3a17;
-       border-radius:9px;padding:10px 12px}
+  .stale{margin-top:12px;font-size:13px;color:var(--warn);background:#241f10;border:1px solid #4a3a17;
+       border-radius:10px;padding:8px 12px}
   code{background:var(--card-2);border:1px solid var(--line);border-radius:5px;padding:1px 5px;font-size:12px}
   /* AIMeter-style multi-panel grid: two chart panels per row where there is room. */
   .grid-2{display:grid;grid-template-columns:1fr;gap:16px}
   @media (min-width:980px){ .grid-2{grid-template-columns:1fr 1fr} }
   .panel-head{display:flex;align-items:center;gap:8px}
   .panel-head .bar{width:3px;height:15px;border-radius:2px;background:var(--accent);flex:0 0 auto}
-  .panel-head h2{font-size:13.5px;font-weight:650}
+  .panel-head h2{font-size:13px;font-weight:600}
   .skel{position:relative;overflow:hidden;background:rgba(255,255,255,.06);border-radius:8px}
   .skel::after{content:"";position:absolute;inset:0;transform:translateX(-100%);
-       background:linear-gradient(90deg,transparent,rgba(255,255,255,.09),transparent);
-       animation:shimmer 1.3s infinite}
+       background:linear-gradient(90deg,transparent,rgba(255,255,255,.06),transparent);
+       animation:shimmer 1.6s infinite}
   @keyframes shimmer{100%{transform:translateX(100%)}}
   .skel-chart{height:210px;margin:10px 0}
   .badge{display:inline-flex;align-items:center;gap:6px;min-width:0}
@@ -156,36 +160,39 @@
   @media (min-width:700px){ .insight-grid{grid-template-columns:1fr 1fr} }
   @media (min-width:1200px){ .insight-grid{grid-template-columns:1fr 1fr 1fr} }
   .insight{border:1px solid var(--line);border-radius:12px;padding:12px;background:var(--card-2)}
-  .insight .top{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:9px}
-  .insight .tiles{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:9px}
-  .insight .tile{background:rgba(0,0,0,.18);border-radius:8px;padding:6px 8px;display:flex;
+  .insight .top{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px}
+  .insight .tiles{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px}
+  .insight .tile{background:rgba(0,0,0,.18);border-radius:8px;padding:8px;display:flex;
        align-items:baseline;justify-content:space-between;gap:6px;min-width:0}
   .insight .tile .k{font-size:11px;color:var(--muted);white-space:nowrap}
   .insight .tile .v{font-size:15px;font-weight:600;font-variant-numeric:tabular-nums}
-  .insight .pill{font-size:10.5px;padding:2px 8px;border-radius:999px;white-space:nowrap}
+  /* The record count used to be a chip tinted with the account's series colour — a coloured badge
+     on every card, at 10.5px, whose contrast changed with the hue and whose colour repeated what
+     the sparkline already said. It is a count: mono, quiet, no chip. */
+  .insight .count{font:500 11px/16px var(--mono);color:var(--dim);white-space:nowrap}
   .insight .spark{height:44px;margin-top:2px}
   .axis{font-size:10px;fill:var(--muted)}
   /* The support link: fixed, small, and out of the reading column. It is an anchor, not a
      resource load, so it stays same-origin for the page's own requests. */
   .kofi{position:fixed;right:16px;bottom:16px;z-index:60;display:inline-flex;align-items:center;
-       gap:0;padding:8px;border-radius:999px;text-decoration:none;font-size:12.5px;
-       color:var(--fg);background:rgba(var(--card),.8);border:1px solid var(--line);
+       gap:0;padding:8px;border-radius:999px;text-decoration:none;font-size:13px;
+       color:var(--muted);background:rgba(var(--card),.8);border:1px solid var(--line);
        backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);box-shadow:0 4px 16px rgba(0,0,0,.35)}
-  .kofi:hover{color:#fff;border-color:var(--accent)}
-  .kofi svg{width:15px;height:15px;fill:#ff5e5b;flex:0 0 auto}
+  .kofi:hover{color:var(--fg);border-color:var(--accent)}
+  .kofi svg{width:15px;height:15px;fill:currentColor;flex:0 0 auto}
   .kofi span{font-weight:600;max-width:0;opacity:0;overflow:hidden;white-space:nowrap}
-  .kofi:hover span,.kofi:focus-visible span{max-width:5em;opacity:1;margin-left:7px}
+  .kofi:hover span,.kofi:focus-visible span{max-width:5em;opacity:1;margin-left:8px}
   @media (prefers-reduced-motion:no-preference){
-    .kofi{transition:color .15s,border-color .15s}
-    .kofi span{transition:max-width .18s ease,opacity .18s ease,margin-left .18s ease}
+    .kofi{transition:color .15s var(--ease),border-color .15s var(--ease)}
+    .kofi span{transition:opacity .15s var(--ease)}
   }
   @media (prefers-reduced-motion:reduce){ .skel::after{animation:none} }
   .render-error{margin-top:10px;font-size:12px;color:#ffb4b4}
   /* The support pill is fixed: on a narrow screen it used to come to rest over the last panel. */
-  @media (max-width:640px){ body{padding:14px 14px 68px} }
+  @media (max-width:640px){ body{padding:16px 16px 72px} }
   /* A separate rule: the line above is string-matched by tests/history.py, so the floating
      header's offset lives where it cannot disturb it. */
-  @media (max-width:640px){ header{top:14px} }
+  @media (max-width:640px){ header{top:16px} }
 </style>
 </head>
 <body>
@@ -466,19 +473,30 @@ function labelInk(hex){
 function fmtMoney(amount, currency){
   if(amount === null || amount === undefined || !isFinite(amount)) return '—';
   const symbol = currency === 'USD' ? '$' : (currency ? currency + ' ' : '');
-  return symbol + amount.toFixed(2);
+  return symbol + NF_MONEY.format(amount);
 }
 
 function esc(s){ return String(s === null || s === undefined ? '' : s)
   .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
 
-function fmtPercent(v){
-  // A reading is never rounded into a different reading: 0.09% stays visible, and a missing
-  // value is a dash rather than a 0 the provider never sent.
+// One format per kind of figure, the same rule the live panel follows: a percentage always carries
+// one decimal (35.0%, 84.0%), money two (110.00), a count is grouped and whole (29,569). The old
+// rule switched between 0.00%, 35% and 35.9% inside one column, so two neighbouring numbers of the
+// same kind read as two different units. Missing stays a dash, never a 0 the provider did not send.
+// en-US punctuation whatever the reader's locale, because every string around these numbers is
+// English and a currency symbol is written before the amount.
+const NF_GROUP = new Intl.NumberFormat('en-US');
+const NF_MONEY = new Intl.NumberFormat('en-US', {minimumFractionDigits:2, maximumFractionDigits:2});
+function fmtCount(v){
   if(v === null || v === undefined || !isFinite(v)) return '—';
-  if(Math.abs(v) < 1) return v.toFixed(2) + '%';
-  if(Math.abs(v - Math.round(v)) < 0.05) return String(Math.round(v)) + '%';
-  return v.toFixed(1) + '%';
+  return NF_GROUP.format(Math.round(v));
+}
+function fmtPercent(v){
+  if(v === null || v === undefined || !isFinite(v)) return '—';
+  return (Math.round(v * 10) / 10).toFixed(1) + '%';
+}
+function countLabel(n, one, many){
+  return fmtCount(n) + ' ' + (Number(n) === 1 ? one : many);
 }
 
 function fmtStamp(epoch, withDate){
@@ -863,7 +881,7 @@ function renderStats(){
   const volatility = metrics.length
     ? metrics.reduce((sum, m) => sum + (m.volatility || 0), 0) / metrics.length : 0;
   const stats = [
-    {k:'Accounts in view', v:String(accounts.size), s:samples + ' samples'},
+    {k:'Accounts in view', v:fmtCount(accounts.size), s:countLabel(samples, 'sample', 'samples')},
     {k:'Average consumption', v:fmtPercent(average), s:'across the selected range'},
     {k:'Peak account', v:peak ? fmtPercent(peak.peak) : '—',
      s:peak ? peak.label + ' · ' + peak.window : 'no data in range'},
@@ -895,7 +913,7 @@ function renderStore(){
   if(sources){
     const rows = (sources.raw_rows || 0) + (sources.rollup_rows || 0)
                + (sources.balance_rows || 0) + (sources.balance_rollup_rows || 0);
-    parts.push('this range: ' + sources.resolution + ' · ' + rows + ' row' + (rows === 1 ? '' : 's'));
+    parts.push('this range: ' + sources.resolution + ' · ' + fmtCount(rows) + ' row' + (rows === 1 ? '' : 's'));
   }
   node.textContent = parts.join(' · ');
 }
@@ -937,8 +955,7 @@ function renderBreakdown(){
     ];
     return '<div class="insight"><div class="top">'
       + badgeHtml(s.provider, s.window_label || s.window_key)
-      + '<span class="pill" style="background:' + color + '22;color:' + color + '">'
-      + (s.samples || 0) + ' samples</span></div>'
+      + '<span class="count">' + countLabel(s.samples || 0, 'sample', 'samples') + '</span></div>'
       + '<div class="tiles">' + tiles.map(t => '<div class="tile"><span class="k">' + esc(t[0])
         + '</span><span class="v">' + esc(t[1]) + '</span></div>').join('') + '</div>'
       + sparkline(daySeries.avg || [], color)
@@ -1015,8 +1032,12 @@ function renderNote(){
     .map(entry => ({entry: entry, at: projection(entry, state.data ? state.data.bucket_seconds : 0, nowEpoch)}))
     .filter(item => item.at)
     .sort((a, b) => a.at - b.at)[0];
-  if(soonest) parts.push('On pace for the cap: ' + seriesLabel(soonest.entry) + ' by '
-    + soonest.at.toLocaleDateString([], {month: 'short', day: 'numeric'}) + '.');
+  if(soonest) {
+    // A locale's short month is already abbreviated with a full stop ("11 nov."); appending the
+    // sentence's own stop printed "11 nov..". Strip it and close the sentence once.
+    const when = soonest.at.toLocaleDateString([], {month: 'short', day: 'numeric'}).replace(/\.$/, '');
+    parts.push('On pace for the cap: ' + seriesLabel(soonest.entry) + ' by ' + when + '.');
+  }
   note.className = state.stale ? 'stale' : 'note';
   note.textContent = parts.join(' ');
 }
@@ -1621,8 +1642,7 @@ function renderInsights(){
       spark = sparkline(daySeries.avg || [], m.color);
     }
     return '<div class="insight"><div class="top">' + badgeHtml(m.provider, m.label)
-      + '<span class="pill" style="background:' + m.color + '22;color:' + m.color + '">'
-      + (m.records || 0) + ' records</span></div>'
+      + '<span class="count">' + countLabel(m.records || 0, 'record', 'records') + '</span></div>'
       + '<div class="tiles">' + tiles.map(t => '<div class="tile"><span class="k">' + esc(t[0])
         + '</span><span class="v">' + esc(t[1]) + '</span></div>').join('') + '</div>'
       + spark + '</div>';
