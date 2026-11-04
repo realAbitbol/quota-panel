@@ -32,7 +32,10 @@
   html,body{min-height:100%}
   body{margin:0;color:var(--fg);
        font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
-       padding:24px;
+       /* The gutters match the history page's (22px), so a card sits on the same edge on both
+          pages and the two full-width layouts line up when you switch between them. The page is
+          not capped at a reading width: a wide monitor gets the whole grid, as on /history. */
+       padding:24px 22px 24px;
        /* /background serves the image configured in accounts.json when there is one, and
           answers 404 when there is not — the colour in --bg is what the reader sees then, so
           the CSS never needs to know which. */
@@ -55,9 +58,6 @@
        border:1px solid var(--line);border-radius:16px;padding:14px 16px;
        backdrop-filter:blur(var(--card-blur));-webkit-backdrop-filter:blur(var(--card-blur))}
   h1{font-size:20px;line-height:28px;margin:0;font-weight:600}
-  /* A wide monitor should not stretch the panel edge to edge: the reading column stops at the
-     same cap the history page uses. Below it, nothing moves. */
-  header,main{max-width:1560px;margin-left:auto;margin-right:auto}
   .logo{width:28px;height:28px;border-radius:8px;flex:0 0 auto;align-self:center;display:block}
   .muted{color:var(--muted);font-size:13px}
   /* Inline Font Awesome Free 7.3.1 solid marks (icons CC BY 4.0, Fonticons Inc. — see License in
