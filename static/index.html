@@ -70,7 +70,7 @@
   .ic{display:inline-block;width:1em;height:1em;vertical-align:-.125em;margin-right:.5em}
   .ic svg{display:block;width:100%;height:100%;fill:currentColor}
   .card{background:rgba(var(--card),var(--card-alpha));border:1px solid var(--line);border-radius:16px;
-       padding:20px;
+       padding:20px;display:flex;flex-direction:column;
        backdrop-filter:blur(var(--card-blur));-webkit-backdrop-filter:blur(var(--card-blur))}
   /* Which card needs a human? Every card used to carry identical weight, so finding the one at
      96% meant reading eight numbers. The tint is the information the bars already hold, hoisted
@@ -80,9 +80,11 @@
   .card.broken{border-color:#5c2020;box-shadow:inset 3px 0 0 #8a3a32}
   /* Three columns on a wide monitor, two on a laptop, one on a phone. Explicit breakpoints rather
      than auto-fill, so a 1440px viewport does not quietly become four narrow cards. */
-  /* align-items:start, not the default stretch: a short card beside a tall one used to grow an
-     empty bottom half so the row's edges lined up, which read as a card still loading. */
-  .grid{display:grid;gap:16px;grid-template-columns:1fr;align-items:start}
+  /* Flat, even rows: every card in a row shares its top and bottom edge. align-items:start was
+     tried and reverted — it left a short card ending mid-row, which reads as a broken column.
+     The slack that equal heights create goes to one place: the card's foot, pinned to the
+     bottom edge (see .card-foot), the way a ledger's totals sit under the last line. */
+  .grid{display:grid;gap:16px;grid-template-columns:1fr}
   @media (min-width:700px){ .grid{grid-template-columns:1fr 1fr} }
   @media (min-width:1100px){ .grid{grid-template-columns:1fr 1fr 1fr} }
   .strip{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:13px;color:var(--muted);
@@ -172,6 +174,12 @@
        border:1px solid #4a2020;border-radius:10px;padding:8px 12px}
   /* 10.5px was the smallest text here and the first casualty of a bright artwork. */
   .totals{margin-top:12px;font-size:11px;color:var(--dim);border-top:1px solid var(--line);padding-top:8px;line-height:1.35}
+  /* The card's foot — request totals and the period's end date — is anchored to the bottom of
+     the card. Stretched to the row's height, a card then reads as a metric block above and a
+     footer below, instead of trailing off wherever its last number happened to end. */
+  .card-foot{margin-top:auto}
+  /* A balance card's rate table is its foot in the same sense. */
+  .dc-rates:last-child{margin-top:auto}
   .waiting{color:var(--muted);font-size:13px;padding:18px 2px}
   /* The two status halves are one group on the right, opposite the logo and the title. */
   #feed{margin-left:auto;font-variant-numeric:tabular-nums;display:inline-flex;align-items:center}
@@ -841,8 +849,12 @@ function cardHtml(acc, stale){
     html += dcRatesHtml();
   }
   const t = acc.totals || {};
+  // The foot — what the card spent, and when its period ends — is one block so it can be pinned
+  // to the card's bottom edge (see .card-foot): a stretched card then puts its slack above the
+  // foot, where it reads as spacing, rather than under it as a hollow end.
+  let foot = '';
   if(t.requests || t.tokens_in){
-    html += `<div class="totals">${fmtCount(t.requests || 0)} requests · in ${fmtCount(t.tokens_in || 0)} / out ${fmtCount(t.tokens_out || 0)} tokens${t.success_rate !== undefined && t.success_rate !== null ? ' · ' + fmtPct(t.success_rate) + ' success' : ''}</div>`;
+    foot += `<div class="totals">${fmtCount(t.requests || 0)} requests · in ${fmtCount(t.tokens_in || 0)} / out ${fmtCount(t.tokens_out || 0)} tokens${t.success_rate !== undefined && t.success_rate !== null ? ' · ' + fmtPct(t.success_rate) + ' success' : ''}</div>`;
   }
   if(acc.period_end){
     // The server passes a provider-supplied string through when it merely looks ISO-ish, so an
@@ -851,10 +863,11 @@ function cardHtml(acc, stale){
     // The day the plan's month ends is what a reader plans around, so the date carries the same
     // emphasis as a countdown, and turns amber inside its last three days.
     const soon = !isNaN(end) && (end - serverNow()) < SOON_MS * 3;
-    html += `<div class="reset${soon ? ' soon' : ''}">period ends ${isNaN(end)
+    foot += `<div class="reset${soon ? ' soon' : ''}">period ends ${isNaN(end)
       ? esc(acc.period_end) : `<span class="when">${esc(new Date(end).toLocaleString(undefined,
           {year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'}))}</span>`}</div>`;
   }
+  if(foot) html += `<div class="card-foot">${foot}</div>`;
   return html;
 }
 
